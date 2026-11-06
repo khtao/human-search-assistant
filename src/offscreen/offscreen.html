@@ -1,0 +1,12 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>拟人搜索助手 · 运行引擎</title>
+</head>
+<body>
+  <!-- MV3 service worker 有 30 秒空闲回收；长跑会话放在 offscreen document。
+       这里只做节奏计算与编排，所有浏览器操作通过 RPC 交给 service worker。 -->
+  <script type="module" src="./offscreen.js"></script>
+</body>
+</html>
