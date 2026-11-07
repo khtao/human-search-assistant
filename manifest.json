@@ -1,44 +1,43 @@
 {
   "manifest_version": 3,
-  "name": "拟人搜索助手",
-  "short_name": "HumanSearch",
-  "version": "4.2.0",
-  "description": "仅保留拟人搜索：随机真实热搜词、可设置搜索次数与多个每日定时启动点、点击停止立即中止；搜索进行时工具栏扩展图标变红。",
+  "name": "Human Search Assistant",
+  "description": "Human-like Bing search automation with bilingual UI, scored task cards and points parsed from the live Rewards dashboard/earn pages, plus scheduled runs.",
+  "version": "1.7",
   "minimum_chrome_version": "116",
   "icons": {
-    "16": "icons/idle_16.png",
-    "32": "icons/idle_32.png",
-    "48": "icons/idle_48.png",
-    "128": "icons/idle_128.png"
-  },
-  "action": {
-    "default_title": "拟人搜索助手 · 空闲",
-    "default_popup": "src/popup/popup.html",
-    "default_icon": {
-      "16": "icons/idle_16.png",
-      "32": "icons/idle_32.png"
-    }
-  },
-  "background": {
-    "service_worker": "src/background/service-worker.js",
-    "type": "module"
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
   },
   "permissions": [
-    "storage",
-    "alarms",
     "tabs",
-    "activeTab",
+    "storage",
     "scripting",
-    "webNavigation",
-    "debugger",
-    "offscreen"
+    "alarms",
+    "debugger"
   ],
   "host_permissions": [
+    "https://bing.com/*",
     "https://*.bing.com/*",
     "https://top.baidu.com/*",
     "https://weibo.com/*",
     "https://www.toutiao.com/*",
     "https://www.zhihu.com/*",
     "https://rss.sina.com.cn/*"
-  ]
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Human Search Assistant",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png"
+    }
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'none';"
+  }
 }

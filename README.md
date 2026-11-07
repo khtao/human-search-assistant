@@ -1,161 +1,123 @@
-# 拟人搜索助手 v4.2
+# Rewards 页面读取示例（只读 · 教学用途）
 
-**纯浏览器扩展（Manifest V3，Edge / Chrome 116+）**。只做拟人搜索：
-积分同步、Cookie、任务列表、自动完成任务、通知、趋势图表、设置页等全部放弃。
+> 把 Microsoft Rewards 页面上**已经显示给你自己看**的积分和任务，解析成结构化数据。
+> 一个离线单文件博客 + 一份零依赖解析函数。**本仓库不包含任何自动化功能。**
 
-v4.2 按截图指认做了两件事：**变色对象明确为工具栏那个扩展图标、搜索进行中统一变红**；
-以及把搜索方式改成**随机混合**，不新增任何选项。
+[English disclaimer](#english-disclaimer) · [合规与免责](#合规与免责重要) · [快速开始](#快速开始)
 
 ---
 
-## 1. 工具栏扩展图标：搜索中红，其它时间蓝
+## 这是什么
 
-变色通过 `chrome.action.setIcon / setBadgeBackgroundColor / setTitle` 作用在
-**浏览器工具栏的扩展图标**（你截图里那个蓝色圆角图标）上，不是弹窗里的装饰。
+一个用来**理解页面结构**的小项目：Rewards 的 `/dashboard` 与 `/earn` 两个页面把积分和任务直接写在 HTML 里，本项目演示如何把它们读成三个数字和一张任务表。
 
-| 状态 | 工具栏图标 | 徽标 |
+| 读到什么 | 来自哪个页面 | 识别方式 |
 |---|---|---|
-| 手动搜索进行中 | **红色**放大镜，4 帧动画 | `▶` 红底 |
-| 定时自动搜索进行中 | **红色**放大镜（左下多一个白点），4 帧动画 | `●` 红底 |
-| 空闲 / 已完成 / 出错 / 停止后 | **蓝色**（圆环 / 对勾 / 感叹号） | 无 / `✓` / `!` |
+| 可用积分、可领取 | `/dashboard`（`/earn` 也有） | 积分卡上「标签 → 相邻数值」配对 |
+| 今日积分 | `/earn` | 同上 |
+| 今日任务列表 | 两个页面合并 | 带 `bg-statusSuccessRewardsBg` 绿色积分徽章的卡片 |
 
-手动与自动都红，靠形状、徽标和弹窗胶囊「自动 ·」区分。
-
-> **看不到变化？** 如果扩展没有固定到工具栏，图标藏在拼图（扩展）菜单里，动画不容易看见：
-> 点右上角拼图 → 找到「拟人搜索助手」→ 点图钉**固定**，之后红/蓝变化会直接显示在工具栏。
+入口是 [`index.html`](./index.html)：单文件、离线、打开即自动跑出示例结果。内含 3 张内联 SVG 示意图（数据流向、积分卡解剖、任务卡筛选）、一份可折叠的完整源码，以及两个可运行的示例。
 
 ---
 
-## 2. 搜索方式：每轮随机混合，无额外选项
+## 仓库内容
 
-每轮独立掷两个骰子，组合出四种路径，整轮里混合出现：
-
-| | 粘贴关键词 | 直接改词 |
-|---|---|---|
-| **回首页** | 回 Bing 首页 → 清空 → 输入热搜词 → 提交 | 先回首页 → 用相关延伸词直接换查询 URL |
-| **留在结果页** | 留在 SERP → **清空搜索框** → 输入热搜词 → 提交 | 从当前页「相关搜索」取延伸词 → 直接换查询 URL |
-
-具体落实：
-
-- **粘贴关键词模式先清空搜索框**。真实输入走 `Ctrl+A` + `Backspace`（CDP `modifiers:2`），
-  合成事件走 `value=""` + `input/change`。这是「搜索词不会越来越长」的根治点——
-  上一轮的词残留在框里会被 `insertText` 拼接。
-- **直接改词模式使用相关延伸搜索**，不走粘贴：
-  1. 先从当前 Bing 结果页抓可见的「相关搜索 / 也有人搜」链接文本与 `href` 里的 `q=`；
-  2. 抓不到（例如刚回首页）再查 Bing 官方 autosuggest 接口，按上一轮词取联想词；
-  3. 两者都失败才回退到热搜词，日志标 `改词·热搜回退`，**绝不编造本地词库**。
-  4. 拿到词后直接 `scope.navigate` 到 `bing.com/search?q=…`，不碰搜索框。
-- **是否回到首页随机**（约 38%），提交方式也随机（回车 / 点搜索按钮），
-  结果页滚动、按概率点结果、返回都保留。
-- 全程**没有任何新增设置项或界面选项**：次数与定时点仍是仅有的两项可配置内容。
-- 日志会标出每轮方式，例如
-  `[3/12] 广州天气 预报 · 改词·相关延伸 · 留在结果页`，结束时汇总
-  `方式混合：粘贴 7 / 改词 5 · 回首页 4 / 留在结果页 8`。
-
----
-
-## 3. 定时自动启动（保留）
-
-弹窗「定时启动」卡片：时间选择器加**若干个不同时间点**（最多 10 个，自动去重排序）、
-标签 `×` 删除、右侧开关整体启停；没有时间点时开关自动失效。
-
-- 一个**每分钟 tick alarm** 比对当前 `HH:MM`，浏览器重启/休眠/改时间点都能自恢复；
-- 当天已触发的 `日期:时间点` 记在本地，同分钟不重复、跨天清空；
-- 到点若已有搜索在运行就跳过，不并发；
-- 定时启动走**后台标签页**，不抢当前焦点；手动点击仍是前台标签。
-
----
-
-## 4. 点击「立即停止」立即生效
-
-- **引擎**：每次运行一个 `AbortController`；`ENGINE_STOP` 到达立刻 `stopFlag=true` + `abort()`，
-  所有等待监听 signal 立即 resolve，每个 `await` 后 `bail()`。
-- **后台**：收到 RPC 同时 `scope.halt()`（打断导航等待）、`collector.halt()`（DOM 事件抛错）、
-  `cdp.halt()`（detach + 拒绝所有 `Input.*`），随后立刻把工具栏图标复位为**蓝色空闲**
-  并保留已完成轮数；`stopHandled` 防止延迟到达的「运行中」把图标重新点亮。
-
-点停止后不会再有一次鼠标移动、键盘输入、导航或滚动。
-
----
-
-## 5. 保留的拟人搜索能力
-
-| 项 | 说明 |
+| 文件 | 说明 |
 |---|---|
-| 热搜词 | 每轮从 **Bing 趋势 / 百度 / 微博 / 今日头条 / 知乎 / 新浪 RSS** 随机挑 2~4 个源抓取；**无本地词库**，全失败明确报错 |
-| 相关延伸词 | 当前 SERP 的相关搜索链接 + Bing autosuggest，均失败才回退热搜词 |
-| 搜索词长度 | 每轮词截断 30 字，不改写、不接会话链 |
-| 起始页 | `https://www.bing.com/?mkt=zh-CN` |
-| 节奏 | 时间预算、贝塞尔 + 最小急动度轨迹、1/f 粉红噪声、对数正态长尾、昼夜节律、阅读模型 |
-| 输入 | `chrome.debugger` + CDP 真实鼠标/键盘；不可用时降级合成事件 |
-| 单页面硬约束 | `assertScope` 校验所有导航/注入/CDP；MAIN world 守卫把 `window.open` 与 `target=_blank` 收敛回同一标签；无静态 `content_scripts` |
-| 长跑 | offscreen document + 心跳，绕开 MV3 SW 30 秒空闲回收 |
+| `index.html` | 图文博客 + 可运行示例（内置快照 + 实时抓取脚本，脚本在页面内一键复制） |
+| `README.md` | 本文件 |
 
-固化参数：强度 3、轮内 16~29 秒、轮间 3~12 秒、结果点击 0.35、回车 0.5、滚动 1.2 屏。
+- 内置的示例页面快照按真实结构裁剪并**匿名化**，不含姓名、邮箱、账户 ID 或真实会话数据。
+- **不单独分发、不预编译任何浏览器扩展**；`index.html` 里附的 `manifest.json` 仅是一段用于说明权限模型的片段。
+- 全文无外部脚本、样式、图片、字体或 CDN，可完全离线打开。
 
 ---
 
-## 6. 权限
+## 快速开始
 
-| 权限 | 用途 |
-|---|---|
-| `storage` | 搜索次数、定时点、日志、当天已触发记录 |
-| `alarms` | 每分钟 tick 定时启动 |
-| `tabs` / `activeTab` / `scripting` / `webNavigation` | 唯一作用域标签页、搜索框定位、相关搜索词采集 |
-| `debugger` | 真实键鼠输入（含 Ctrl+A 清空） |
-| `offscreen` | 长跑引擎 |
-| `https://*.bing.com/*` + 5 个热搜域 | 搜索页、官方 autosuggest 与 6 路真实热搜源 |
+**1. 看结果（离线，推荐先试这个）**
 
-**已移除**：`cookies`、`notifications`，以及全部设置页与内容脚本。
+直接双击 `index.html`，或用浏览器打开。页面加载时会自动运行内置示例，显示：
 
----
-
-## 7. 安装与使用
-
-1. 解压 `dist/human-search-assistant.zip` → `edge://extensions` / `chrome://extensions` → 开发人员模式 → **加载已解压的扩展程序**。
-2. 点右上角拼图 → 把「拟人搜索助手」**固定到工具栏**（否则看不到图标变色）。
-3. 设置搜索次数 → 加若干定时点并打开开关（或直接「开始搜索」）。
-4. 中途结束点「立即停止」，工具栏图标立刻回蓝。
-
-CRX 为已签名 CRX3，需企业策略侧载，见 `BUILD.md`。扩展 ID：`ijpnnhkfkigngejokmcmgjiefncamoeh`。
-
----
-
-## 8. 验证
-
-```bash
-node tests/selftest.mjs           # 31 项离线自检
-node tests/import-smoke.mjs       # chrome mock 下真实导入 18 个模块
-node build.mjs                    # 语法 / 导入 / 权限 / 架构硬约束 → ZIP → CRX3
-node tests/verify-crx.mjs         # 独立验签、ZIP 一致性、扩展 ID、图标字节比对
+```
+可用积分 19,925   今日积分 100   可领取 0
+今日任务 100%（110 / 110 分）  ·  搜索 60 / 每日活动 30 / 日常任务 20
 ```
 
-`build.mjs` 强制检查：源码全局不得出现 `getuserinfo` / `parseDashboard` / `manualCookie` /
-`chrome.cookies` / `chrome.notifications` / `runTasks` / `sync.run` / `putDaily` /
-`FALLBACK_TERMS` / `SessionChain`；`chrome.alarms` 只允许在 `scheduler.js` 与 `service-worker.js`；
-manifest 必须有 `alarms`、不得有 `cookies`/`notifications`/`options_ui`/`content_scripts`；
-**`search` 与 `auto` 状态颜色必须为红、其余全部为蓝**，且变色必须调用 `chrome.action`；
-粘贴前清空（`cdp.clearInput` 在 `cdp.insertText` 之前、真实按键 `Ctrl+A+Backspace`、
-合成事件 `value=""` + input/change）、改词用 `collect.related` + `suggest.related` + `encodeURIComponent`、
-四种方式都出现、不得出现 `relatedMode`/`homeRate` 之类设置项；
-`util.sleep` 支持 AbortSignal；引擎含 `AbortController`/`abort()`/`bail()`；
-后台 `stopEngine` 同步三处 `halt()` + `releaseScope()` + `finishState(IDLE)`。
+**2. 实时读取自己的页面（可选，需手动操作）**
 
-自检用真实 `AbortController` 验证「5 秒等待在 20ms 后中断」，用可注入 fetch 验证联想词解析
-（去重、过滤、排除自身、失败返回空），用可注入钟点验证定时只触发一次，并验证 halt 后
-CDP `attach` 返回 false、`probe` 抛错、导航等待 <100ms 结束；验签还会比对
-`search_f0` / `auto_f0` 确实都不是蓝色 `idle` 图标、且彼此字节不同。
+1. 在自己的浏览器里登录 `rewards.bing.com`；
+2. 打开任意 Rewards 页面，按 F12 进入 Console；
+3. 在博客第 ④ 节点「复制实时抓取脚本」，粘贴到 Console 并回车；
+4. 结果以 `console.table` 输出。
 
-**沙盒没有浏览器，未做真机联网验证。** 首次请看弹窗日志的 `schedule` / `keywords` /
-`search_start` / `modes` / `stop` 行。
+脚本只做一次 `fetch('/dashboard')` + `fetch('/earn')`，由你**手动单次触发**，不含循环、定时器或后台常驻逻辑。普通第三方网页因浏览器同源策略与登录态要求无法完成这一步，这也是不在托管页面上直接发起请求的原因。
+
+**3. 放进扩展（可选）**
+
+博客第 ④ 节附了最小的 MV3 `manifest.json` 片段。把 `buildReport(dashHtml, earnHtml)` 复制到 background，用带登录态的 `fetch` 拿到两个页面的 HTML 即可；同样建议仅手动单次触发。
 
 ---
 
-## 9. 使用须知
+## 明确不是什么（请先读这一段）
 
-- 开启 CDP 真实输入时浏览器会显示「正在调试此浏览器」提示条；点停止会立刻 detach。
-- 定时启动会静默开一个后台标签页，运行中工具栏图标变红。
-- 热搜源与联想词都不可达时搜索明确报错或回退热搜词，不会用本地词库顶替。
-- **自动化搜索可能不符合 Microsoft Rewards 服务条款**：奖励搜索要求本人出于真实研究目的手动进行，
-  机器人/宏产生的搜索不属于合格搜索，可能导致无法获得积分、积分作废或账户受限。
-  本项目不伪装指纹、不使用代理、不绕过登录、不代用户赚取积分；风险由使用者自行承担，以官方要求为准。
+- ❌ **不是**刷分工具、积分加速器、任务自动完成脚本或「助手」类扩展。
+- ❌ 不自动发起搜索、不模拟鼠标/键盘、不点击任务卡、不提交任何表单或答题。
+- ❌ 不绕过登录、验证码、访问控制或浏览器同源策略；不使用代理、不伪造 UA / 指纹、不处理他人 Cookie 或 Token。
+- ❌ 不使用私有接口、不逆向 undocumented API、不提供接口文档或账号数据。
+- ❌ 不批量请求、不定时轮询、不后台常驻、不托管服务、不收集或上传任何数据。
+- ❌ 不预编译、不分发可安装的扩展包。
+
+本项目唯一做的事情，是**读取使用者本人已登录页面上已经渲染出来的文本与数字**，并在本地做字符串解析。任何超出「单次、手动、本地、只读」范围的使用方式都不属于本项目的设计意图，也不在本项目支持范围内。
+
+---
+
+## 数据与隐私
+
+- 全部计算在浏览器本地完成；**无网络上传、无遥测、无后端、无第三方资源**。
+- 实时脚本只请求 `rewards.bing.com` 下两个页面，响应仅用于本地解析，不落盘、不外发。
+- 内置示例为匿名化快照；仓库内不含任何真实账户信息。
+- 不使用 `localStorage` / `chrome.storage` 持久化任何账户数据（本仓库示例不写入存储）。
+
+---
+
+## 合规与免责（重要）
+
+1. **非官方、无关联。** 本项目是独立的个人教学示例，与 Microsoft Corporation 及其关联方没有任何隶属、授权、 endorsement 或合作关系。`Microsoft`、`Bing`、`Microsoft Rewards` 及相关标识是 Microsoft 的商标或注册商标，此处仅用于描述所讨论的页面，不表示任何关联； trademark rights remain with their respective owners。
+
+2. **使用前请自行查阅官方条款。** 请阅读并遵守 [Microsoft 服务条款](https://www.microsoft.com/servicesagreement)、Microsoft Rewards 的条款与常见问题，以及适用法律法规与隐私政策。**若这些条款禁止任何形式的自动化访问、页面抓取或结构化读取，请不要使用本项目。**
+
+3. **奖励活动有真实操作要求。** Rewards 的搜索与任务奖励通常要求账户本人出于真实目的手动完成。自动化搜索、模拟点击任务卡、批量或高频请求可能不符合条款，并可能导致积分不予计入、已获积分作废、账户功能受限或其他后果。**本项目不包含上述功能，也不提供相关实现、配置或操作指导。**
+
+4. **使用范围。** 仅限读取**本人已登录账户**页面上已显示的信息，用于个人学习与界面理解。不得用于他人账户、共享账户、代操作、商业服务、监控或对账等用途。
+
+5. **结果不保证准确或完整。** 页面结构、文案、CSS 类名与渲染方式随时可能变更；解析结果可能过时、缺项或错误。本项目输出**不得**作为账务核对、申诉、交易、统计上报、财务或任何需要准确性场景的依据。示例中的数值仅用于说明解析逻辑。
+
+6. **按「现状」提供。** 本仓库内容以 "AS IS" 提供，不提供任何明示或默示担保，包括但不限于适销性、特定用途适用性与不侵权担保。作者及贡献者不对任何直接、间接、附带、特殊或后果性损失承担责任，亦不对第三方网站变更造成的损失负责。
+
+7. **不构成法律建议。** 本文不是法律意见，也不能替代你对自身使用场景的合规判断。如有疑问，请咨询专业法律顾问并以官方最新条款为准。
+
+8. **Fork 与二次分发。** 若你在自己的分支中加入了自动化、批量、定时或任何任务操作能力，请勿继续使用本仓库名称、本 README 或 Microsoft 相关标识来暗示与本项目或 Microsoft 的关联；该分支的合规判断与全部责任由你自行承担。
+
+---
+
+## English Disclaimer
+
+> **Summary — please read the full [合规与免责](#合规与免责重要) section above, which governs.**
+
+This repository is an **independent, read-only, educational example** showing how numbers and task labels already displayed on a user's own signed-in Microsoft Rewards pages can be parsed into structured data. It is **not affiliated with, endorsed by, or sponsored by Microsoft Corporation**. `Microsoft`, `Bing` and `Microsoft Rewards` are trademarks of Microsoft; all rights remain with their respective owners.
+
+It is **not** a points-earning tool, automation script, task completer, or distributed browser extension. It does **not** automate searches, simulate mouse/keyboard input, click task cards, bypass sign-in or access controls, use proxies, forge fingerprints, access undocumented APIs, run on a schedule, or transmit data anywhere. All computation happens locally in the browser; the optional live snippet is triggered **once, manually, by the user**.
+
+Before using it, read and comply with the Microsoft Services Agreement, the Microsoft Rewards terms, and applicable law. **If those terms prohibit automated access, scraping, or structured reading of the pages, do not use this project.** Rewards activities generally require genuine manual participation by the account holder; automating searches or tasks may violate the terms and may result in forfeited points or account restrictions. This repository contains no such functionality and provides no guidance for building it.
+
+The output is provided **AS IS**, without warranty of any kind, may be inaccurate or outdated as page markup changes, and must not be relied upon for accounting, disputes, transactions, or any decision-making. The authors assume no liability for any damages arising from its use. Nothing here is legal advice. Forks that add automation must not imply affiliation with this project or with Microsoft and bear full responsibility for their own compliance.
+
+---
+
+## License
+
+本仓库原创的示例代码与文档以 **MIT License** 授权；上述免责声明与合规限制同样适用。第三方商标、页面内容与数据归各自权利人所有，不在授权范围内。
+
+Copyright (c) 2026 Contributors to this repository.
