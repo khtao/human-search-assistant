@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Human Search Assistant",
-  "description": "Human-like Bing search automation with bilingual UI, scored task cards and points parsed from the live Rewards dashboard/earn pages, plus scheduled runs.",
-  "version": "1.7",
+  "description": "Local Microsoft Rewards task status viewer with state-first click assistance, bilingual UI and scheduled runs.",
+  "version": "1.0",
   "minimum_chrome_version": "116",
   "icons": {
     "16": "icons/icon16.png",

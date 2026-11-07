@@ -293,6 +293,14 @@ body {
 .status.completed { color: var(--success); background: var(--success-light); }
 .status.completed .status-dot { background: var(--success); }
 
+/* v2.9：全完成提示 —— 圆圈下方的一行小绿字，不做大写/字距处理，更接近正文提示 */
+.status.completed.all-done {
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 11px;
+  font-weight: 600;
+}
+
 .status.error { color: var(--danger); background: var(--danger-light); }
 
 .status.cooldown { color: var(--warn); background: var(--warn-light); }

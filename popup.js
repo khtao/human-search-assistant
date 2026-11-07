@@ -63,6 +63,7 @@ document.addEventListener('DOMContentLoaded', () => {
       'status.ready': '就绪', 'status.reading': '读取积分', 'status.checking': '检查今日进度',
       'status.searching': '搜索中', 'status.cooldown': 'Bing 冷却', 'status.finalizing': '收尾中',
       'status.completed': '已完成', 'status.limit': '已达上限', 'status.error': '出错',
+      'status.allDone': '任务已完成，无需任何动作',
       'status.completingTasks': '正在完成任务',
       'status.stopping': '正在停止', 'status.of': '第 {a} / {b} 次',
       'status.searchingTitle': '正在搜索：{q}',
@@ -153,6 +154,7 @@ document.addEventListener('DOMContentLoaded', () => {
       'status.ready': 'Ready', 'status.reading': 'Reading points', 'status.checking': 'Checking today',
       'status.searching': 'Searching', 'status.cooldown': 'Bing cooldown', 'status.finalizing': 'Finalizing',
       'status.completed': 'Completed', 'status.limit': 'Limit reached', 'status.error': 'Error',
+      'status.allDone': 'All tasks done — nothing to do',
       'status.completingTasks': 'Completing tasks',
       'status.stopping': 'Stopping', 'status.of': 'Search {a} of {b}',
       'status.searchingTitle': 'Searching: {q}',
@@ -453,6 +455,8 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   let pendingStartUntil = 0;
+  /* v2.9：全完成时在圆圈下方显示绿色小字的时长（毫秒） */
+  let allDoneNoticeUntil = 0;
 
   function setAction(mode, label, disabled) {
     btnAction.classList.toggle('is-stop', mode === 'stop');
@@ -485,8 +489,12 @@ document.addEventListener('DOMContentLoaded', () => {
       pendingStartUntil = Date.now() + 4000;
       setAction('stop', t('controls.starting'), true);
       const res = await send('autoComplete', { level: autoTasks.level });
-      // 今日任务已 100%：后台什么都不做，按钮立即恢复，不显示启动/运行状态
-      if (res && res.skipped) {
+      // v2.9：后台确认全完成 → 零动作，只在圆圈下方显示绿色小字。
+      // 注意：正常流程返回的是 skippedCards（跳过的不给分卡片数），不能当成整轮跳过。
+      if (res && (res.reason === 'allDone' || res.skipped === true)) {
+        showAllDoneNotice();
+      } else if (!res) {
+        // 后台无响应：错误横幅已由 send() 显示，按钮别一直卡在「启动中」
         pendingStartUntil = 0;
         setAction('start', t('controls.start'), false);
       }
@@ -495,6 +503,17 @@ document.addEventListener('DOMContentLoaded', () => {
       send('stop');
     }
   });
+
+  /* v2.9：圆圈下面那行小字用绿色提示「任务已完成，无需任何动作」。
+     不新建元素、不弹窗、不改圆环、不启动任何流程。 */
+  function showAllDoneNotice() {
+    pendingStartUntil = 0;
+    allDoneNoticeUntil = Date.now() + 8000;
+    setStatus(t('status.allDone'), 'completed all-done', false);
+    setAction('start', t('controls.start'), false);
+    // 让读屏软件也读得到
+    statusEl.setAttribute('aria-label', t('status.allDone'));
+  }
 
   let statusTimer = null;
   function setStatus(text, cls, isQuery, title) {
@@ -594,7 +613,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const [label, cls] = statusMap[phase];
     const showQuery = phase === 'searching' && !d.stopRequested && !!d.currentQuery;
-    if (showQuery) {
+    // 全完成提示优先：storage 变化触发的 render 不能把绿色小字冲掉
+    if (running) allDoneNoticeUntil = 0;
+    const noticeActive = !running && Date.now() < allDoneNoticeUntil;
+    if (noticeActive) {
+      setStatus(t('status.allDone'), 'completed all-done', false);
+    } else if (showQuery) {
       setStatus(d.currentQuery, cls, true, t('status.searchingTitle', { q: d.currentQuery }));
     } else if (phase === 'searching') {
       setStatus(d.stopRequested ? t('status.stopping') : t('status.of', { a: current, b: total }), cls, false);

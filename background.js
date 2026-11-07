@@ -1,5 +1,7 @@
-const DASHBOARD_URL = 'https://rewards.bing.com/';
+const DASHBOARD_URL = 'https://rewards.bing.com/dashboard';
 const EARN_URL = 'https://rewards.bing.com/earn';
+/** 两个页面都存在可点击任务，必须逐页独立扫描（不跨页去重）。 */
+const TASK_PAGES = [DASHBOARD_URL, EARN_URL];
 const HOME_URL = 'https://www.bing.com/?mkt=zh-CN';
 const POINTS_PER_SEARCH = 3;
 const RESULT_HOLD_MIN = 16000;   // 拟人轮内时长下限（想加快可自行调小）
@@ -14,6 +16,81 @@ const MAX_FAILURES = 3;
 const ACTIVE_PHASES = ['fetchingStartPoints', 'checkingLimit', 'searching', 'fetchingEndPoints'];
 const COOLDOWN_STALL = 3;
 const MAX_COOLDOWNS = 6;
+
+/* ==========================================================================
+ * v2.0 · 按真实 Rewards DOM 重写任务识别（修「只开页面不点击」）
+ *  · /dashboard 的每日活动卡根本没有 bg-statusSuccessRewardsBg 元素
+ *    （该字符串只出现在 RSC flight payload 的转义文本里），旧版遍历徽章 = 0 张
+ *  · dashboard 用 <a target="_blank"> + 文本 "+10"；earn 用徽章 <p>5</p>
+ *  · 统一改为以 a[href] 为入口，双通道取积分，定位/点击都落在 <a> 本身
+ * ==========================================================================
+ * v1.9 · 双页面独立点击 / 同名卡片可区分 / 页面就绪等待 / 统一 5s 调度
+ *  · dashboard 与 earn 两页都存在可点击任务，逐页独立扫描、各自去重，
+ *    一页点过不会让另一页的同名任务被跳过
+ *  · 同名同分卡片（如「你是否知道答案？」×2）用页面内序号 idx 定位，逐张点击
+ *  · 导航后等页面真正加载完成并识别登录页，避免扫到上一页 / 空 DOM 就提前退出
+ *  · 相邻两次点击统一按「点击时刻 + 5s」调度，跨页、跨轮次都成立
+ *  · 任务卡片：每日活动(每日任务) → 日常任务；点击弹出的任务页保留不关闭
+ *  · 搜索标签页运行期间保持焦点、结束关闭（后台节流会让搜索暂停）
+ * ======================================================================== */
+const TASK_CLICK_INTERVAL_MS = 5000;   // 相邻两次任务点击的间隔
+const KEEP_TASK_TABS = true;            // 任务阶段打开的标签页一律不关闭
+const KEEP_SEARCH_TAB_FOCUSED = true;   // 每轮搜索前把搜索页拉回焦点，防后台节流暂停
+const FOCUS_WINDOW_TOO = true;          // 同时把浏览器窗口置为系统前台
+const RESTORE_FOCUS_ON_FINISH = true;   // 搜索结束后把焦点还给用户原来的标签页
+const TASK_TAB_KEYS = new Set(['rewardsTabId', 'taskClickTabId', 'sidebarTabId', 'taskListTabId', 'humanTabId']);
+let lastTaskClickAt = 0;                // 上一次「点击时刻」，用于统一 5s 间隔调度
+
+/* ==========================================================================
+ * v2.1 · 从 Bing 搜索/首页右侧的 Microsoft Rewards 侧栏点任务卡
+ *  · 之前几版都在 rewards.bing.com/dashboard、/earn 上找卡片，真机始终点不到，
+ *    改为在截图里的 cn.bing.com 侧栏（网页内 flyout）完成点击
+ *  · 面板可能挂在主文档、iframe 或 shadow DOM 里 → allFrames + 递归 shadow
+ *  · 识别靠文本启发式（+10 / +5、每日活动 / 日常任务、已完成），不绑死 class
+ *  · 点击：CDP 真鼠标优先 → 页面内完整指针/鼠标事件序列 + el.click() → 按 href 兜底开页
+ *  · 若面板其实是浏览器内置 UI（非网页 DOM），注入扫不到，日志会明确提示
+ * ======================================================================== */
+const TASK_MODE = 'human';              // 'human' | 'tasklist' | 'sidebar' | 'rewards'
+/** 任务列表驱动的点击：即使页面注入/定位全失败，也按任务列表里的真实 URL 兜底开页 */
+/* v2.4 硬性约束：直接导航任务 URL 不会计入 Rewards 完成（缺卡片点击时的上报上下文）。
+ * 因此本版彻底移除「按 URL 兜底开页」，找不到卡片就明确失败并给诊断。 */
+const TASKLIST_REQUIRE_CARD_CLICK = true;
+/* v2.5：默认走 human —— 不抓 HTML、不用 CDP、不做 URL 指纹、不跨 frame 编排。
+ * 打开页面 → 滚动 → 页面内鼠标点击卡片，仅此三步。 */
+const HUMAN_PAGE_SETTLE_MS = 1500;
+const HUMAN_SCROLL_RESCAN = true;
+/* v2.8：点之前/之后调官方 getuserinfo 核验，只点「未完成且给分」的卡。
+   页面内 fetch 失败/CORS 时静默回退到本地严格白名单，绝不阻塞。 */
+const HUMAN_VERIFY_OFFICIAL = true;
+/* 参考项目 activity_click.py：侧栏 iframe 的直接 URL，顶层打开就不用猜 iframe 结构 */
+/* 截图实测：中文环境实际落在 cn.bing.com/rewards/panelflyout，不是 www */
+const FLYOUT_URLS = [
+  'https://cn.bing.com/rewards/panelflyout?channel=bingflyout&partnerId=BingRewards',
+  'https://www.bing.com/rewards/panelflyout?channel=bingflyout&partnerId=BingRewards'
+];
+const FLYOUT_URL = FLYOUT_URLS[0];
+const TASKLIST_CDP_FIRST = true;        // 先 CDP 真鼠标，没弹出新标签页再补页面内事件序列
+const TASKLIST_CARD_WAIT_ROUNDS = 6;    // 等目标卡片渲染的轮数（跨候选页）
+const TASKLIST_CLICK_RETRIES = 3;       // 点击后没开出任务页时的重试次数
+const TASKLIST_TRY_SIDEBAR = true;      // 来源页找不到时，再去 Bing 侧栏（含 iframe）找同一张卡
+const SIDEBAR_URL = 'https://cn.bing.com/?scope=web&FORM=ANNTH1&pc=CNNDDB';
+const SIDEBAR_FALLBACK_URLS = [
+  'https://www.bing.com/?mkt=zh-CN',
+  'https://cn.bing.com/'
+];
+const SIDEBAR_CLICK_MODE = 'cdp-first'; // 'cdp-first' | 'dom'：有顶层坐标就先真鼠标
+const SIDEBAR_WAIT_ROUNDS = 6;          // 等面板渲染的扫描轮数
+/**
+ * v2.2：侧栏内容在 #rewid-f 的 <iframe> 里（保存页 src = ./…_files/flyout.html）。
+ * 跨域 iframe 的注入 / CDP 坐标换算都不可靠，优先把 iframe 的绝对 URL
+ * 开成独立标签页 —— 任务卡变成顶层 DOM，扫描与点击都不再受 frame 限制。
+ */
+const PROMOTE_SIDEBAR_IFRAME = true;
+const SIDEBAR_IFRAME_HOST = /(?:^|\.)bing\.com$/i;
+/** 点击任务卡时把载体页临时置为 active：后台标签页的 CDP 点击可能不触发 target=_blank */
+const KEEP_TASK_CLICK_ACTIVE = true;
+/** 已标记「已完成 / 已领取」的卡片默认跳过；设为 true 可强制重点 */
+const FORCE_CLICK_COMPLETED = false;
 
 /* 后台错误文案也跟随界面语言（uiLang 由弹窗写入 storage.local） */
 var bgLang = 'zh';
@@ -458,6 +535,11 @@ async function cdpAttach(tabId) {
       return false;
     }
     cdpAttached.add(id);
+    // 让页面始终「自认为」有焦点：不抢可见焦点也能避免后台页自身被挂起
+    try {
+      await chrome.debugger.sendCommand({ tabId: id },
+        'Emulation.setFocusEmulationEnabled', { enabled: true });
+    } catch {}
     return true;
   } catch {
     return false;
@@ -653,19 +735,25 @@ async function searchLoop(token) {
   console.info('[HumanSearch] 拟人强度：' + runLevel);
 
   try {
-    tabId = await openOrNavigate('searchTabId', HOME_URL);
+    tabId = await openOrNavigate('searchTabId', HOME_URL, true);
     bail(token);
+    await keepSearchTabAwake(tabId);          // 前台 + 焦点，避免后台节流把搜索挂起
     await waitForTab(tabId, isBingHome, PAGE_TIMEOUT, true);
     bail(token);
     realInput = await cdpAttach(tabId);
+    await keepSearchTabAwake(tabId);
     console.info('[HumanSearch] 输入方式：' + (realInput ? 'CDP 真实键鼠' : '页面内合成事件'));
   } catch (err) {
     if (err === STOP) throw err;
-    tabId = await openOrNavigate('searchTabId', HOME_URL);
+    tabId = await openOrNavigate('searchTabId', HOME_URL, true);
+    await keepSearchTabAwake(tabId);
     realInput = false;
   }
 
   while (isCurrent(token) && !haltFlag) {
+    // 用户中途切走 → 下一轮拉回焦点；后台标签页被节流是「搜索暂停」的主因
+    await keepSearchTabAwake(tabId);
+    bail(token);
     const st = await load(['currentSearch', 'totalSearch', 'searchQueue', 'stopRequested']);
     const current = st.currentSearch || 0;
     if (st.stopRequested || current >= st.totalSearch) return;
@@ -896,12 +984,72 @@ async function goto(key, url, test) {
   return loaded;
 }
 
-async function closeTab(key) {
+/** 无条件关闭并清空引用（测试清理等场景使用）。 */
+async function forceCloseTab(key) {
   const data = await load([key]);
   if (data[key] != null) {
     try { await chrome.tabs.remove(data[key]); } catch {}
   }
   await store({ [key]: null });
+}
+
+/**
+ * v1.8：任务相关标签页（rewardsTabId / taskClickTabId / 点击弹出的任务页）
+ * 一律保留——不关闭、也不清空 id，让 openOrNavigate 复用同一个标签页，避免越堆越多。
+ * 搜索标签页 searchTabId 仍走原逻辑，结束/停止时关闭。
+ */
+async function closeTab(key) {
+  if (KEEP_TASK_TABS && TASK_TAB_KEYS.has(key)) return;
+  return forceCloseTab(key);
+}
+
+/* -------- 焦点 / 前台保活：解决「搜索页不是焦点时自动搜索可能暂停」 -------- */
+async function ensureTabActive(tabId) {
+  const tab = await chrome.tabs.get(Number(tabId)).catch(() => null);
+  if (!tab) return false;
+  try {
+    if (!tab.active) await chrome.tabs.update(tab.id, { active: true });
+    if (FOCUS_WINDOW_TOO && typeof tab.windowId === 'number') {
+      // 窗口不在系统前台时 Chrome 同样会节流该窗口内的标签页
+      try { await chrome.windows.update(tab.windowId, { focused: true }); } catch {}
+    }
+  } catch {}
+  return true;
+}
+
+/** CDP：把页面「视为」有焦点，避免 document.hasFocus()=false 引发的输入/定时器挂起。 */
+async function cdpEmulateFocus(tabId) {
+  if (!cdpAttached.has(Number(tabId))) return false;
+  try {
+    await chrome.debugger.sendCommand({ tabId: Number(tabId) },
+      'Emulation.setFocusEmulationEnabled', { enabled: true });
+    return true;
+  } catch { return false; }
+}
+
+async function cdpBringToFront(tabId) {
+  if (!cdpAttached.has(Number(tabId))) return false;
+  try {
+    await chrome.debugger.sendCommand({ tabId: Number(tabId) }, 'Page.bringToFront', {});
+    return true;
+  } catch { return false; }
+}
+
+/** 每轮搜索前调用：标签页 active + 窗口 focused + CDP 置前 + 焦点模拟。 */
+async function keepSearchTabAwake(tabId) {
+  if (!KEEP_SEARCH_TAB_FOCUSED) return;
+  await ensureTabActive(tabId);
+  await cdpBringToFront(tabId);
+  await cdpEmulateFocus(tabId);
+}
+
+/** 搜索期间抢占了焦点，结束后把用户原来的标签页还回去。 */
+async function restoreUserFocus() {
+  if (!RESTORE_FOCUS_ON_FINISH) return;
+  const { userActiveTabId } = await load(['userActiveTabId']);
+  if (userActiveTabId == null) return;
+  try { await chrome.tabs.update(Number(userActiveTabId), { active: true }); } catch {}
+  await store({ userActiveTabId: null });
 }
 
 let lastInjectError = null;
@@ -913,6 +1061,38 @@ async function inject(tabId, func, args) {
     return res ? res.result : null;
   } catch (err) {
     lastInjectError = err && err.message ? err.message : String(err);
+    console.warn('[Inject] executeScript 失败：' + lastInjectError);
+    return null;
+  }
+}
+
+/** v2.2：面板可能在 iframe 里 → 注入所有 frame，返回每条结果的 frameId。 */
+async function injectAllFrames(tabId, func, args) {
+  try {
+    const list = await chrome.scripting.executeScript({
+      target: { tabId }, allFrames: true, func, args: args || []
+    });
+    lastInjectError = null;
+    const out = (list || []).map(r => ({ frameId: r.frameId, result: r.result, error: r.error ? String(r.error) : null }));
+    for (const r of out) if (r.error) console.warn('[Inject] frame ' + r.frameId + ' 注入失败：' + r.error);
+    return out;
+  } catch (err) {
+    lastInjectError = err && err.message ? err.message : String(err);
+    console.warn('[Inject] allFrames 注入失败：' + lastInjectError);
+    return [];
+  }
+}
+
+/** 在指定 frame 里点击（iframe / shadow DOM 内的卡片必须回到原 frame）。 */
+async function injectFrame(tabId, frameId, func, args) {
+  try {
+    const [res] = await chrome.scripting.executeScript({
+      target: { tabId, frameIds: [Number(frameId)] }, func, args: args || []
+    });
+    return res ? res.result : null;
+  } catch (err) {
+    lastInjectError = err && err.message ? err.message : String(err);
+    console.warn('[Inject] frame ' + frameId + ' 注入失败：' + lastInjectError);
     return null;
   }
 }
@@ -1169,13 +1349,13 @@ const pathStarts = (url, prefix) => {
   return !!u && u.pathname.toLowerCase().startsWith(prefix);
 };
 
-async function openOrNavigate(key, url) {
+async function openOrNavigate(key, url, active = false) {
   const existing = await getTab(key);
   if (existing) {
-    await chrome.tabs.update(existing.id, { url });
+    await chrome.tabs.update(existing.id, active ? { url, active: true } : { url });
     return existing.id;
   }
-  const tab = await chrome.tabs.create({ url, active: false });
+  const tab = await chrome.tabs.create({ url, active });
   await store({ [key]: tab.id });
   try { await chrome.tabs.update(tab.id, { autoDiscardable: false }); } catch {}
   return tab.id;
@@ -1513,6 +1693,7 @@ async function finishLimitReached() {
     running: false
   });
   chrome.alarms.clear('watchdog');
+  await restoreUserFocus();
 }
 
 async function enterCooldown(settings) {
@@ -1593,12 +1774,14 @@ async function finishRun(token) {
   });
   chrome.alarms.clear('watchdog');
   chrome.alarms.clear('cooldownEnd');
+  await restoreUserFocus();
 }
 
 async function finishWithError(message) {
   await cdpDetachAll();
   await store({ phase: 'error', running: false, stopRequested: false, error: message });
   chrome.alarms.clear('watchdog');
+  await restoreUserFocus();
 }
 
 let queuePromise = null;
@@ -1641,6 +1824,15 @@ async function handleStart(count, params) {
   try {
     await closeTab('searchTabId');
     await closeTab('rewardsTabId');
+    if (RESTORE_FOCUS_ON_FINISH) {
+      const cur = await load(['userActiveTabId']);
+      if (cur.userActiveTabId == null) {
+        const active = await chrome.tabs.query({ active: true, lastFocusedWindow: true }).catch(() => []);
+        const keep = Array.isArray(active) && active[0] && typeof active[0].id === 'number'
+          ? active[0].id : null;
+        await store({ userActiveTabId: keep });
+      }
+    }
     await store({
       running: true,
       phase: 'fetchingStartPoints',
@@ -1707,6 +1899,7 @@ async function handleStop() {
   await closeTab('searchTabId');
   await closeTab('rewardsTabId');
   await store({ running: false, phase: 'idle', stopRequested: false, searchQueue: [], currentQuery: null });
+  await restoreUserFocus();
 }
 
 // A run whose last sign of life is this old was cut off by the browser closing.
@@ -2117,6 +2310,21 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     refreshPointsOnly().catch(() => {});
   } else if (msg.type === 'refreshToday') {
     refreshToday();
+  } else if (msg.type === 'dumpSidebar') {
+    dumpSidebarDom(msg.limit)
+      .then(sendResponse)
+      .catch(err => sendResponse({ ok: false, message: err && err.message || String(err) }));
+    return true;
+  } else if (msg.type === 'dumpTaskList') {
+    dumpTaskList()
+      .then(sendResponse)
+      .catch(err => sendResponse({ ok: false, message: err && err.message || String(err) }));
+    return true;
+  } else if (msg.type === 'dumpClickProbe') {
+    dumpClickProbe()
+      .then(sendResponse)
+      .catch(err => sendResponse({ ok: false, message: err && err.message || String(err) }));
+    return true;
   }
   sendResponse({ ok: true });
 });
@@ -2536,41 +2744,66 @@ function cardsFromRewardsHtml(html) {
   return out.filter(r => r.points > 0 && r.name);
 }
 
-/** 注入到 Rewards 页面执行的兜底读取器（按真实 class 读带积分徽章的卡片）。 */
+/**
+ * v2.0：注入到 Rewards 页面读取「今日任务」展示数据。
+ * 与点击逻辑保持同一套识别规则：以 a[href] 为入口，积分走 +N / 徽章 <p> 双通道。
+ * 旧版只遍历 bg-statusSuccessRewardsBg，在 /dashboard 上读到 0 张，
+ * 会让今日任务列表失真，进而可能把「100% 已完成」误判成真而跳过整轮点击。
+ */
 function readTaskCardsFromDom() {
   const clean = el => (el && (el.innerText || el.textContent) || '').replace(/\s+/g, ' ').trim();
+  const hostOf = href => {
+    const m = /^(?:https?:)?\/\/([^\/:?#]+)/i.exec(String(href || ''));
+    return m ? m[1].toLowerCase() : '';
+  };
+  const NON_TASK = /\/redeem|\/referandearn|\/apps\/wallpaper|\/earn\/quest\/|\/rewardscdn\/|\/manifest\.webmanifest/i;
+  const NAV_ONLY = /^https?:\/\/rewards\.bing\.com\/(?:dashboard|earn)?(?:[?#]|$)/i;
   const out = [];
   const seen = new Set();
-  for (const badge of document.querySelectorAll('[class*="bg-statusSuccessRewardsBg"]')) {
-    const p = badge.querySelector('p');
-    const m = /^\s*(\d{1,4})\s*$/.exec(p ? clean(p) : clean(badge));
-    if (!m) continue;
-    const points = parseInt(m[1], 10);
-    if (!(points > 0)) continue;
-    const card = badge.closest('a[href], [class*="rounded-cornerCardDefault"], [role="listitem"]');
-    if (!card || seen.has(card)) continue;
-    seen.add(card);
+
+  for (const card of document.querySelectorAll('a[href]')) {
+    const href = card.getAttribute('href') || '';
+    const host = hostOf(href);
+    if (host && !/(^|\.)bing\.com$/i.test(host)) continue;
+    if (NON_TASK.test(href) || NAV_ONLY.test(href)) continue;
+    if (seen.has(card)) continue;
     const text = clean(card);
-    if (/已完成|已领取|Completed|Claimed/i.test(text)) { /* 仍收，状态由字段表达 */ }
+    if (!text || text.length > 400) continue;
+    if (/可用积分|今日积分|可领取|还差|管理奖励|兑换/i.test(text)) continue;
+
+    let points = 0;
+    const badge = card.querySelector('[class*="bg-statusSuccessRewardsBg"]');
+    if (badge) {
+      const p = badge.querySelector('p');
+      const m = /^\s*(\d{1,4})\s*$/.exec(p ? clean(p) : clean(badge));
+      if (m) points = parseInt(m[1], 10);
+    }
+    if (!points) {
+      const m = /\+\s*(\d{1,4})(?!\d)/.exec(text);
+      if (m) points = parseInt(m[1], 10);
+    }
+    if (!(points > 0)) continue;
+    seen.add(card);
+
     const titleEl = card.querySelector('[class*="text-globalBody2Strong"], h3, h4');
     const descEl = card.querySelector('[class*="text-fgCtrlNeutralSecondaryRest"]');
     const name = clean(titleEl) || clean(card.querySelector('img') && card.querySelector('img').alt);
     if (!name) continue;
-    let section = 'promo';
+
     let near = '';
     for (const h of document.querySelectorAll('h2')) {
       if (h.compareDocumentPosition(card) & Node.DOCUMENT_POSITION_FOLLOWING) near = clean(h);
       else break;
     }
-    if (/每日活动|Daily activities|Daily set/i.test(near)) section = 'daily';
-    else if (/日常任务|每日任务|Daily tasks|More activities/i.test(near)) section = 'promo';
-    else continue;                          // 其它版块一律不收
-    const link = card.matches('a[href]') ? card : card.querySelector('a[href]');
+    let section = 'promo';
+    if (/每日活动|每日任务|每日福利|Daily activities|Daily set/i.test(near)) section = 'daily';
+    else if (/日常任务|Daily tasks|More activities/i.test(near)) section = 'promo';
+
+    const done = /已完成|已领取|Completed|Claimed/i.test(text);
     out.push({
-      name, description: clean(descEl), section, points,
-      earned: /已完成|已领取|Completed|Claimed/i.test(text) ? points : 0,
-      completed: /已完成|已领取|Completed|Claimed/i.test(text),
-      url: link && /^https?:\/\//i.test(link.href) ? link.href : '',
+      name, description: clean(descEl), section,
+      points, earned: done ? points : 0, completed: done,
+      url: /^https?:\/\//i.test(href) ? href : '',
       source: 'dom-inject'
     });
   }
@@ -2738,49 +2971,1201 @@ async function autoSearchCount(cap) {
 }
 
 /**
- * 注入执行：找出第一张「未完成且有积分」的任务卡片，滚动到视口中央并返回坐标。
- * 已完成（已完成 / 已领取）的卡片直接跳过；exclude 用来避免重复点击同一张。
+ * v2.0 注入区（在页面 DOM 上下文执行）。
+ * 真实结构（2026-11 保存页）实测：
+ *   /dashboard 每日活动卡：<a target="_blank" href="https://www.bing.com/search?q=…">
+ *     内含 <p class="text-globalBody2Strong">标题</p> 与 <p>+10</p>，
+ *     **没有** bg-statusSuccessRewardsBg 元素（那串字符只在 RSC payload 文本里）。
+ *   /earn 日常任务卡：<a target="_blank" href="…/search?q=Bing Homepage quiz 或 /spotlight/imagepuzzle">
+ *     内含 <div class="… bg-statusSuccessRewardsBg …"><svg/><p>5</p></div>，
+ *     以及右下角「已完成」；punchcard 在 h2=「任务」下、href 含 /earn/quest/。
+ * 因此统一以 a[href] 为入口，积分双通道（徽章 <p>纯数字 / 文本 +N）。
  */
-function focusPendingCard(exclude) {
-  const skip = new Set(Array.isArray(exclude) ? exclude : []);
-  const clean = el => (el && (el.innerText || el.textContent) || '').replace(/\s+/g, ' ').trim();
-  // 只点「每日活动 / 日常任务」版块的卡片，不碰升级活动、月度 punchcard、连续打卡等
-  const sectionOf = card => {
-    let near = '';
-    for (const h of document.querySelectorAll('h2')) {
-      if (h.compareDocumentPosition(card) & Node.DOCUMENT_POSITION_FOLLOWING) near = clean(h);
-      else break;
-    }
-    if (/每日活动|Daily activities|Daily set/i.test(near)) return 'daily';
-    if (/日常任务|每日任务|Daily tasks|More activities/i.test(near)) return 'promo';
-    return 'other';
+/**
+ * v2.2 统一注入入口 —— 必须是「单一自包含函数」。
+ *
+ * 为什么：chrome.scripting.executeScript 只把 func.toString() 注入页面，
+ * 它引用的其它顶层函数（deepAll / sidebarClean / scanTaskAnchors …）在页面
+ * 上下文里根本不存在 → ReferenceError → 结果被 catch 吞成空数组。
+ * 这是 v2.0 / v2.1「只开页面、0 张卡片、不点击」的真正根因。
+ *
+ * 所有辅助逻辑内联在本函数体内，通过 action 分派：
+ *   rewards.list / rewards.focus / rewards.activate
+ *   sidebar.diagnose / sidebar.open / sidebar.frameInfo / sidebar.dump
+ *   sidebar.scan / sidebar.scroll / sidebar.click
+ */
+/**
+ * v2.2 统一注入入口 —— 必须是「单一自包含函数」。
+ *
+ * 为什么：chrome.scripting.executeScript 只把 func.toString() 注入页面，
+ * 它引用的其它顶层函数（deepAll / sidebarClean / scanTaskAnchors …）在页面
+ * 上下文里根本不存在 → ReferenceError → 结果被 catch 吞成空数组。
+ * 这是 v2.0 / v2.1「只开页面、0 张卡片、不点击」的真正根因。
+ *
+ * 所有辅助逻辑内联在本函数体内，通过 action 分派：
+ *   rewards.list / rewards.focus / rewards.activate
+ *   sidebar.diagnose / sidebar.open / sidebar.frameInfo / sidebar.dump
+ *   sidebar.scan / sidebar.scroll / sidebar.click
+ */
+/**
+ * v2.2 统一注入入口 —— 必须是「单一自包含函数」。
+ *
+ * 为什么：chrome.scripting.executeScript 只把 func.toString() 注入页面，
+ * 它引用的其它顶层函数（deepAll / sidebarClean / scanTaskAnchors …）在页面
+ * 上下文里根本不存在 → ReferenceError → 结果被 catch 吞成空数组。
+ * 这是 v2.0 / v2.1「只开页面、0 张卡片、不点击」的真正根因。
+ *
+ * 所有辅助逻辑内联在本函数体内，通过 action 分派：
+ *   rewards.list / rewards.focus / rewards.activate
+ *   sidebar.diagnose / sidebar.open / sidebar.frameInfo / sidebar.dump
+ *   sidebar.scan / sidebar.scroll / sidebar.click
+ */
+/**
+ * v2.2 统一注入入口 —— 必须是「单一自包含函数」。
+ *
+ * 为什么：chrome.scripting.executeScript 只把 func.toString() 注入页面，
+ * 它引用的其它顶层函数（deepAll / sidebarClean / scanTaskAnchors …）在页面
+ * 上下文里根本不存在 → ReferenceError → 结果被 catch 吞成空数组。
+ * 这是 v2.0 / v2.1「只开页面、0 张卡片、不点击」的真正根因。
+ *
+ * 所有辅助逻辑内联在本函数体内，通过 action 分派：
+ *   rewards.list / rewards.focus / rewards.activate
+ *   sidebar.diagnose / sidebar.open / sidebar.frameInfo / sidebar.dump
+ *   sidebar.scan / sidebar.scroll / sidebar.click
+ */
+/**
+ * v2.2 统一注入入口 —— 必须是「单一自包含函数」。
+ *
+ * 为什么：chrome.scripting.executeScript 只把 func.toString() 注入页面，
+ * 它引用的其它顶层函数（deepAll / sidebarClean / scanTaskAnchors …）在页面
+ * 上下文里根本不存在 → ReferenceError → 结果被 catch 吞成空数组。
+ * 这是 v2.0 / v2.1「只开页面、0 张卡片、不点击」的真正根因。
+ *
+ * 所有辅助逻辑内联在本函数体内，通过 action 分派：
+ *   rewards.list / rewards.focus / rewards.activate
+ *   sidebar.diagnose / sidebar.open / sidebar.frameInfo / sidebar.dump
+ *   sidebar.scan / sidebar.scroll / sidebar.click
+ */
+/**
+ * v2.2 统一注入入口 —— 必须是「单一自包含函数」。
+ *
+ * 为什么：chrome.scripting.executeScript 只把 func.toString() 注入页面，
+ * 它引用的其它顶层函数（deepAll / sidebarClean / scanTaskAnchors …）在页面
+ * 上下文里根本不存在 → ReferenceError → 结果被 catch 吞成空数组。
+ * 这是 v2.0 / v2.1「只开页面、0 张卡片、不点击」的真正根因。
+ *
+ * 所有辅助逻辑内联在本函数体内，通过 action 分派：
+ *   rewards.list / rewards.focus / rewards.activate
+ *   sidebar.diagnose / sidebar.open / sidebar.frameInfo / sidebar.dump
+ *   sidebar.scan / sidebar.scroll / sidebar.click
+ */
+/**
+ * v2.2 统一注入入口 —— 必须是「单一自包含函数」。
+ *
+ * 为什么：chrome.scripting.executeScript 只把 func.toString() 注入页面，
+ * 它引用的其它顶层函数（deepAll / sidebarClean / scanTaskAnchors …）在页面
+ * 上下文里根本不存在 → ReferenceError → 结果被 catch 吞成空数组。
+ * 这是 v2.0 / v2.1「只开页面、0 张卡片、不点击」的真正根因。
+ *
+ * 所有辅助逻辑内联在本函数体内，通过 action 分派：
+ *   rewards.list / rewards.focus / rewards.activate
+ *   sidebar.diagnose / sidebar.open / sidebar.frameInfo / sidebar.dump
+ *   sidebar.scan / sidebar.scroll / sidebar.click
+ */
+/**
+ * v2.2 统一注入入口 —— 必须是「单一自包含函数」。
+ *
+ * 为什么：chrome.scripting.executeScript 只把 func.toString() 注入页面，
+ * 它引用的其它顶层函数（deepAll / sidebarClean / scanTaskAnchors …）在页面
+ * 上下文里根本不存在 → ReferenceError → 结果被 catch 吞成空数组。
+ * 这是 v2.0 / v2.1「只开页面、0 张卡片、不点击」的真正根因。
+ *
+ * 所有辅助逻辑内联在本函数体内，通过 action 分派：
+ *   rewards.list / rewards.focus / rewards.activate
+ *   sidebar.diagnose / sidebar.open / sidebar.frameInfo / sidebar.dump
+ *   sidebar.scan / sidebar.scroll / sidebar.click
+ */
+/**
+ * v2.2 统一注入入口 —— 必须是「单一自包含函数」。
+ *
+ * 为什么：chrome.scripting.executeScript 只把 func.toString() 注入页面，
+ * 它引用的其它顶层函数（deepAll / sidebarClean / scanTaskAnchors …）在页面
+ * 上下文里根本不存在 → ReferenceError → 结果被 catch 吞成空数组。
+ * 这是 v2.0 / v2.1「只开页面、0 张卡片、不点击」的真正根因。
+ *
+ * 所有辅助逻辑内联在本函数体内，通过 action 分派：
+ *   rewards.list / rewards.focus / rewards.activate
+ *   sidebar.diagnose / sidebar.open / sidebar.frameInfo / sidebar.dump
+ *   sidebar.scan / sidebar.scroll / sidebar.click
+ */
+/**
+ * v2.2 统一注入入口 —— 必须是「单一自包含函数」。
+ *
+ * 为什么：chrome.scripting.executeScript 只把 func.toString() 注入页面，
+ * 它引用的其它顶层函数（deepAll / sidebarClean / scanTaskAnchors …）在页面
+ * 上下文里根本不存在 → ReferenceError → 结果被 catch 吞成空数组。
+ * 这是 v2.0 / v2.1「只开页面、0 张卡片、不点击」的真正根因。
+ *
+ * 所有辅助逻辑内联在本函数体内，通过 action 分派：
+ *   rewards.list / rewards.focus / rewards.activate
+ *   sidebar.diagnose / sidebar.open / sidebar.frameInfo / sidebar.dump
+ *   sidebar.scan / sidebar.scroll / sidebar.click
+ */
+/**
+ * v2.2 统一注入入口 —— 必须是「单一自包含函数」。
+ *
+ * 为什么：chrome.scripting.executeScript 只把 func.toString() 注入页面，
+ * 它引用的其它顶层函数（deepAll / sidebarClean / scanTaskAnchors …）在页面
+ * 上下文里根本不存在 → ReferenceError → 结果被 catch 吞成空数组。
+ * 这是 v2.0 / v2.1「只开页面、0 张卡片、不点击」的真正根因。
+ *
+ * 所有辅助逻辑内联在本函数体内，通过 action 分派：
+ *   rewards.list / rewards.focus / rewards.activate
+ *   sidebar.diagnose / sidebar.open / sidebar.frameInfo / sidebar.dump
+ *   sidebar.scan / sidebar.scroll / sidebar.click
+ */
+function ybInject(action, payload) {
+  var p = payload || {};
+  var clean = function (el) {
+    return String((el && (el.innerText || el.textContent)) || '').replace(/\s+/g, ' ').trim();
   };
-  let scanned = 0;
-  for (const badge of document.querySelectorAll('[class*="bg-statusSuccessRewardsBg"]')) {
-    const p = badge.querySelector('p');
-    const m = /^\s*(\d{1,4})\s*$/.exec(p ? clean(p) : clean(badge));
-    if (!m) continue;
-    const points = parseInt(m[1], 10);
-    if (!(points > 0)) continue;
-    const card = badge.closest('a[href], [class*="rounded-cornerCardDefault"], [role="listitem"]');
-    if (!card) continue;
-    scanned++;
-    const text = clean(card);
-    if (/可用积分|今日积分|可领取/.test(text)) continue;
-    if (/已完成|已领取|Completed|Claimed/i.test(text)) continue;   // 已完成 → 跳过
-    if (sectionOf(card) === 'other') continue;                      // 非今日任务版块 → 跳过
-    const titleEl = card.querySelector('[class*="text-globalBody2Strong"], h3, h4');
-    const name = clean(titleEl) || clean(card.querySelector('img') && card.querySelector('img').alt);
-    if (!name || skip.has(name + '|' + points)) continue;
-    try { card.scrollIntoView({ block: 'center', behavior: 'instant' }); } catch {}
-    const r = card.getBoundingClientRect();
-    return {
-      ok: true, name, points,
-      x: r.left + r.width / 2, y: r.top + r.height / 2,
-      w: r.width, h: r.height, scanned
+  var deepAll = function (root, selector) {
+    var out = [];
+    var walk = function (node) {
+      if (!node) return;
+      try { out.push.apply(out, node.querySelectorAll(selector)); } catch (e) {}
+      try {
+        var all = node.querySelectorAll('*');
+        for (var i = 0; i < all.length; i++) if (all[i].shadowRoot) walk(all[i].shadowRoot);
+      } catch (e) {}
     };
+    walk(root);
+    return out;
+  };
+  var absUrl = function (h) {
+    if (!h) return '';
+    try { return new URL(h, location.href).href; } catch (e) { return h; }
+  };
+  var doneWords = /已完成|已领取|Completed|Claimed/i;
+  var bannedText = /可用积分|今日积分|可领取|兑换|还差|管理奖励|连续打卡|显示更多|重置|积分商城徽标/i;
+  /* 任务链接指纹：取自用户提供的 dashboard / earn 两份真实保存页，不猜 class */
+  var TASK_HREF = /(?:PUBL=RewardsDO|PROGRAMNAME=BingDailyOfferIN|OCID=ML2|form=ML2[A-Z0-9]*|CREA=ML2|rnoreward=1|BTEPOKey|REWARDSQUIZ_DailySet|\/spotlight\/imagepuzzle|rewards\.bing\.com\/earn)/i;
+  var BAD_HREF = /(?:\/redeem|\/referandearn|\/apps\/wallpaper|\/earn\/quest\/|^javascript:|form=hpcapt|\/images\/|\/videos\/|\/maps|\/news\/)/i;
+  var NAV_ONLY = /^https?:\/\/rewards\.bing\.com\/(?:dashboard|earn)?(?:[?#]|$)/i;
+
+  var headersOf = function () {
+    var words = /每日活动|每日任务|每日福利|日常任务|每日一题|Daily activities|Daily set|Daily tasks|More activities/i;
+    var out = [];
+    var els = deepAll(document, 'h1,h2,h3,h4,h5,div,span,p,button');
+    for (var i = 0; i < els.length; i++) {
+      var el = els[i], t = clean(el);
+      if (!t || t.length > 18 || !words.test(t)) continue;
+      if (el.children && el.children.length) {
+        var inner = el.querySelector('span,div');
+        if (inner && words.test(clean(inner))) continue;
+      }
+      out.push({ el: el, text: t, top: el.getBoundingClientRect().top });
+    }
+    var seen = {}, res = [];
+    for (var j = 0; j < out.length; j++) {
+      var k = out[j].text + '|' + Math.round(out[j].top);
+      if (seen[k]) continue;
+      seen[k] = 1; res.push(out[j]);
+    }
+    return res;
+  };
+  var sectionOf = function (el, headers) {
+    var top = el.getBoundingClientRect().top, best = null;
+    for (var i = 0; i < headers.length; i++) {
+      var h = headers[i], ht = -1e9;
+      try { ht = h.el.getBoundingClientRect().top; } catch (e) { continue; }
+      if (ht <= top + 40 && (!best || ht > best.top)) best = { text: h.text, top: ht };
+    }
+    var t = best ? best.text : '';
+    if (/每日活动|每日任务|每日福利|每日一题|Daily activities|Daily set/i.test(t)) return 'daily';
+    if (/日常任务|Daily tasks|More activities/i.test(t)) return 'promo';
+    return 'unknown';
+  };
+  var hrefOf = function (el) {
+    var a = null;
+    if (el.closest) a = el.closest('a[href]');
+    if (!a && el.tagName === 'A') a = el;
+    if (!a && el.querySelector) a = el.querySelector('a[href]');
+    if (!a) return '';
+    var h = a.getAttribute('href') || '';
+    if (!h || /^javascript:/i.test(h)) return '';
+    return absUrl(h);
+  };
+  var targetOf = function (el) {
+    var a = el.closest ? el.closest('a[target]') : null;
+    return a ? (a.getAttribute('target') || '') : '';
+  };
+  /* iframe 内元素要换算成顶层视口坐标，CDP 真鼠标才点得中 */
+  var topRect = function (el) {
+    var r = el.getBoundingClientRect(), ox = 0, oy = 0;
+    try {
+      if (window.top !== window && window.frameElement) {
+        var fr = window.frameElement.getBoundingClientRect();
+        ox = fr.left; oy = fr.top;
+      }
+    } catch (e) {}
+    return {
+      x: r.left + r.width / 2 + ox, y: r.top + r.height / 2 + oy,
+      w: r.width, h: r.height, hasOffset: ox !== 0 || oy !== 0
+    };
+  };
+  var fireMouse = function (el) {
+    var r = el.getBoundingClientRect();
+    var cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+    try { el.scrollIntoView({ block: 'center', behavior: 'instant' }); } catch (e) {}
+    var n = 0;
+    var types = ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'];
+    for (var i = 0; i < types.length; i++) {
+      try {
+        var type = types[i];
+        var ev = type.indexOf('pointer') === 0
+          ? new PointerEvent(type, { bubbles: true, cancelable: true, composed: true, view: window,
+              clientX: cx, clientY: cy, button: 0, buttons: type.slice(-4) === 'down' ? 1 : 0, isPrimary: true })
+          : new MouseEvent(type, { bubbles: true, cancelable: true, composed: true, view: window,
+              clientX: cx, clientY: cy, button: 0, buttons: type === 'mousedown' ? 1 : 0, detail: 1 });
+        el.dispatchEvent(ev); n++;
+      } catch (e) {}
+    }
+    var native = false;
+    try {
+      var t = (el.closest && el.closest('a[href],button,[role="button"]')) || el;
+      if (typeof t.click === 'function') { t.click(); native = true; }
+    } catch (e) {}
+    return { dispatched: n, native: native };
+  };
+
+  /* ---------------- Rewards 页面（dashboard / earn）---------------- */
+  var scanRewardsAnchors = function () {
+    var out = [], idx = 0;
+    var anchors = deepAll(document, 'a[href]');
+    for (var i = 0; i < anchors.length; i++) {
+      var a = anchors[i], href = a.getAttribute('href') || '';
+      if (!href || /^javascript:/i.test(href)) continue;
+      if (BAD_HREF.test(href) || NAV_ONLY.test(absUrl(href))) continue;
+      var text = clean(a);
+      if (!text || text.length > 400 || bannedText.test(text)) continue;
+      var points = 0;
+      var badge = a.querySelector('[class*="bg-statusSuccessRewardsBg"]');
+      if (badge) {
+        var bp = badge.querySelector('p');
+        var m = /^\s*(\d{1,4})\s*$/.exec(bp ? clean(bp) : clean(badge));
+        if (m) points = parseInt(m[1], 10);
+      }
+      if (!points) {
+        var pm = /\+\s*(\d{1,4})(?!\d)/.exec(text);
+        if (pm) points = parseInt(pm[1], 10);
+      }
+      if (!points) {
+        var dm = /(?:^|\s)(\d{1,4})\s*(?:已完成|已领取|Completed|Claimed)/i.exec(text);
+        if (dm) points = parseInt(dm[1], 10);
+      }
+      if (!(points > 0)) continue;
+      var titleEl = a.querySelector('[class*="text-globalBody2Strong"], h3, h4, strong');
+      var img = a.querySelector('img[alt]');
+      var name = clean(titleEl) || (img ? (img.getAttribute('alt') || '') : '') || text.split(/\s{2,}/)[0];
+      if (!name) name = '任务' + idx;
+      out.push({
+        idx: idx++, anchor: a, key: name + '|' + points, name: name, points: points,
+        done: doneWords.test(text), href: absUrl(href), target: targetOf(a),
+        section: sectionOf(a, headersOf())
+      });
+    }
+    return out;
+  };
+  var listRewards = function (exclude, forceCompleted) {
+    var skip = {}, i;
+    if (Object.prototype.toString.call(exclude) === '[object Array]') {
+      for (i = 0; i < exclude.length; i++) skip[String(exclude[i])] = 1;
+    }
+    var bodyText = clean(document.body);
+    var signedOut = /登录到 Microsoft 帐户|使用你的 Microsoft 帐户|需要启用 JavaScript|Sign in to your Microsoft account/i.test(bodyText)
+      || !!document.querySelector('input[name="loginfmt"], input[type="email"], #i0116');
+    if (signedOut) {
+      return { items: [], anchorCount: 0, doneSkipped: 0, scanned: 0, signedOut: true,
+        path: location.pathname, url: location.href, title: document.title || '' };
+    }
+    var anchors = scanRewardsAnchors(), items = [], doneSkipped = 0;
+    for (i = 0; i < anchors.length; i++) {
+      var x = anchors[i], k = x.idx + ':' + x.key;
+      if (x.done && !forceCompleted) { doneSkipped++; continue; }
+      if (skip[k]) continue;
+      try { x.anchor.setAttribute('data-yb-task-idx', String(x.idx)); } catch (e) {}
+      var tr = topRect(x.anchor);
+      items.push({
+        idx: x.idx, key: x.key, name: x.name, points: x.points, section: x.section,
+        href: x.href, target: x.target, done: x.done,
+        x: tr.x, y: tr.y, w: tr.w, h: tr.h
+      });
+    }
+    var rank = function (s) { return s === 'daily' ? 0 : s === 'promo' ? 1 : 2; };
+    items.sort(function (a, b) { return rank(a.section) - rank(b.section) || a.idx - b.idx; });
+    return {
+      items: items, anchorCount: anchors.length, doneSkipped: doneSkipped,
+      scanned: anchors.length, signedOut: false,
+      path: location.pathname, url: location.href, title: document.title || ''
+    };
+  };
+  var findRewardsAnchor = function (idx, key) {
+    var list = scanRewardsAnchors(), i, hit = null;
+    for (i = 0; i < list.length; i++) if (list[i].idx === idx) { hit = list[i]; break; }
+    if (!hit && key) for (i = 0; i < list.length; i++) if (list[i].key === key) { hit = list[i]; break; }
+    return hit;
+  };
+
+  /* ---------------- Bing 侧栏（#rewid-f / iframe / shadow）---------------- */
+  var sidebarPanel = function () {
+    return document.querySelector('#rewid-f, [data-tag="RewardsHeader.Flyout"], [aria-label="Microsoft Rewards"][role="dialog"]');
+  };
+  var sidebarTrigger = function () {
+    var sels = ['#id_rh_w', '[aria-controls="rewid-f"]', '#id_rh', '#id_rfob',
+      '[aria-label*="Microsoft Rewards" i][role="button"]', '[aria-label*="Rewards" i][role="button"]',
+      '[data-tag="RewardsHeader.RewardsLink"]'];
+    for (var i = 0; i < sels.length; i++) {
+      var el = document.querySelector(sels[i]);
+      if (!el) continue;
+      var r = el.getBoundingClientRect();
+      if (r.width >= 1 && r.height >= 1) return { el: el, sel: sels[i] };
+    }
+    return null;
+  };
+  var frameInfo = function () {
+    var panel = sidebarPanel();
+    var display = panel ? (window.getComputedStyle ? getComputedStyle(panel).display : (panel.style.display || '')) : '(no panel)';
+    var iframes = [];
+    var all = document.querySelectorAll('iframe');
+    for (var i = 0; i < all.length; i++) {
+      var f = all[i], r = f.getBoundingClientRect();
+      iframes.push({
+        src: absUrl(f.getAttribute('src') || f.src || ''),
+        title: f.getAttribute('title') || '', id: f.id || '',
+        w: r.width, h: r.height
+      });
+    }
+    var t = sidebarTrigger();
+    return {
+      url: location.href, isTop: window.top === window,
+      hasTrigger: !!t, triggerSelector: t ? t.sel : '',
+      expanded: t && t.el.getAttribute ? t.el.getAttribute('aria-expanded') : '',
+      panelDisplay: display, panelVisible: display !== 'none' && display !== '(no panel)',
+      iframes: iframes,
+      bodyHasDaily: /每日活动|每日任务|Daily activities|Daily set/i.test(clean(document.body)),
+      bodyHasPromo: /日常任务|Daily tasks|More activities/i.test(clean(document.body))
+    };
+  };
+  var openSidebar = function () {
+    var info0 = frameInfo();
+    if (info0.panelVisible && !/none/i.test(info0.panelDisplay)) {
+      return { ok: true, alreadyOpen: true, info: frameInfo() };
+    }
+    var t = sidebarTrigger();
+    if (!t) return { ok: false, reason: 'no-trigger', info: info0 };
+    var r0 = fireMouse(t.el);
+    var info = frameInfo();
+    return {
+      ok: !!(info.panelVisible || String(info.expanded) === 'true'),
+      alreadyOpen: false, selector: t.sel, dispatched: r0.dispatched, native: r0.native,
+      info: info
+    };
+  };
+  var scanSidebar = function (exclude, forceCompleted) {
+    var skip = {}, i;
+    if (Object.prototype.toString.call(exclude) === '[object Array]') {
+      for (i = 0; i < exclude.length; i++) skip[String(exclude[i])] = 1;
+    }
+    var headers = headersOf();
+    var clickable = deepAll(document,
+      'a[href],button,[role="button"],[role="link"],[tabindex],[data-react-aria-pressable]');
+    var raw = [];
+    for (i = 0; i < clickable.length; i++) {
+      var el = clickable[i], text = clean(el);
+      if (!text || text.length > 260 || bannedText.test(text)) continue;
+      var href = hrefOf(el);
+      var byHref = !!href && !BAD_HREF.test(href) && !NAV_ONLY.test(href) && TASK_HREF.test(href);
+      var plusAll = text.match(/\+\s*\d{1,4}(?!\d)/g) || [];
+      var pm = /\+\s*(\d{1,4})(?!\d)/.exec(text)
+        || /(?:^|\s)(\d{1,4})\s*(?:分|积分|pts|points)/i.exec(text)
+        || /(?:^|\s)(\d{1,4})\s*(?:已完成|已领取|Completed|Claimed)/i.exec(text);
+      var byText = !!pm && plusAll.length <= 1 && !!href && !BAD_HREF.test(href);
+      if (!byHref && !byText) continue;
+      var rect = el.getBoundingClientRect();
+      if (rect.width < 24 || rect.height < 16) continue;
+      raw.push({
+        el: el, text: text, href: href,
+        points: pm ? parseInt(pm[1], 10) : 0,
+        done: doneWords.test(text), section: sectionOf(el, headers)
+      });
+    }
+    /* 保留最内层（链接本身），避免整块面板容器被当成一张卡 */
+    var cards = raw.filter(function (x) {
+      return !raw.some(function (o) { return o !== x && x.el.contains && x.el.contains(o.el); });
+    });
+    var items = [], candidates = 0;
+    for (i = 0; i < cards.length; i++) {
+      var c = cards[i], idx = candidates++;
+      var k = idx + ':' + (c.text.slice(0, 30) + '|' + c.points);
+      if (c.done && !forceCompleted) continue;
+      if (skip[k]) continue;
+      var titleEl = c.el.querySelector && c.el.querySelector('[class*="title" i],[class*="Strong" i],h3,h4,strong,p');
+      var name = clean(titleEl) || c.text.split(/\s{2,}/)[0] || ('任务' + idx);
+      name = name.replace(/\+\s*\d{1,4}(?!\d)/g, '').replace(doneWords, '').trim().slice(0, 60);
+      if (!name) name = '任务' + idx;
+      var tr = topRect(c.el);
+      try { c.el.setAttribute('data-yb-side-idx', String(idx)); } catch (e) {}
+      items.push({
+        idx: idx, key: k, name: name, points: c.points, section: c.section, done: c.done,
+        href: c.href, target: targetOf(c.el), tag: c.el.tagName,
+        cls: String(c.el.className || '').slice(0, 90),
+        x: tr.x, y: tr.y, w: tr.w, h: tr.h, hasFrameOffset: tr.hasOffset,
+        text: c.text.slice(0, 120)
+      });
+    }
+    var rank = function (s) { return s === 'daily' ? 0 : s === 'promo' ? 1 : 2; };
+    items.sort(function (a, b) { return rank(a.section) - rank(b.section) || a.idx - b.idx; });
+    return {
+      items: items, candidates: candidates,
+      headerHits: headers.map(function (h) { return h.text; }).slice(0, 8),
+      isTop: window.top === window, path: location.pathname,
+      url: location.href, title: document.title || ''
+    };
+  };
+  var locateSide = function (idx) {
+    var el = null;
+    try { el = document.querySelector('[data-yb-side-idx="' + idx + '"]'); } catch (e) {}
+    if (!el) {
+      var all = deepAll(document, '[data-yb-side-idx]');
+      for (var i = 0; i < all.length; i++) {
+        if (all[i].getAttribute('data-yb-side-idx') === String(idx)) { el = all[i]; break; }
+      }
+    }
+    return el;
+  };
+  var scrollSide = function (idx) {
+    var el = locateSide(idx);
+    if (!el) return null;
+    try { el.scrollIntoView({ block: 'center', behavior: 'instant' }); } catch (e) {}
+    return topRect(el);
+  };
+  var clickSide = function (idx, key, href) {
+    var el = locateSide(idx);
+    if (!el && href) {
+      var all = deepAll(document, 'a[href]');
+      for (var i = 0; i < all.length; i++) {
+        if (absUrl(all[i].getAttribute('href') || '') === href) { el = all[i]; break; }
+      }
+    }
+    if (!el) return { ok: false, reason: 'not-found', href: href || '' };
+    var r = fireMouse(el);
+    return {
+      ok: r.native || r.dispatched >= 5, dispatched: r.dispatched, native: r.native,
+      href: hrefOf(el) || href || '', target: targetOf(el)
+    };
+  };
+  var diagnose = function () {
+    var plus = [];
+    var els = deepAll(document, 'a[href],button,div,span,p');
+    for (var i = 0; i < els.length; i++) {
+      var t = clean(els[i]);
+      if (t && t.length < 160 && /\+\s*\d{1,4}(?!\d)/.test(t) && plus.length < 12) plus.push(t);
+    }
+    var body = clean(document.body);
+    var info = frameInfo();
+    return {
+      url: location.href, title: document.title || '', isTop: window.top === window,
+      hasTrigger: info.hasTrigger, panelVisible: info.panelVisible,
+      iframes: info.iframes.map(function (f) { return f.src.slice(0, 140); }),
+      hasDaily: /每日活动|每日任务|Daily activities|Daily set/i.test(body),
+      hasPromo: /日常任务|Daily tasks|More activities/i.test(body),
+      hasRewards: /Microsoft Rewards/i.test(body),
+      plusHits: plus,
+      clickableCount: deepAll(document, 'a[href],button,[role="button"],[tabindex]').length,
+      taskHrefCount: (function () {
+        var n = 0, as = deepAll(document, 'a[href]');
+        for (var j = 0; j < as.length; j++) {
+          var h = absUrl(as[j].getAttribute('href') || '');
+          if (h && !BAD_HREF.test(h) && TASK_HREF.test(h)) n++;
+        }
+        return n;
+      })(),
+      bodyHead: body.slice(0, 220)
+    };
+  };
+  /* 一键导出：把侧栏里所有可点击元素的真实结构吐出来，便于对齐 DOM */
+  var dump = function (limit) {
+    var max = limit || 140, out = [];
+    var els = deepAll(document, 'a[href],button,[role="button"],[role="link"],[tabindex],[data-react-aria-pressable]');
+    for (var i = 0; i < els.length && out.length < max; i++) {
+      var el = els[i], t = clean(el), r = el.getBoundingClientRect();
+      if (!t && !el.getAttribute('href')) continue;
+      var h = absUrl(el.getAttribute('href') || '');
+      out.push({
+        tag: el.tagName, id: el.id || '', cls: String(el.className || '').slice(0, 100),
+        role: el.getAttribute('role') || '', target: el.getAttribute('target') || '',
+        text: t.slice(0, 90), href: h.slice(0, 220),
+        taskHref: !!h && !BAD_HREF.test(h) && TASK_HREF.test(h),
+        rect: [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)]
+      });
+    }
+    return {
+      url: location.href, isTop: window.top === window, frameInfo: frameInfo(),
+      headers: headersOf().map(function (h) { return h.text; }),
+      totalClickable: els.length, elements: out
+    };
+  };
+
+  /* ------------------------------------------------------------------
+   * v2.3：点击目标来自「获取任务列表」的解析结果（cardsFromRewardsHtml）。
+   * 每个任务自带真实 url（RSC destination 或 DOM href），不再重新猜卡片。
+   * 这里只做一件事：拿这个 url / name 在页面里找到对应 <a>，模拟鼠标点击。
+   * ------------------------------------------------------------------ */
+
+  /** RSC payload 里 URL 常含字面量 \u0026 / &amp;，必须先归一化才能和 DOM href 比。 */
+  var normalizeUrl = function (u) {
+    return String(u || '')
+      .replace(/\\+u0026/gi, '&')
+      .replace(/\\+u003d/gi, '=')
+      .replace(/\\+u0025/gi, '%')
+      .replace(/&amp;/gi, '&')
+      .replace(/\s+/g, '')
+      .trim();
+  };
+
+  /**
+   * URL 指纹：host + path + q 参数 + form 参数。
+   * RSC 的 destination 可能被截断（如 "…&filters=sid:"），DOM 里是完整链接，
+   * 用 q / form 比对即可命中同一个任务，不必逐字符相等。
+   */
+  var urlFp = function (u) {
+    var h = normalizeUrl(u);
+    try {
+      var x = new URL(h);
+      var q = (x.searchParams.get('q') || '').toLowerCase().replace(/\s+/g, '');
+      var form = '';
+      x.searchParams.forEach(function (v, k) { if (/^form$/i.test(k)) form = String(v).toLowerCase(); });
+      return x.hostname.replace(/^www\./i, '') + x.pathname.replace(/\/$/, '')
+        + '|' + q + '|' + form;
+    } catch (e) {
+      return h.split('#')[0].split('?')[0].toLowerCase();
+    }
+  };
+
+  var taskAnchors = function () {
+    var out = [];
+    var as = deepAll(document, 'a[href]');
+    for (var i = 0; i < as.length; i++) {
+      var a = as[i];
+      var h = normalizeUrl(absUrl(a.getAttribute('href') || ''));
+      if (!/^https?:\/\//i.test(h)) continue;
+      if (BAD_HREF.test(h) || NAV_ONLY.test(h)) continue;
+      if (!TASK_HREF.test(h)) continue;
+      var r = a.getBoundingClientRect();
+      if (r.width < 20 || r.height < 12) continue;
+      out.push({ el: a, href: h, text: clean(a), fp: urlFp(h) });
+    }
+    return out;
+  };
+
+  /** 按任务列表里的 url / name / points 找对应 <a>；返回最内层元素。 */
+  var findTaskAnchor = function (target) {
+    var anchors = taskAnchors();
+    var wantedFp = urlFp(target.url || '');
+    var i, hits = [], by = '';
+    // 1) URL 指纹精确命中（最可靠：直接来自任务列表解析结果）
+    for (i = 0; i < anchors.length; i++) {
+      if (wantedFp && anchors[i].fp === wantedFp) hits.push(anchors[i]);
+    }
+    if (hits.length) by = 'url';
+    // 2) 完整 URL 前缀命中（q 相同但 form 大小写/多余参数不同）
+    if (!hits.length && target.url) {
+      var w = normalizeUrl(target.url);
+      for (i = 0; i < anchors.length; i++) {
+        var h = anchors[i].href;
+        if (h === w || (w.length > 20 && (h.indexOf(w) === 0 || w.indexOf(h) === 0))) hits.push(anchors[i]);
+      }
+      if (hits.length) by = 'url-prefix';
+    }
+    // 3) 任务标题文本命中（RSC 无 url 或 url 被截断时）
+    if (!hits.length && target.name) {
+      var nm = String(target.name).replace(/\s+/g, '');
+      for (i = 0; i < anchors.length; i++) {
+        if (anchors[i].text.replace(/\s+/g, '').indexOf(nm) >= 0) hits.push(anchors[i]);
+      }
+      if (hits.length) by = 'name';
+    }
+    // 4) 积分 + 标题片段兜底
+    if (!hits.length && target.name && target.points) {
+      var frag = String(target.name).slice(0, 6).replace(/\s+/g, '');
+      var pt = '+' + target.points;
+      for (i = 0; i < anchors.length; i++) {
+        var t = anchors[i].text.replace(/\s+/g, '');
+        if (t.indexOf(frag) >= 0 && t.indexOf(pt) >= 0) hits.push(anchors[i]);
+      }
+      if (hits.length) by = 'name+points';
+    }
+    if (!hits.length) return null;
+    // 多个命中时取最内层（页面外层容器也可能是 <a>）
+    var best = hits[0];
+    for (i = 1; i < hits.length; i++) {
+      if (best.el.contains && best.el.contains(hits[i].el)) best = hits[i];
+    }
+    return { anchor: best.el, href: best.href, by: by, candidates: hits.length };
+  };
+
+  /** 只定位 + 滚动，返回顶层坐标（供 CDP 真鼠标）。 */
+  var findTask = function (target) {
+    var hit = findTaskAnchor(target);
+    if (!hit) return { ok: false, reason: 'not-found', url: normalizeUrl(target.url || '') };
+    try { hit.anchor.scrollIntoView({ block: 'center', behavior: 'instant' }); } catch (e) {}
+    var tr = topRect(hit.anchor);
+    return {
+      ok: true, x: tr.x, y: tr.y, w: tr.w, h: tr.h,
+      href: hit.href, by: hit.by, candidates: hit.candidates,
+      target: targetOf(hit.anchor), text: clean(hit.anchor).slice(0, 80)
+    };
+  };
+
+  /** 定位 + 完整指针/鼠标事件序列 + 原生 click()（触发 <a target=_blank>）。 */
+  var clickTask = function (target) {
+    var hit = findTaskAnchor(target);
+    if (!hit) return { ok: false, reason: 'not-found', href: normalizeUrl(target.url || '') };
+    var r = fireMouse(hit.anchor);
+    return {
+      ok: r.native || r.dispatched >= 5, dispatched: r.dispatched, native: r.native,
+      href: hit.href, by: hit.by, target: targetOf(hit.anchor),
+      targetBlank: /_blank/i.test(targetOf(hit.anchor)),
+      text: clean(hit.anchor).slice(0, 80)
+    };
+  };
+
+  /**
+   * v2.4 诊断：导出本 frame 里所有任务型 <a>，并标注与任务列表指纹的匹配情况。
+   * 用于「找不到卡片」时定位：是页面没渲染、URL 不同、还是卡片在另一个 frame。
+   */
+  var probeTasks = function (wantedFps) {
+    var wanted = {};
+    var i, k;
+    if (Object.prototype.toString.call(wantedFps) === '[object Array]') {
+      for (i = 0; i < wantedFps.length; i++) wanted[String(wantedFps[i])] = 1;
+    }
+    var anchors = taskAnchors();
+    var out = [];
+    for (i = 0; i < anchors.length; i++) {
+      var a = anchors[i], tr = topRect(a.el);
+      out.push({
+        href: a.href, fp: a.fp, text: a.text.slice(0, 100),
+        target: targetOf(a.el), tag: a.el.tagName,
+        cls: String(a.el.className || '').slice(0, 90),
+        x: tr.x, y: tr.y, w: tr.w, h: tr.h,
+        wanted: !!wanted[a.fp]
+      });
+    }
+    var body = clean(document.body);
+    return {
+      ok: true, url: location.href, title: document.title || '',
+      isTop: window.top === window,
+      signedOut: /登录到 Microsoft 帐户|使用你的 Microsoft 帐户|需要启用 JavaScript|Sign in to your Microsoft account/i.test(body),
+      taskAnchors: out,
+      bodyHead: body.slice(0, 200)
+    };
+  };
+
+  /** 从当前页面 DOM 反推任务列表（任务列表解析为空时的补充数据源）。 */
+  var collectTasks = function () {
+    var anchors = taskAnchors();
+    var out = [];
+    for (var i = 0; i < anchors.length; i++) {
+      var a = anchors[i], text = a.text;
+      if (!text || bannedText.test(text)) continue;
+      var pm = /\+\s*(\d{1,4})(?!\d)/.exec(text)
+        || /(?:^|\s)(\d{1,4})\s*(?:分|积分|pts|points)/i.exec(text)
+        || /(?:^|\s)(\d{1,4})\s*(?:已完成|已领取|Completed|Claimed)/i.exec(text);
+      var badge = a.el.querySelector && a.el.querySelector('[class*="bg-statusSuccessRewardsBg"]');
+      var points = pm ? parseInt(pm[1], 10) : 0;
+      if (!points && badge) {
+        var bm = /^\s*(\d{1,4})\s*$/.exec(clean(badge));
+        if (bm) points = parseInt(bm[1], 10);
+      }
+      if (!(points > 0)) continue;
+      var titleEl = a.el.querySelector && a.el.querySelector(
+        '[class*="text-globalBody2Strong"],[class*="title" i],h3,h4,strong,p');
+      var name = clean(titleEl) || text.split(/\s{2,}/)[0] || ('任务' + i);
+      name = name.replace(/\+\s*\d{1,4}(?!\d)/g, '').replace(doneWords, '').trim().slice(0, 60);
+      var tr = topRect(a.el);
+      try { a.el.setAttribute('data-yb-task-idx', String(i)); } catch (e) {}
+      out.push({
+        idx: i, name: name, points: points,
+        description: '', section: sectionOf(a.el, headersOf()),
+        completed: doneWords.test(text), earned: doneWords.test(text) ? points : 0,
+        url: a.href, href: a.href, source: 'dom-collect',
+        x: tr.x, y: tr.y, w: tr.w, h: tr.h
+      });
+    }
+    return { ok: out.length > 0, rows: out, total: anchors.length,
+      url: location.href, title: document.title || '' };
+  };
+
+  /* ==================================================================
+   * v2.5 · 就照人做的来：打开页面 → 滚动 → 鼠标点卡片
+   * 不抓 HTML、不解析 RSC、不算 URL 指纹、不跨 frame 猜、不校验新标签页。
+   * 页面里有什么卡片就点什么卡片，每点一张都滚到它、派发真实鼠标事件、
+   * 最后调用 <a>.click() 让 target=_blank 自己开新标签页。
+   * ================================================================== */
+
+  /* 任务卡 = 带积分的、指向 Bing 任务链接的 <a>。真实页面里就是
+     <a target="_blank" rel="noopener noreferrer" href="...PUBL=RewardsDO...">…<p>+10</p></a> */
+  /* 参考项目 REWARDS_TRIGGERS：Bing 顶部积分入口在不同布局里的常见标记 */
+  var PANEL_TRIGGERS = [
+    '.points-container', '#id_rc', '#id_rh', '#id_rh_w', '#bingRewards',
+    '[aria-label="Microsoft Rewards"]', '[title="Microsoft Rewards"]',
+    '[data-testid="rewards-button"]'
+  ];
+
+  var openPanel = function () {
+    var tried = [], i, j;
+    for (i = 0; i < PANEL_TRIGGERS.length; i++) {
+      var els = deepAll(document, PANEL_TRIGGERS[i]);
+      for (j = 0; j < Math.min(els.length, 4); j++) {
+        var el = els[j], r = el.getBoundingClientRect();
+        if (r.width < 2 || r.height < 2) continue;
+        try {
+          fireMouse(el);
+          tried.push(PANEL_TRIGGERS[i]);
+          return { ok: true, trigger: PANEL_TRIGGERS[i], tried: tried };
+        } catch (e) {}
+      }
+    }
+    return { ok: false, tried: tried, url: location.href };
+  };
+
+  /* v2.7：中文 cn.bing.com flyout 里任务卡是「标题+描述+蓝色 +10 徽章」的矩形容器，
+     不是 <a href=PUBL=RewardsDO>，也不是三个圆形 Offer。按徽章反查卡片。 */
+  /* v2.8：只点「能给分且未完成」的卡。
+     之前 done 硬编码 false、禁词太少，把已领取 / 进度 / 打卡 / 推广卡也点了。 */
+  var CARD_BAN = /已获得|已领取|已拿满|已完成|已结束|已过期|已用完|已达上限|不计分|不给分|全部查看|兑换|查看首页|我的积分|连续|连续打卡|Star bonus|bonus points|在 ?MICROSOFT|必应上搜索|搜索并|继续搜索|每天继续|最多 ?\d|奖励积分|打卡|punchcard|积分商城|帮助和反馈|on track|completed|claimed|already|congratulations/i;
+  var DONE_CARD = /已完成|已领取|已拿满|已获得|已完成领取|completed|claimed|offer completed/i;
+
+  /* 跳过原因分级：让用户一眼看出这张为什么不给分 */
+  var banReason = function (t) {
+    if (/已完成|已领取|已拿满|已获得/i.test(t)) return '已完成/已领取';
+    if (/在 ?MICROSOFT|必应上搜索|搜索并|继续搜索|每天继续|奖励积分|最多 ?\d|Star bonus|bonus points|on track|打卡|punchcard/i.test(t))
+      return '搜索进度/打卡/推广卡（不给分）';
+    if (/兑换|查看首页|我的积分|全部查看|帮助和反馈|积分商城/i.test(t))
+      return '头部/导航/兑换入口（不给分）';
+    return '进度/推广/兑换等非任务卡';
+  };
+  /* 每日任务集固定 3 张；超出的一律跳过，避免点到「更多活动」里的推广/0 分卡 */
+  var MAX_TASK_CARDS = 3;
+
+  var sectionTops = function () {
+    var all = deepAll(document, 'h1,h2,h3,h4,h5,div,span,p'), start = -1, end = 1e9, i;
+    for (i = 0; i < all.length; i++) {
+      var t = clean(all[i]);
+      if (t.length > 30) continue;
+      var top = all[i].getBoundingClientRect().top;
+      if (/^(每日设置|每日活动|每日任务|Daily set|Daily activities)/i.test(t) && start < 0) start = top;
+      if (/在 ?MICROSOFT|必应上搜索|You.re on track|Star bonus/i.test(t) && top > 0) end = Math.min(end, top);
+    }
+    return { start: start, end: end };
+  };
+
+  /**
+   * 按 +N 徽章反查矩形卡片容器。
+   * 返回 { cards, skipped }，skipped 带原因，让日志/可视化能解释「为什么没点」。
+   */
+  var badgeCards = function (includeDone) {
+    var all = deepAll(document, '*');
+    var zone = sectionTops();
+    var badges = [], i, j;
+    for (i = 0; i < all.length && i < 9000; i++) {
+      var t = clean(all[i]);
+      var m = /^\+\s*(\d{1,4})$/.exec(t);
+      if (!m) continue;
+      var r = all[i].getBoundingClientRect();
+      if (r.width < 8 || r.width > 100 || r.height < 8 || r.height > 64) continue;
+      badges.push({ el: all[i], points: parseInt(m[1], 10) });
+    }
+    var out = [], skipped = [], seen = [];
+    for (i = 0; i < badges.length; i++) {
+      var pts = badges[i].points, p = badges[i].el, hit = null, reason = '';
+      for (var up = 0; up < 7 && p; up++, p = p.parentElement) {
+        var pr = p.getBoundingClientRect();
+        if (pr.width < 150 || pr.height < 55) continue;
+        var pt = clean(p);
+        if (!pt || pt.length > 170 || CARD_BAN.test(pt)) {
+          if (!reason && CARD_BAN.test(pt)) reason = banReason(pt);
+          continue;
+        }
+        if (!/[\u4e00-\u9fa5A-Za-z]{4}/.test(pt.replace(/\+\s*\d{1,4}/g, ''))) continue;
+        hit = { el: p, text: pt, points: pts, r: pr };
+        break;
+      }
+      if (!hit) {
+        skipped.push({ title: (clean(badges[i].el.parentElement) || '').slice(0, 40),
+          points: pts, reason: reason || '非任务卡（尺寸/文本不匹配）' });
+        continue;
+      }
+
+      var title = hit.text.replace(/\+\s*\d{1,4}/g, '').replace(/\s+/g, ' ').trim().slice(0, 44);
+      var dup = false;
+      for (j = 0; j < seen.length; j++) if (seen[j] === hit.el) { dup = true; break; }
+      if (dup) { skipped.push({ title: title, points: pts, reason: '重复卡片' }); continue; }
+      seen.push(hit.el);
+
+      /* 完成态：文本 / aria-label / 卡片内完成徽章，三处都查 */
+      var aria = String(hit.el.getAttribute('aria-label') || '') + ' '
+        + (function () { try { return clean(hit.el.querySelector('[class*="completed"],[class*="claimed"]')) || ''; } catch (e) { return ''; } })();
+      var done = DONE_CARD.test(hit.text) || DONE_CARD.test(aria);
+      if (done && !includeDone) {
+        skipped.push({ title: title, points: pts, reason: '已完成/已领取' });
+        continue;
+      }
+      if (!(pts > 0)) {
+        skipped.push({ title: title, points: pts, reason: '0 分（不给积分）' });
+        continue;
+      }
+      /* 分区：必须在「每日设置」之后、「在 MICROSOFT 必应上搜索」之前 */
+      if (zone.start > 0 && hit.r.top < zone.start - 10) {
+        skipped.push({ title: title, points: pts, reason: '在每日任务区之上（头部/积分概览）' });
+        continue;
+      }
+      if (zone.end < 1e9 && hit.r.top > zone.end - 10) {
+        skipped.push({ title: title, points: pts, reason: '在搜索进度/Star bonus 区（不给分）' });
+        continue;
+      }
+      if (out.length >= MAX_TASK_CARDS) {
+        skipped.push({ title: title, points: pts, reason: '超出每日任务集 3 张上限（推广/更多活动）' });
+        continue;
+      }
+      out.push({
+        idx: 2000 + i, el: hit.el, href: '', text: hit.text.slice(0, 100),
+        title: title, points: pts, done: done,
+        target: '', section: 'daily', kind: 'badge', badgeIndex: out.length
+      });
+    }
+    return { cards: out, skipped: skipped, zone: zone, hasBadges: badges.length > 0 };
+  };
+
+  var OFFER_SELECTORS = [
+    '#bingRewards .flyout_control_threeOffers div[aria-label*="Offer"]',
+    '.flyout_control_threeOffers div[aria-label*="Offer"]'
+  ];
+
+  var humanCards = function (includeDone) {
+    var out = [];
+    /* v2.8：页面上只要出现 +N 徽章，就说明是「矩形卡片」布局（中文 flyout）。
+       此时独占使用徽章卡结果，不再叠加 <a> / 圆形 Offer 两条路径 ——
+       之前混用正是「同一张卡被点两次、顺带点到推广卡」的来源。 */
+    var bdEarly = badgeCards(includeDone);
+    if (bdEarly.hasBadges) {
+      for (var be = 0; be < bdEarly.cards.length; be++) {
+        var btr = topRect(bdEarly.cards[be].el);
+        bdEarly.cards[be].x = btr.x; bdEarly.cards[be].y = btr.y;
+        bdEarly.cards[be].w = btr.w; bdEarly.cards[be].h = btr.h;
+      }
+      return bdEarly.cards;
+    }
+    var as = deepAll(document, 'a[href]');
+    for (var i = 0; i < as.length; i++) {
+      var a = as[i];
+      var href = absUrl(a.getAttribute('href') || '');
+      if (!/^https?:\/\//i.test(href)) continue;
+      if (BAD_HREF.test(href) || NAV_ONLY.test(href)) continue;
+      if (!TASK_HREF.test(href)) continue;
+      var text = clean(a);
+      if (!text || bannedText.test(text)) continue;
+      var r = a.getBoundingClientRect();
+      if (r.width < 40 || r.height < 24) continue;          // 排除隐藏/零尺寸节点
+      var done = doneWords.test(text);
+      if (done && !includeDone) continue;
+      var pm = /\+\s*(\d{1,4})(?!\d)/.exec(text);
+      var badge = a.querySelector && a.querySelector('[class*="bg-statusSuccessRewardsBg"]');
+      var points = pm ? parseInt(pm[1], 10) : 0;
+      if (!points && badge) {
+        var bm = /^\s*(\d{1,4})\s*$/.exec(clean(badge));
+        if (bm) points = parseInt(bm[1], 10);
+      }
+      if (!(points > 0)) continue;
+      var tr = topRect(a);
+      out.push({
+        idx: i, el: a, href: href, text: text.slice(0, 100), points: points,
+        done: done, target: a.getAttribute('target') || '',
+        section: sectionOf(a, headersOf()), kind: 'anchor',
+        x: tr.x, y: tr.y, w: tr.w, h: tr.h
+      });
+    }
+
+    /* 参考项目 activity_click.py：Bing 侧栏每日任务集常只显示三个圆形图标，
+       没有文字标题、没有 +10。用 aria-label 的 'offer not completed' 判定，
+       按 0/1/2 顺序点击；绝不用任务 URL 直接 goto 代替。 */
+    for (var k = 0; k < OFFER_SELECTORS.length; k++) {
+      var offers = deepAll(document, OFFER_SELECTORS[k]);
+      if (offers.length !== 3) continue;
+      for (var j = 0; j < 3; j++) {
+        var o = offers[j];
+        var label = String(o.getAttribute('aria-label') || '').toLowerCase();
+        if (!/offer/.test(label)) continue;
+        var odone = !/not completed/.test(label) || /offer completed/.test(label);
+        if (odone && !includeDone) continue;
+        var orc = o.getBoundingClientRect();
+        if (orc.width < 8 || orc.height < 8) continue;
+        var otr = topRect(o);
+        out.push({
+          idx: 1000 + j, el: o, href: '', text: '侧栏 Offer ' + (j + 1)
+            + ' [' + label.slice(0, 60) + ']', points: 10, done: odone,
+          target: '', section: 'daily', kind: 'offer', offerIndex: j,
+          x: otr.x, y: otr.y, w: otr.w, h: otr.h
+        });
+      }
+      break;
+    }
+    /* 矩形徽章卡：若容器内已有更精确的 <a> 卡，跳过避免重复点同一张 */
+    return out;
+  };
+
+  /* 人打开页面后会先滚一滚：这里从顶到底分段滚，触发懒加载/ hydration */
+  var humanScrollPage = function () {
+    var h = Math.max(document.body.scrollHeight, document.documentElement.scrollHeight, 800);
+    var step = Math.max(300, Math.round(window.innerHeight * 0.7));
+    var at = 0;
+    try {
+      for (var y = 0; y <= h; y += step) { window.scrollTo(0, y); at = y; }
+      window.scrollTo(0, 0);
+    } catch (e) {}
+    return { ok: true, scrollHeight: h, step: step, last: at, y: window.scrollY || 0 };
+  };
+
+  /* 扫描结果（只回传可序列化字段） */
+  var humanScan = function (includeDone) {
+    var cards = humanCards(includeDone);
+    var bd = badgeCards(includeDone);
+    var body = clean(document.body);
+    return {
+      ok: true,
+      url: location.href, title: document.title || '',
+      signedOut: /登录到 Microsoft 帐户|使用你的 Microsoft 帐户|需要启用 JavaScript|Sign in to your Microsoft account/i.test(body),
+      total: cards.length,
+      pending: cards.filter(function (c) { return !c.done; }).length,
+      done: cards.filter(function (c) { return c.done; }).length,
+      cards: cards.map(function (c) {
+        return { idx: c.idx, href: c.href, text: c.text, points: c.points,
+          done: c.done, target: c.target, section: c.section,
+          kind: c.kind, offerIndex: c.offerIndex, badgeIndex: c.badgeIndex,
+          title: c.title || '', x: c.x, y: c.y, w: c.w, h: c.h };
+      }),
+      skipped: bd.skipped, zone: bd.zone,
+      bodyHead: body.slice(0, 160)
+    };
+  };
+
+  /* 从 humanCards 里按 idx / href / offerIndex / badgeIndex / 标题 / order 挑一张 */
+  var pickCard = function (cards, payload) {
+    var i, c = null;
+    for (i = 0; i < cards.length; i++) {
+      if (String(cards[i].el.getAttribute('data-yb-hidx') || '') === String(payload.idx)) { c = cards[i]; break; }
+    }
+    if (!c && payload.href) {
+      for (i = 0; i < cards.length; i++) if (cards[i].href === payload.href) { c = cards[i]; break; }
+    }
+    if (!c && Number.isFinite(payload.offerIndex)) {
+      for (i = 0; i < cards.length; i++)
+        if (cards[i].kind === 'offer' && cards[i].offerIndex === payload.offerIndex) { c = cards[i]; break; }
+    }
+    if (!c && Number.isFinite(payload.badgeIndex)) {
+      for (i = 0; i < cards.length; i++)
+        if (cards[i].kind === 'badge' && cards[i].badgeIndex === payload.badgeIndex) { c = cards[i]; break; }
+    }
+    if (!c && payload.title) {
+      var want = String(payload.title).replace(/\s+/g, '');
+      for (i = 0; i < cards.length; i++) {
+        var got = (cards[i].title || cards[i].text || '').replace(/\s+/g, '');
+        if (got && (got.indexOf(want) >= 0 || want.indexOf(got.slice(0, 8)) >= 0)) { c = cards[i]; break; }
+      }
+    }
+    if (!c && Number.isFinite(payload.order)) c = cards[payload.order] || null;
+    return c;
+  };
+
+  /**
+   * v2.7 关键：点击前「实时」把目标滚进视口并重读坐标。
+   * 不能用扫描时缓存的坐标 —— 调试横幅出现、hydration、内部滚动容器、
+   * 5s 等待、上一张点击后面板刷新，都会让旧坐标失效（点偏到空白处）。
+   */
+  var humanAim = function (payload) {
+    var cards = humanCards(false);
+    var c = pickCard(cards, payload);
+    if (!c) return { ok: false, reason: 'not-found', total: cards.length,
+      titles: cards.map(function (x) { return x.title || x.text.slice(0, 24); }).slice(0, 12) };
+    try { c.el.setAttribute('data-yb-hidx', String(payload.idx)); } catch (e) {}
+    try { c.el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' }); } catch (e) {}
+    // 重读实时 rect（含 iframe 偏移）
+    var r = c.el.getBoundingClientRect();
+    var ox = 0, oy = 0;
+    try {
+      if (window.top !== window && window.frameElement) {
+        var fr = window.frameElement.getBoundingClientRect(); ox = fr.left; oy = fr.top;
+      }
+    } catch (e) {}
+    var cx = r.left + r.width * 0.5 + ox, cy = r.top + r.height * 0.5 + oy;
+    return {
+      ok: true, x: cx, y: cy, w: r.width, h: r.height,
+      rect: { left: r.left, top: r.top, width: r.width, height: r.height },
+      text: c.text, title: c.title || '', points: c.points,
+      kind: c.kind, href: c.href, tag: c.el.tagName,
+      badgeIndex: c.badgeIndex, offerIndex: c.offerIndex,
+      scrollY: window.scrollY || 0,
+      vp: { w: window.innerWidth, h: window.innerHeight },
+      url: location.href
+    };
+  };
+
+  /* 按 idx 找到卡片 → 滚到它 → 真鼠标事件序列 → 原生 click() */
+  var humanClick = function (payload) {
+    var cards = humanCards(false);
+    var c = pickCard(cards, payload);
+    if (!c) return { ok: false, reason: 'not-found', total: cards.length };
+    try { c.el.setAttribute('data-yb-hidx', String(payload.idx)); } catch (e) {}
+    var res = fireMouse(c.el);              // 内含 scrollIntoView + 5 段事件 + a.click()
+    return {
+      ok: res.native || res.dispatched >= 5,
+      dispatched: res.dispatched, native: res.native,
+      href: c.href, text: c.text, points: c.points,
+      target: c.target, kind: c.kind, x: c.x, y: c.y, title: c.title || '',
+      scrolledTo: Math.round(c.el.getBoundingClientRect().top + window.scrollY)
+    };
+  };
+
+  /* 找不到卡片时，把页面里所有链接列出来，一眼看出到底渲染了什么 */
+  var humanProbe = function () {
+    var out = [];
+    var as = deepAll(document, 'a[href]');
+    for (var i = 0; i < as.length && out.length < 120; i++) {
+      var a = as[i], h = absUrl(a.getAttribute('href') || '');
+      var r = a.getBoundingClientRect();
+      out.push({ idx: i, href: h.slice(0, 180), text: clean(a).slice(0, 90),
+        w: Math.round(r.width), h: Math.round(r.height) });
+    }
+    var bd = badgeCards(true), bc = bd.cards;
+    return { ok: true, url: location.href, title: document.title || '',
+      total: as.length, links: out, skipped: bd.skipped, zone: bd.zone,
+      badgeCards: bc.map(function (b) {
+        var r = b.el.getBoundingClientRect();
+        return { title: b.title, points: b.points, text: b.text.slice(0, 90),
+          w: Math.round(r.width), h: Math.round(r.height),
+          x: Math.round(r.left), y: Math.round(r.top) };
+      }),
+      bodyHead: clean(document.body).slice(0, 200) };
+  };
+
+  /**
+   * v2.8 best-effort：在已登录标签页内调官方 getuserinfo，拿当天任务列表。
+   * 只用于「白名单增强」和「点完是否真计分」的核验；CORS / 失败一律静默回退，
+   * 绝不阻塞本地启发式点击。参考项目 activity_worker.confirmed_completed。
+   */
+  /**
+   * v1.0「先同步状态」：在页面上下文里读官方 getuserinfo，返回原始 JSON。
+   * 只复用用户已经打开的标签页，绝不新建 / 激活 / 导航任何页面，也不改 DOM。
+   * 页面上下文带浏览器 Cookie，比 service worker 直接 fetch 更可靠。
+   */
+  var syncOfficial = function () {
+    var base = /^rewards\.bing\.com$/i.test(location.hostname || '')
+      ? '' : 'https://rewards.bing.com';
+    var url = base + '/api/getuserinfo?type=1&X-Requested-With=XMLHttpRequest';
+    var timeout = new Promise(function (resolve) {
+      setTimeout(function () { resolve({ ok: false, reason: 'timeout' }); }, 2500);
+    });
+    var job = fetch(url, {
+      credentials: 'include', cache: 'no-store',
+      headers: { 'X-Requested-With': 'XMLHttpRequest' }
+    })
+      .then(function (r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.json();
+      })
+      .then(function (data) { return { ok: true, data: data, reason: '' }; })
+      .catch(function (e) {
+        return { ok: false, reason: '不可用：' + (e && e.message || e) };
+      });
+    return Promise.race([job, timeout]);
+  };
+
+  var verifyTasks = function () {
+    var url = 'https://rewards.bing.com/api/getuserinfo?type=1&X-Requested-With=XMLHttpRequest';
+    var parse = function (data) {
+      var dash = (data && data.dashboard) || {};
+      var d = new Date(), pad = function (n) { return String(n).padStart(2, '0'); };
+      var iso = d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
+      var dsp = dash.dailySetPromotions || {};
+      var items = dsp[iso]
+        || dsp[pad(d.getMonth() + 1) + '/' + pad(d.getDate()) + '/' + d.getFullYear()] || [];
+      if (!items.length) {
+        for (var k in dsp) if (String(k).indexOf(iso) >= 0) { items = dsp[k]; break; }
+      }
+      return (items || []).map(function (it) {
+        var mx = 0, cur = 0;
+        try { mx = parseInt(it.pointProgressMax || it.pointsMax || 0, 10) || 0; } catch (e) {}
+        try { cur = parseInt(it.pointProgress || 0, 10) || 0; } catch (e) {}
+        return {
+          offerId: String(it.offerId || it.id || ''),
+          title: String(it.title || it.name || it.description || '').slice(0, 60),
+          complete: !!it.complete || (mx > 0 && cur >= mx),
+          pointsMax: mx, pointsEarned: cur
+        };
+      });
+    };
+    /* executeScript 会 await 返回的 Promise。2.5s 超时，失败/CORS 一律静默回退，
+       不阻塞、不改变本地启发式点击结果。 */
+    var timeout = new Promise(function (resolve) {
+      setTimeout(function () { resolve({ ok: false, tasks: [], reason: '超时' }); }, 2500);
+    });
+    var job = fetch(url, { credentials: 'include',
+      headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+      .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+      .then(function (data) { return { ok: true, tasks: parse(data), reason: '' }; })
+      .catch(function (e) { return { ok: false, tasks: [], reason: '不可用：' + (e && e.message || e) }; });
+    return Promise.race([job, timeout]);
+  };
+
+  switch (action) {
+    case 'rewards.list':     return listRewards(p.exclude, p.force);
+    case 'rewards.focus': {
+      var rf = findRewardsAnchor(p.idx, p.key);
+      if (!rf) return { ok: false, reason: 'not-found' };
+      try { rf.anchor.scrollIntoView({ block: 'center', behavior: 'instant' }); } catch (e) {}
+      var rr = topRect(rf.anchor);
+      return { ok: true, x: rr.x, y: rr.y, w: rr.w, h: rr.h,
+        href: rf.href, target: rf.target };
+    }
+    case 'rewards.activate': {
+      var ra = findRewardsAnchor(p.idx, p.key);
+      if (!ra) return { ok: false, reason: 'not-found' };
+      try { ra.anchor.click(); return { ok: true, href: ra.href, target: ra.target }; }
+      catch (e) { return { ok: false, reason: String(e && e.message || e), href: ra.href }; }
+    }
+    case 'sidebar.frameInfo': return frameInfo();
+    case 'sidebar.open':      return openSidebar();
+    case 'sidebar.diagnose':  return diagnose();
+    case 'sidebar.dump':      return dump(p.limit);
+    case 'sidebar.scan':      return scanSidebar(p.exclude, p.force);
+    case 'sidebar.scroll':    return scrollSide(p.idx);
+    case 'sidebar.click':     return clickSide(p.idx, p.key, p.href);
+    case 'task.list':         return collectTasks();
+    case 'task.find':         return findTask(p.target || {});
+    case 'task.click':        return clickTask(p.target || {});
+    case 'task.probe':        return probeTasks(p.fps || []);
+    case 'human.scan':        return humanScan(!!p.includeDone);
+    case 'human.scroll':      return humanScrollPage();
+    case 'human.click':       return humanClick(p);
+    case 'human.probe':       return humanProbe();
+    case 'human.openPanel':   return openPanel();
+    case 'human.aim':         return humanAim(p);
+    case 'human.verify':      return verifyTasks();
+    case 'human.sync':        return syncOfficial();
+    default: return { ok: false, reason: 'unknown-action', action: action };
   }
-  return { ok: false, scanned };
 }
 
 async function tabIds() {
@@ -2790,65 +4175,1212 @@ async function tabIds() {
   } catch { return null; }
 }
 
-/** 在一个 Rewards 页面里逐张点击未完成卡片；已完成 / 非今日任务版块的跳过。 */
-async function clickCardsOnPage(url, level, token, done, stat) {
+/** 目标路径匹配：/dashboard 与根路径互认，/earn 允许带 query / 尾斜杠。 */
+function taskPageMatches(actualPath, wantPath) {
+  const a = String(actualPath || '/').toLowerCase();
+  const w = String(wantPath || '/').toLowerCase();
+  if (w === '/dashboard') return a === '/dashboard' || a === '/' || a === '' || a.startsWith('/dashboard');
+  return a === w || a.startsWith(w + '/') || a.startsWith(w + '?');
+}
+
+/* ==========================================================================
+ * v2.1 · Bing 侧栏任务点击（替代 rewards.bing.com 两页模式）
+ * ======================================================================== */
+/**
+ * v2.2 诊断入口：把 Bing 侧栏（顶层 + 所有 frame）的真实 DOM 结构导出。
+ * 用法：在扩展 Service Worker 控制台执行
+ *   chrome.runtime.sendMessage({type:'dumpSidebar'}, r => console.log(JSON.stringify(r, null, 2)))
+ * 结果同时写入 chrome.storage.local.sidebarDump，方便复制。
+ */
+async function dumpSidebarDom(limit) {
+  const tabId = await openSidebarTab();
+  await inject(tabId, ybInject, ['sidebar.open', {}]);
+  await nap(1600);
+  const frameInfo = await inject(tabId, ybInject, ['sidebar.frameInfo', {}]);
+  const frames = await injectAllFrames(tabId, ybInject, ['sidebar.dump', { limit: limit || 140 }]);
+  const payload = {
+    ok: true, at: Date.now(), tabId,
+    frameInfo,
+    frames: frames.map(f => ({ frameId: f.frameId, error: f.error || null, data: f.result || null }))
+  };
+  await store({ sidebarDump: payload });
+  for (const f of payload.frames) {
+    console.info('[dumpSidebar] frame ' + f.frameId + ' url=' + (f.data && f.data.url)
+      + ' total=' + (f.data && f.data.totalClickable)
+      + (f.error ? ' ERROR=' + f.error : ''));
+  }
+  console.info('[dumpSidebar] 完整结构已写入 storage.local.sidebarDump');
+  return payload;
+}
+
+async function openSidebarTab() {
+  const tabId = await openOrNavigate('sidebarTabId', SIDEBAR_URL, true);
+  await ensureTabActive(tabId);
+  return tabId;
+}
+
+/**
+ * v2.2：等侧栏真正展开。
+ * 真实保存页里入口是 #id_rh_w（aria-controls="rewid-f"），面板 #rewid-f 默认
+ * display:none，内容在 <iframe> 中 —— 顶层 DOM 里没有「每日活动 / +10」等字样。
+ * 旧版每轮换 URL 会重载页面、把刚点开的浮层又关掉，这里改为：
+ * 固定一个 URL，反复精确点开入口并读 frameInfo，确认面板可见 / iframe 有 src。
+ */
+async function waitForSidebarReady(tabId, token, stat) {
+  const urls = [SIDEBAR_URL, ...SIDEBAR_FALLBACK_URLS];
+  let lastDiag = null;
+  let frameInfo = null;
+  let found = false;
+
+  for (let u = 0; u < urls.length && !found; u++) {
+    if (u > 0) {
+      try { await chrome.tabs.update(Number(tabId), { url: urls[u] }); } catch {}
+      await nap(2200, token);
+    }
+    for (let round = 0; round < SIDEBAR_WAIT_ROUNDS; round++) {
+      bail(token);
+      // 只在顶层 frame 点开入口（不在 iframe 里乱点）
+      const opened = await inject(tabId, ybInject, ['sidebar.open', {}]);
+      if (opened && opened.ok) {
+        console.info('[AutoTask] Rewards 入口已点击：' + (opened.selector || '#id_rh_w')
+          + (opened.alreadyOpen ? '（本来就是展开的）' : ''));
+      }
+      await nap(900, token);
+      const info = await inject(tabId, ybInject, ['sidebar.frameInfo', {}]);
+      frameInfo = info || frameInfo;
+      const diagFrames = await injectAllFrames(tabId, ybInject, ['sidebar.diagnose', {}]);
+      let best = null;
+      for (const f of diagFrames) {
+        const d = f.result;
+        if (!d) continue;
+        lastDiag = d;
+        if (!best || (d.taskHrefCount || 0) > (best.taskHrefCount || 0)) best = d;
+        console.info('[AutoTask] 侧栏诊断 u' + u + ' r' + round + ' frame=' + f.frameId
+          + ' top=' + d.isTop + ' panel=' + d.panelVisible
+          + ' taskHref=' + d.taskHrefCount + ' daily=' + d.hasDaily
+          + ' promo=' + d.hasPromo + ' plus=' + (d.plusHits || []).length
+          + ' clickable=' + d.clickableCount);
+        if (d.panelVisible || d.taskHrefCount > 0 || d.hasDaily || d.hasPromo) found = true;
+      }
+      if (frameInfo && (frameInfo.panelVisible || (frameInfo.iframes || []).length)) found = true;
+      if (found) break;
+    }
+  }
+
+  stat.sidebarDiagnostics = lastDiag;
+  stat.sidebarFrameInfo = frameInfo;
+  if (!found) {
+    console.warn('[AutoTask] 侧栏未展开：请把「一键导出侧栏 DOM」的日志发来，'
+      + '或确认 Rewards 面板是网页 flyout 而非浏览器内置侧边栏 UI。');
+  } else {
+    await nap(SETTLE_MS, token);
+  }
+  return { found, diagnostics: lastDiag, frameInfo };
+}
+
+/**
+ * v2.2：把 #rewid-f 里的 iframe 提升成独立标签页。
+ * 返回新 tabId；拿不到 URL / 打开后扫不到卡片则返回 null（保留原页路径）。
+ */
+async function promoteSidebarIframe(tabId, token, stat) {
+  if (!PROMOTE_SIDEBAR_IFRAME) return null;
+  const info = await inject(tabId, ybInject, ['sidebar.frameInfo', {}]);
+  const list = (info && info.iframes) || [];
+  let url = '';
+  for (const f of list) {
+    if (!f.src || !/^https?:\/\//i.test(f.src)) continue;
+    let host = '';
+    try { host = new URL(f.src).hostname; } catch { continue; }
+    if (!SIDEBAR_IFRAME_HOST.test(host)) continue;
+    if (/Microsoft Rewards/i.test(f.title || '') || /rewid|rewards|flyout/i.test(f.src)) { url = f.src; break; }
+    if (!url) url = f.src;
+  }
+  if (!url) {
+    console.info('[AutoTask] 未读到可用的 iframe URL，走 allFrames 注入路径');
+    return null;
+  }
+  console.info('[AutoTask] 侧栏 iframe URL：' + url.slice(0, 180));
+  stat.sidebarIframeUrl = url;
+  let t = null;
+  try {
+    t = await chrome.tabs.create({ url, active: false });
+    await chrome.tabs.update(t.id, { autoDiscardable: false }).catch(() => {});
+    await waitForTab(t.id, () => true, PAGE_TIMEOUT, true);
+    await nap(SETTLE_MS, token);
+    const scan = await inject(t.id, ybInject,
+      ['sidebar.scan', { exclude: [], force: FORCE_CLICK_COMPLETED }]);
+    const n = scan && Array.isArray(scan.items) ? scan.items.length : 0;
+    console.info('[AutoTask] iframe 独立页扫描：' + n + ' 张待点、候选 '
+      + (scan ? scan.candidates : 0) + ' 个 · ' + (scan ? scan.title : ''));
+    if (n > 0) {
+      stat.sidebarPromoted = true;
+      return t.id;
+    }
+    // 独立页没卡片：不关闭（任务页保留），退回原页 allFrames
+    console.info('[AutoTask] iframe 独立页无卡片，退回 allFrames 注入路径');
+    return null;
+  } catch (err) {
+    console.warn('[AutoTask] iframe 独立开页失败：' + (err && err.message || String(err)));
+    return null;
+  }
+}
+
+/** 合并所有 frame 的扫描结果，按 每日活动 → 日常任务 → 其它 排序。 */
+async function mergeSidebarScans(tabId, token) {
+  const frames = await injectAllFrames(tabId, ybInject,
+      ['sidebar.scan', { exclude: [], force: FORCE_CLICK_COMPLETED }]);
+  const items = [];
+  let candidates = 0;
+  const headerHits = new Set();
+  for (const f of frames) {
+    const r = f.result;
+    if (!r || !Array.isArray(r.items)) continue;
+    candidates += Number(r.candidates) || 0;
+    for (const h of r.headerHits || []) headerHits.add(h);
+    for (const it of r.items) {
+      items.push(Object.assign({}, it, {
+        frameId: f.frameId,
+        gid: f.frameId + ':' + it.idx + ':' + it.key
+      }));
+    }
+  }
+  const rank = sec => sec === 'daily' ? 0 : sec === 'promo' ? 1 : 2;
+  items.sort((a, b) => rank(a.section) - rank(b.section)
+    || a.frameId - b.frameId || a.idx - b.idx);
+  return { items, frames: frames.length, candidates, headerHits: [...headerHits] };
+}
+
+function registerNewTabs(before, after, tabId, stat) {
+  const fresh = (after || []).filter(id => !(before || []).includes(id) && id !== tabId);
+  // 同一轮点击可能多次检查新标签页；按 tabId 去重，避免重复计数 / 误判"已弹出"
+  stat._seenTabIds = stat._seenTabIds || new Set();
+  const added = [];
+  for (const id of fresh) {
+    if (stat._seenTabIds.has(id)) continue;
+    stat._seenTabIds.add(id);
+    added.push(id);
+    try {
+      Promise.resolve(chrome.tabs.update(id, { active: false, autoDiscardable: false }))
+        .catch(() => {});
+      stat.openedTabs = (stat.openedTabs || 0) + 1;
+    } catch {}
+  }
+  return added;
+}
+
+/**
+ * 在侧栏里逐张点击任务卡。
+ *  · 统一 5s 间隔（taskClickSpacing，按点击时刻对齐）
+ *  · cdp-first：能算顶层坐标就用 CDP 真鼠标；没弹出新标签页再补页面内事件序列
+ *  · 仍没弹出 → 按 href 兜底 chrome.tabs.create，任务标签页一律保留不关闭
+ *  · 载体页 sidebarTabId 也保留（closeTab 对 TASK_TAB_KEYS 放行）
+ */
+async function clickCardsInSidebar(level, token, done, stat) {
   let tabId = null;
   try {
-    tabId = await openOrNavigate('taskClickTabId', url);
-    const real = await cdpAttach(tabId).catch(() => false);
-    stat.real = stat.real || real;
-    let emptyRounds = 0;
+    tabId = await openSidebarTab();
+    const ready = await waitForSidebarReady(tabId, token, stat);
+    stat.sidebarPanelFound = ready.found;
+    console.info('[AutoTask] 侧栏载体页 ' + SIDEBAR_URL + '（保留不关闭）');
 
-    for (let pass = 0; pass < 12 && isCurrent(token); pass++) {
-      const found = await inject(tabId, focusPendingCard, [Array.from(done)]);
-      if (!found || !found.ok) {
-        stat.skipped += Number(found && found.scanned) || 0;
-        emptyRounds++;
-        if (emptyRounds >= 2) break;        // 页面已加载且没有待完成卡片
-        await sleep(900);
-        continue;
+    // v2.2：优先把 iframe 内容提升为顶层标签页，绕开跨域 frame 注入与坐标换算
+    const promotedId = await promoteSidebarIframe(tabId, token, stat);
+    if (promotedId) {
+      tabId = promotedId;
+      console.info('[AutoTask] 已切换到 iframe 独立页 ' + promotedId + '（顶层 DOM 扫描点击）');
+    }
+
+    let pageClicks = 0;
+    let lastScan = null;
+    for (let pass = 0; pass < 3 && isCurrent(token); pass++) {
+      const scan = await mergeSidebarScans(tabId, token);
+      lastScan = scan;
+      console.info('[AutoTask] 侧栏扫描：' + scan.frames + ' 个 frame、' + scan.candidates
+        + ' 个候选、' + scan.items.length + ' 张待点'
+        + (scan.headerHits.length ? ' · 标题 ' + scan.headerHits.join('/') : ''));
+      const items = scan.items.filter(x => !done.has(x.gid) && !x.done);
+      if (!items.length) {
+        if (pass < 2) { await nap(1400, token); continue; }
+        break;
       }
-      emptyRounds = 0;
-      const before = await tabIds();
-      const box = {
-        x: found.x - found.w / 2, y: found.y - found.h / 2,
-        w: found.w, h: found.h
-      };
-      const plan = humanClickPlan(box, [120 + rand(-40, 40), 140 + rand(-40, 40)], level);
-      if (real) await cdpClickPlan(tabId, plan);
-      else await domClick(tabId, plan.center[0], plan.center[1]);
-      stat.clicked++;
-      done.add(found.name + '|' + found.points);
-      await sleep(rand(900, 1800));
 
-      // 关闭点击后弹出的新标签页，保留 Rewards 页面本身
-      if (before) {
-        const after = await tabIds();
-        for (const id of after || []) {
-          if (!before.includes(id) && id !== tabId) {
-            try { await chrome.tabs.remove(id); } catch {}
+      for (const item of items) {
+        if (!isCurrent(token)) break;
+        const before = await tabIds();
+        await taskClickSpacing(token);           // ← 相邻点击固定 5s
+        await ensureTabActive(tabId);            // 后台标签页点击可能不触发导航
+
+        let method = 'dom';
+        let domRes = null;
+        if (SIDEBAR_CLICK_MODE === 'cdp-first' && Number.isFinite(item.x) && item.x > 0 && item.y > 0) {
+          const real = await cdpAttach(tabId).catch(() => false);
+          if (real) {
+            try {
+              const tr = await injectFrame(tabId, item.frameId, ybInject, ['sidebar.scroll', { idx: item.idx }]);
+              const cx = tr && Number.isFinite(tr.x) ? tr.x : item.x;
+              const cy = tr && Number.isFinite(tr.y) ? tr.y : item.y;
+              await cdpClickAt(tabId, cx, cy);
+              method = 'cdp';
+            } catch { method = 'dom'; }
           }
         }
+        if (method === 'dom') {
+          domRes = await injectFrame(tabId, item.frameId, ybInject,
+            ['sidebar.click', { idx: item.idx, key: item.key, href: item.href }]);
+          stat.domClick = (stat.domClick || 0) + (domRes && domRes.ok ? 1 : 0);
+        }
+
+        await nap(rand(1200, 1600), token);
+        let fresh = registerNewTabs(before, await tabIds(), tabId, stat);
+
+        // CDP 真鼠标没生效（坐标落在 iframe/shadow 外）→ 补页面内点击
+        if (!fresh.length && method === 'cdp') {
+          domRes = await injectFrame(tabId, item.frameId, ybInject,
+            ['sidebar.click', { idx: item.idx, key: item.key, href: item.href }]);
+          method = 'cdp+dom';
+          stat.domClick = (stat.domClick || 0) + (domRes && domRes.ok ? 1 : 0);
+          await nap(rand(900, 1200), token);
+          fresh = registerNewTabs(before, await tabIds(), tabId, stat);
+        }
+
+        // 兜底：始终保证任务在新标签页打开，且保留
+        // v2.4：绝不按 href 直接开页（直接导航不计 Rewards 完成）
+        if (!fresh.length) {
+          console.warn('[AutoTask] 「' + item.name + '」点击后未开出任务页；'
+            + '按约束不直接打开 URL，请检查页面是否登录 / 卡片是否真的被按下');
+        }
+
+        stat.clicked++;
+        pageClicks++;
+        done.add(item.gid);
+        console.info('[AutoTask] 侧栏点击 ' + pageClicks + '：' + item.name
+          + '（+' + item.points + ' · ' + item.section + ' · frame' + item.frameId
+          + ' · ' + method + '）');
       }
     }
+    stat.pages = stat.pages || [];
+    stat.pages.push({
+      page: 'sidebar', clicked: pageClicks,
+      anchors: lastScan ? lastScan.candidates : 0,
+      frames: lastScan ? lastScan.frames : 0,
+      panelFound: ready.found,
+      promoted: !!stat.sidebarPromoted
+    });
+    console.info('[AutoTask] 侧栏共点击 ' + pageClicks + ' 张');
   } catch (err) {
-    stat.error = (err && err.message) || String(err);
+    if (err !== STOP) stat.error = (err && err.message) || String(err);
   } finally {
     if (tabId != null) {
       try { await chrome.debugger.detach({ tabId }); } catch {}
       cdpAttached.delete(Number(tabId));
-      try { await chrome.tabs.remove(tabId); } catch {}
-      try { await store({ taskClickTabId: null }); } catch {}
+      // 侧栏载体页与弹出的任务页都保留，不 remove、不清 sidebarTabId
     }
   }
 }
 
-/** dashboard 与 earn 两页都扫一遍，覆盖「每日活动」和「日常任务」的卡片。 */
-async function completePendingTaskCards(level, token) {
-  const done = new Set();
-  const stat = { clicked: 0, skipped: 0, real: false };
-  for (const url of [DASHBOARD_URL, EARN_URL]) {
+/**
+ * v2.0：等目标页面加载完成 + DOM 里出现锚点/标题（hydration 完成）再注入。
+ * 超时不再直接判失败跳过整页，返回 ok:true + timeout，交由注入结果里的 path 复核，
+ * 避免「tab.url 还是上一页」时把上一页的卡片又点一遍。
+ */
+async function waitForTaskPageReady(tabId, url, token) {
+  const want = parseUrl(url);
+  const wantPath = (want && want.pathname || '/').toLowerCase();
+  const deadline = Date.now() + READ_DEADLINE;
+  while (Date.now() < deadline) {
+    bail(token);
+    const tab = await chrome.tabs.get(tabId).catch(() => null);
+    if (tab && tab.status === 'complete' && tab.url) {
+      if (isLogin(tab.url)) return { ok: false, reason: 'login', tab };
+      const u = parseUrl(tab.url);
+      if (u && /(^|\.)bing\.com$/i.test(u.hostname) && taskPageMatches(u.pathname, wantPath)) {
+        const probe = await inject(tabId, () => ({
+          anchors: document.querySelectorAll('a[href]').length,
+          headers: document.querySelectorAll('h2').length,
+          title: document.title || ''
+        }), []);
+        if (probe && (probe.anchors > 0 || probe.headers > 0)) {
+          await nap(SETTLE_MS, token);
+          return { ok: true, tab, url: tab.url, title: probe.title };
+        }
+      }
+    }
+    await nap(400, token);
+  }
+  const tab = await chrome.tabs.get(tabId).catch(() => null);
+  return { ok: true, timeout: true, tab, url: tab && tab.url };
+}
+
+/** 统一调度：保证任意相邻两次「点击时刻」相隔 >= 5s，跨页、跨轮次都成立。 */
+async function taskClickSpacing(token) {
+  const left = TASK_CLICK_INTERVAL_MS - (Date.now() - lastTaskClickAt);
+  if (left > 0) await nap(left, token);
+  lastTaskClickAt = Date.now();
+}
+
+/**
+ * v2.0：在「一个」Rewards 页面里逐张模拟鼠标点击任务卡。
+ *  · 卡片就是 <a target="_blank">，定位/点击都落在 <a> 本身 → 新标签页打开
+ *  · 载体页临时置 active，避免后台标签页的 CDP 点击不触发 window.open
+ *  · CDP 不可用时用 a.click() 降级（旧的合成 MouseEvent 对链接无效）
+ *  · 点击后若无新标签页，按 href 兜底 chrome.tabs.create，保证任务一定被打开
+ *  · 每轮注入结果带 path，与目标不符就等待重试，绝不误点上一页
+ */
+async function clickCardsOnPage(url, level, token, done, stat) {
+  const want = parseUrl(url);
+  const wantPath = (want && want.pathname || '/').toLowerCase();
+  const pageLabel = wantPath || '/dashboard';
+  let tabId = null;
+  try {
+    tabId = await openOrNavigate('taskClickTabId', url);
+    const ready = await waitForTaskPageReady(tabId, url, token);
+    if (!ready.ok) {
+      stat.signedOut = true;
+      console.warn('[AutoTask] ' + pageLabel + ' 跳到了 Microsoft 登录页，请先在浏览器登录 Rewards');
+      stat.pages = stat.pages || [];
+      stat.pages.push({ page: pageLabel, clicked: 0, reason: 'login' });
+      return;
+    }
+    if (ready.timeout) stat.loadSlow = (stat.loadSlow || 0) + 1;
+
+    const probeState = await inject(tabId, ybInject, ['rewards.list', { exclude: [], force: FORCE_CLICK_COMPLETED }]);
+    if (probeState && probeState.signedOut) {
+      stat.signedOut = true;
+      console.warn('[AutoTask] ' + pageLabel + ' 显示的是登录页，跳过本页（另一页仍会继续）');
+      stat.pages = stat.pages || [];
+      stat.pages.push({ page: pageLabel, clicked: 0, reason: 'signedOut' });
+      return;
+    }
+    console.info('[AutoTask] ' + pageLabel + ' 识别到 ' + (probeState ? probeState.anchorCount : 0)
+      + ' 张任务卡，其中已完成跳过 ' + (probeState ? probeState.doneSkipped : 0)
+      + ' 张，页面标题「' + (probeState ? probeState.title : '') + '」');
+
+    const real = await cdpAttach(tabId).catch(() => false);
+    stat.real = stat.real || real;
+    let emptyRounds = 0;
+    let pageClicks = 0;
+    let lastRes = probeState;
+
+    // 放宽到 5 轮 × 1.2s，等 Next.js hydration 把卡片渲染出来
+    for (let pass = 0; pass < 5 && isCurrent(token); pass++) {
+      const res = await inject(tabId, ybInject,
+        ['rewards.list', { exclude: Array.from(done), force: FORCE_CLICK_COMPLETED }]);
+      lastRes = res;
+      if (!res) { await nap(1200, token); continue; }
+      if (res.signedOut) { stat.signedOut = true; break; }
+      // 关键：确认注入跑在目标页，而不是上一页的旧 DOM
+      if (res.path && !taskPageMatches(res.path, wantPath)) {
+        console.warn('[AutoTask] ' + pageLabel + ' 注入仍在 ' + res.path + '，等待页面切换…');
+        await nap(1200, token);
+        continue;
+      }
+      const items = Array.isArray(res.items) ? res.items : [];
+      if (!items.length) {
+        stat.skipped += Number(res.scanned) || 0;
+        emptyRounds++;
+        if (emptyRounds >= 3) break;
+        await nap(1200, token);
+        continue;
+      }
+      emptyRounds = 0;
+
+      for (const item of items) {
+        if (!isCurrent(token)) break;
+        const found = await inject(tabId, ybInject, ['rewards.focus', { idx: item.idx, key: item.key }]);
+        if (!found || !found.ok) {
+          done.add(item.idx + ':' + item.key);
+          continue;
+        }
+        const before = await tabIds();
+
+        await taskClickSpacing(token);           // ← 统一 5s 间隔（点击时刻对齐）
+
+        // 后台标签页的 CDP 点击可能不触发 target=_blank，临时置为 active
+        if (KEEP_TASK_CLICK_ACTIVE) await ensureTabActive(tabId);
+
+        const box = {
+          x: found.x - found.w / 2, y: found.y - found.h / 2,
+          w: found.w, h: found.h
+        };
+        const plan = humanClickPlan(box, [120 + rand(-40, 40), 140 + rand(-40, 40)], level);
+        let clicked = false;
+        if (real) {
+          await cdpClickPlan(tabId, plan);
+          clicked = true;
+        } else {
+          const act = await inject(tabId, ybInject, ['rewards.activate', { idx: item.idx, key: item.key }]);
+          clicked = !!(act && act.ok);
+          stat.domClick = (stat.domClick || 0) + (clicked ? 1 : 0);
+        }
+        stat.clicked++;
+        pageClicks++;
+        done.add(item.idx + ':' + item.key);
+        console.info('[AutoTask] ' + pageLabel + ' 点击 ' + pageClicks + '：' + item.name
+          + '（#' + item.idx + ' · ' + item.points + ' 分 · ' + item.section
+          + (clicked ? '' : ' · [警告] 点击未生效') + '）');
+
+        // 给新标签页一点时间弹出，再登记为「保留」
+        await nap(rand(1200, 1600), token);
+        let newTabs = [];
+        if (before) {
+          const after = await tabIds();
+          newTabs = (after || []).filter(id => !before.includes(id) && id !== tabId);
+          for (const id of newTabs) {
+            try {
+              await chrome.tabs.update(id, { active: false, autoDiscardable: false });
+              stat.openedTabs = (stat.openedTabs || 0) + 1;
+            } catch {}
+          }
+        }
+        // 兜底：模拟点击没弹出新标签页时，直接按 href 后台打开，保证任务落地
+        // v2.4：绝不按 href 直接开页（直接导航不计 Rewards 完成）
+        if (!newTabs.length) {
+          console.warn('[AutoTask] 「' + item.name + '」点击后未开出任务页；'
+            + '按约束不直接打开 URL，请检查页面是否登录 / 卡片是否真的被按下');
+        }
+        if (KEEP_TASK_CLICK_ACTIVE) await ensureTabActive(tabId);
+      }
+    }
+    stat.pages = stat.pages || [];
+    stat.pages.push({
+      page: pageLabel, clicked: pageClicks,
+      anchors: lastRes ? lastRes.anchorCount : 0,
+      doneSkipped: lastRes ? lastRes.doneSkipped : 0,
+      path: lastRes ? lastRes.path : ''
+    });
+    console.info('[AutoTask] ' + pageLabel + ' 本页共点击 ' + pageClicks + ' 张');
+  } catch (err) {
+    if (err !== STOP) stat.error = (err && err.message) || String(err);
+  } finally {
+    if (tabId != null) {
+      try { await chrome.debugger.detach({ tabId }); } catch {}
+      cdpAttached.delete(Number(tabId));
+      // 载体页与弹出的任务页都保留
+    }
+  }
+}
+
+/* ==========================================================================
+ * v2.3 · 点击目标直接来自「获取任务列表」的解析链路
+ *
+ * 用户提示的思路：refreshTodayTasks 用 fetchBothPages() + cardsFromRewardsHtml()
+ * 已经能拿到每个任务的 name / description / points / section / completed / **url**，
+ * 弹窗「今日任务」显示正常就证明这条链路是通的。之前几版却另写一套 DOM 扫描器去
+ * "猜"哪张是任务卡，扫描结果为空时整个点击循环直接不执行 —— 连兜底开页都没有。
+ *
+ * 现在：点击目标 = 任务列表里的条目（带真实任务 URL），定位按 URL 指纹精确匹配 <a>，
+ * 三级降级（CDP 真鼠标 → 页面内事件序列 → 按任务 URL 直接开新标签页），
+ * 最后一级不依赖任何页面注入，保证「任务卡片一定被打开」。
+ * ======================================================================== */
+
+/** RSC destination 里的 \u0026 / &amp; 归一化成真实 URL。 */
+function normalizeTaskUrl(u) {
+  return String(u || '')
+    .replace(/\\+u0026/gi, '&')
+    .replace(/\\+u003d/gi, '=')
+    .replace(/\\+u0025/gi, '%')
+    .replace(/&amp;/gi, '&')
+    .replace(/\s+/g, '')
+    .trim();
+}
+
+/** 与注入侧 urlFp 完全一致的指纹，用于按任务 URL 给点击目标去重/排序。 */
+function taskUrlFp(u) {
+  const h = normalizeTaskUrl(u);
+  try {
+    const x = new URL(h);
+    const q = (x.searchParams.get('q') || '').toLowerCase().replace(/\s+/g, '');
+    let form = '';
+    x.searchParams.forEach((v, k) => { if (/^form$/i.test(k)) form = String(v).toLowerCase(); });
+    return x.hostname.replace(/^www\./i, '') + x.pathname.replace(/\/$/, '') + '|' + q + '|' + form;
+  } catch { return h.split('#')[0].split('?')[0].toLowerCase(); }
+}
+
+/**
+ * v2.4 诊断：导出两个载体页（含所有 frame）里实际存在的任务型 <a>，
+ * 并与任务列表的 URL 指纹比对。用于定位「卡片到底在哪个 frame / 为什么没找到」。
+ */
+async function dumpClickProbe() {
+  const built = await buildClickTargets();
+  const fps = built.targets.map(t => t.fp);
+  const carriers = [
+    { key: 'taskListTabId', url: DASHBOARD_URL, label: 'rewards/dashboard', sidebar: false },
+    { key: 'sidebarTabId', url: SIDEBAR_URL, label: 'bing/sidebar', sidebar: true }
+  ];
+  const tabs = [];
+  for (const c of carriers) {
+    let tabId = null;
+    try {
+      tabId = await openOrNavigate(c.key, c.url, true);
+      await ensureTabActive(tabId);
+      if (c.sidebar) await inject(tabId, ybInject, ['sidebar.open', {}]);
+      await nap(1400);
+      const frames = await injectAllFrames(tabId, ybInject, ['task.probe', { fps }]);
+      tabs.push({
+        label: c.label, url: c.url, tabId,
+        frames: frames.map(f => ({ frameId: f.frameId, error: f.error || null, data: f.result || null }))
+      });
+    } catch (err) {
+      tabs.push({ label: c.label, url: c.url, error: String(err && err.message || err) });
+    }
+  }
+  const payload = {
+    ok: true, at: Date.now(), signedOut: built.signedOut,
+    targets: built.targets.map(t => ({ name: t.name, points: t.points, section: t.section,
+      completed: t.completed, url: t.url, fp: t.fp, page: t.page })),
+    tabs
+  };
+  await store({ clickProbe: payload });
+  console.info('[dumpClickProbe] 完整结构已写入 storage.local.clickProbe');
+  for (const tab of tabs) {
+    for (const f of tab.frames || []) {
+      const d = f.data;
+      console.info('  ' + tab.label + ' frame' + f.frameId
+        + ' url=' + (d && d.url) + ' signedOut=' + (d && d.signedOut)
+        + ' taskAnchors=' + (d && d.taskAnchors ? d.taskAnchors.length : 0)
+        + ' matched=' + (d && d.taskAnchors ? d.taskAnchors.filter(a => a.wanted).length : 0)
+        + (f.error ? ' ERROR=' + f.error : ''));
+    }
+    if (tab.error) console.warn('  ' + tab.label + ' ERROR=' + tab.error);
+  }
+  return payload;
+}
+
+/** v2.3 诊断：导出「获取任务列表」解析出的每个任务及其真实 URL。 */
+async function dumpTaskList() {
+  const built = await buildClickTargets();
+  const payload = {
+    ok: true, at: Date.now(), signedOut: built.signedOut,
+    pages: built.pages,
+    count: built.targets.length,
+    pending: built.targets.filter(t => !t.completed && /^https?:\/\//i.test(t.url)).length,
+    targets: built.targets.map(t => ({
+      name: t.name, description: t.description, points: t.points,
+      section: t.section, completed: t.completed, page: t.page,
+      source: t.source, url: t.url, fp: t.fp
+    }))
+  };
+  await store({ taskListDump: payload });
+  console.info('[dumpTaskList] ' + payload.count + ' 条任务 / ' + payload.pending + ' 条待点，完整结果写入 storage.local.taskListDump');
+  for (const t of payload.targets) {
+    console.info('  ' + (t.completed ? '✓' : '·') + ' [' + t.section + ' +' + t.points + '] '
+      + t.name + '  ' + t.url.slice(0, 140));
+  }
+  return payload;
+}
+
+/** 复用 refreshTodayTasks 的同一份解析代码，产出「可点击任务」清单。 */
+async function buildClickTargets() {
+  const pages = await fetchBothPages();
+  const out = [];
+  const seen = new Set();
+  for (const [page, r] of [['/dashboard', pages.dash], ['/earn', pages.earn]]) {
+    if (!r.ok || isSignInPage(r.html)) continue;
+    // RSC 的 destination 可能被流式 payload 截断（如 "…&filters=sid:"），
+    // 从同一份 HTML 的可见 <a href> 里取指纹相同且更长的完整链接补全。
+    const domLinks = [...String(r.html).matchAll(/<a\b[^>]*href="([^"]+)"/gi)]
+      .map(m => normalizeTaskUrl(m[1]))
+      .filter(h => /^https?:\/\//i.test(h) && h.length > 30);
+    for (const it of cardsFromRewardsHtml(r.html)) {
+      // 与 refreshTodayTasks 相同的去重键：保留每个任务条目（含同名同分的 ×2）
+      const key = it.name + '|' + it.description + '|' + it.points + '|' + it.section;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      let url = normalizeTaskUrl(it.url);
+      let fp = taskUrlFp(url);
+      const full = domLinks.find(h => taskUrlFp(h) === fp && h.length > url.length);
+      if (full) url = full;
+      out.push({
+        name: it.name, description: it.description || '', points: it.points,
+        section: it.section, completed: !!it.completed,
+        url, fp: taskUrlFp(url), page, source: it.source || 'rsc',
+        enriched: !!full
+      });
+    }
+  }
+  const rank = sec => sec === 'daily' ? 0 : sec === 'promo' ? 1 : 2;
+  out.sort((a, b) => rank(a.section) - rank(b.section)
+    || (a.page === b.page ? 0 : a.page === '/dashboard' ? -1 : 1));
+  return {
+    targets: out,
+    signedOut: pages.signedOut,
+    pages: {
+      dashboard: { ok: !!pages.dash.ok, status: pages.dash.status, bytes: (pages.dash.html || '').length, signedOut: isSignInPage(pages.dash.html) },
+      earn: { ok: !!pages.earn.ok, status: pages.earn.status, bytes: (pages.earn.html || '').length, signedOut: isSignInPage(pages.earn.html) }
+    }
+  };
+}
+
+/** 任务列表为空时，打开真实页面用注入从 DOM 反推（带真实 href）。 */
+async function collectTargetsFromLiveDom(token) {
+  const out = [];
+  for (const path of ['/dashboard', '/earn']) {
     if (!isCurrent(token)) break;
+    const url = 'https://rewards.bing.com' + path;
+    let tabId = null;
+    try {
+      tabId = await openOrNavigate('rewardsTabId', url, false);
+      await nap(1800, token);
+      const r = await inject(tabId, ybInject, ['task.list', {}]);
+      if (r && Array.isArray(r.rows)) {
+        for (const x of r.rows) {
+          const u = normalizeTaskUrl(x.url || x.href);
+          if (!/^https?:\/\//i.test(u)) continue;
+          out.push({
+            name: x.name, description: '', points: x.points,
+            section: x.section === 'daily' ? 'daily' : 'promo',
+            completed: !!x.completed, url: u, fp: taskUrlFp(u),
+            page: path, source: 'live-dom'
+          });
+        }
+      }
+      console.info('[AutoTask] 实时 DOM 反推 ' + path + '：' + (r && r.rows ? r.rows.length : 0)
+        + ' 张（候选 ' + (r && r.total ? r.total : 0) + '）');
+    } catch (err) {
+      console.warn('[AutoTask] 实时 DOM 反推失败 ' + path + '：' + (err && err.message || String(err)));
+    }
+  }
+  // 任务标签页保留，不关闭
+  return out;
+}
+
+/**
+ * 按任务列表逐个点击。
+ * 关键保证：任何一级失败，最后都按任务列表里的真实 URL 开新标签页，不会因为
+ * "扫描结果为空" 而静默什么都不做（这正是前几版「打开页面但不点击」的根因）。
+ */
+/* ==========================================================================
+ * v2.4 · 必须「点击对应的卡片」，不能按 URL 直接开页
+ *
+ * 用户实测：任务列表里的 url 是正确的，但 chrome.tabs.create(任务 URL) 打开后
+ * Rewards 不计完成 —— 卡片点击会带上报/跳转上下文，直接导航没有。
+ * 所以本版：
+ *   · 任务列表只用来「定位」卡片（URL 指纹），不再作为打开目标
+ *   · 候选载体页：任务来源页 dashboard/earn → Bing 侧栏（含 iframe，allFrames 注入）
+ *   · 找到 <a> 后：CDP 真鼠标 → 页面内 5 段指针/鼠标事件 + 原生 click()
+ *   · 点击后必须校验「新标签页确实是这个任务」才算成功，标签页保留不关
+ *   · 找不到卡片 / 点击没开出任务页 → 明确失败 + 诊断，绝不直接开 URL
+ * ======================================================================== */
+
+/** 新标签页是否由「这张卡片」打开（按 q 关键词或 spotlight 路径比对）。 */
+async function verifyTaskTab(id, t) {
+  try {
+    const tab = await chrome.tabs.get(id);
+    const u = String((tab && (tab.url || tab.pendingUrl)) || '');
+    if (!/^https?:\/\//i.test(u)) return false;
+    const qOf = v => { try { return (new URL(v).searchParams.get('q') || '').toLowerCase().replace(/\s+/g, ''); } catch { return ''; } };
+    const q1 = qOf(u), q2 = qOf(t.url);
+    if (q1 && q2 && q1 === q2) return true;
+    if (/spotlight\/imagepuzzle/i.test(u) && /spotlight\/imagepuzzle/i.test(t.url)) return true;
+    return taskUrlFp(u) === t.fp;
+  } catch { return false; }
+}
+
+/** 在两个候选载体页（含所有 frame）里按任务 URL 指纹找那张 <a>。 */
+async function locateTaskCard(target, token, stat) {
+  const carriers = [
+    { key: 'taskListTabId', url: 'https://rewards.bing.com' + (target.page || '/dashboard'), label: 'rewards', sidebar: false },
+  ];
+  if (TASKLIST_TRY_SIDEBAR) {
+    carriers.push({ key: 'sidebarTabId', url: SIDEBAR_URL, label: 'sidebar', sidebar: true });
+  }
+  for (const c of carriers) {
+    let tabId = null;
+    try {
+      tabId = await openOrNavigate(c.key, c.url, true);
+      stat.usedTabIds.add(Number(tabId));
+      await ensureTabActive(tabId);
+      if (c.sidebar) {
+        // 侧栏面板默认 display:none，先精确点开 #id_rh_w
+        await inject(tabId, ybInject, ['sidebar.open', {}]);
+      } else {
+        await waitForTaskPageReady(tabId, c.url, token);
+      }
+      const frames = await injectAllFrames(tabId, ybInject, ['task.find', { target }]);
+      for (const f of frames) {
+        if (f.result && f.result.ok) {
+          return {
+            ok: true, tabId, frameId: f.frameId, carrier: c.label,
+            found: f.result, frames: frames.length
+          };
+        }
+      }
+    } catch (err) {
+      console.warn('[AutoTask] 载体页 ' + c.label + ' 定位异常：' + (err && err.message || String(err)));
+    }
+  }
+  return { ok: false };
+}
+
+/**
+ * 按任务列表逐张「点击卡片」。
+ * 成功判据：点击后弹出一个 URL 与该任务匹配的新标签页；没有就算失败，不开任何 URL。
+ */
+async function clickTargetsFromTaskList(token, stat) {
+  const built = await buildClickTargets();
+  let targets = built.targets;
+  stat.taskListPages = built.pages;
+  stat.taskListRaw = targets.length;
+  stat.usedTabIds = stat.usedTabIds || new Set();
+  stat.cardNotFound = 0;
+  stat.clickFailed = 0;
+  stat.signedOut = !!built.signedOut;
+  console.info('[AutoTask] 任务列表解析：' + targets.length + ' 条'
+    + '（dashboard ' + JSON.stringify(built.pages.dashboard) + ' / earn ' + JSON.stringify(built.pages.earn) + '）');
+
+  if (!targets.length && !built.signedOut) {
+    targets = await collectTargetsFromLiveDom(token);
+    stat.taskListSource = 'live-dom';
+    console.info('[AutoTask] 任务列表为空，实时 DOM 反推得到 ' + targets.length + ' 条');
+  } else {
+    stat.taskListSource = 'html-parse';
+  }
+  if (built.signedOut) {
+    console.warn('[AutoTask] 抓到的是登录页：请先在浏览器登录 Microsoft Rewards，'
+      + '否则页面上根本没有任务卡片可点。本轮不会直接打开任务 URL。');
+  }
+
+  const pending = targets.filter(t => !t.completed && /^https?:\/\//i.test(t.url));
+  stat.taskPending = pending.length;
+  console.info('[AutoTask] 待点击卡片 ' + pending.length + ' 张：'
+    + pending.map(t => t.name + '(+' + t.points + ')').join('、'));
+
+  let clicked = 0;
+  const done = new Set();
+
+  for (const t of pending) {
+    if (!isCurrent(token)) break;
+    const key = t.fp + '|' + t.name + '|' + t.points;
+    if (done.has(key)) continue;
+    done.add(key);
+
+    await taskClickSpacing(token);          // 相邻点击统一 5s 间隔
+    const target = { url: t.url, name: t.name, points: t.points, section: t.section, page: t.page };
+
+    // 等卡片真正渲染出来（hydration / 侧栏展开都需要时间）
+    let located = null;
+    for (let round = 0; round < TASKLIST_CARD_WAIT_ROUNDS && !located; round++) {
+      bail(token);
+      located = await locateTaskCard(target, token, stat);
+      if (located.ok) break;
+      await nap(1200, token);
+    }
+
+    if (!located || !located.ok) {
+      stat.cardNotFound++;
+      console.warn('[AutoTask] ✗ 未找到「' + t.name + '」的卡片元素（已试'
+        + TASKLIST_CARD_WAIT_ROUNDS + ' 轮 × rewards 页 / Bing 侧栏所有 frame）。'
+        + '按约束不直接打开任务 URL。请跑 dumpClickProbe 看页面实际有哪些 <a>。');
+      continue;
+    }
+    console.info('[AutoTask] 定位到「' + t.name + '」：' + located.carrier
+      + ' frame' + located.frameId + ' · 匹配=' + located.found.by
+      + ' · href=' + String(located.found.href || '').slice(0, 110));
+
+    // 点击前取一次基线，避免把载体页误判成新开的任务页
+    const before = await tabIds();
+    let opened = false, method = 'none', lastRes = null;
+
+    for (let attempt = 0; attempt < TASKLIST_CLICK_RETRIES && !opened && isCurrent(token); attempt++) {
+      // 每次重试都重新定位（点击后面板可能收起 / DOM 重渲染）
+      let loc = located;
+      if (attempt > 0) {
+        const again = await locateTaskCard(target, token, stat);
+        if (again.ok) loc = again;
+      }
+      const tabId = loc.tabId, frameId = loc.frameId;
+
+      // ① CDP 真鼠标：用卡片在顶层视口的坐标
+      if (TASKLIST_CDP_FIRST && Number.isFinite(loc.found.x) && loc.found.x > 0) {
+        const real = await cdpAttach(tabId).catch(() => false);
+        if (real) {
+          try {
+            await ensureTabActive(tabId);
+            await cdpClickAt(tabId, loc.found.x, loc.found.y);
+            method = 'cdp';
+          } catch (err) { method = 'cdp-failed'; }
+        }
+      }
+      await nap(rand(900, 1300), token);
+      let fresh = registerNewTabs(before, await tabIds(), tabId, stat);
+      for (const id of fresh) {
+        if (await verifyTaskTab(id, t)) { opened = true; break; }
+      }
+
+      // ② 没开出任务页 → 回到元素所在 frame，派发完整事件序列 + 原生 click()
+      if (!opened) {
+        const res = frameId != null
+          ? await injectFrame(tabId, frameId, ybInject, ['task.click', { target }])
+          : await inject(tabId, ybInject, ['task.click', { target }]);
+        lastRes = res;
+        if (res && res.ok) {
+          method = method === 'cdp' || method === 'cdp-failed' ? 'cdp+dom' : 'dom';
+          stat.domClick = (stat.domClick || 0) + 1;
+        }
+        await nap(rand(900, 1200), token);
+        fresh = registerNewTabs(before, await tabIds(), tabId, stat);
+        for (const id of fresh) {
+          if (await verifyTaskTab(id, t)) { opened = true; break; }
+        }
+      }
+      if (!opened && attempt < TASKLIST_CLICK_RETRIES - 1) {
+        console.info('[AutoTask] 「' + t.name + '」第 ' + (attempt + 1) + ' 次点击未开出任务页，重试');
+      }
+    }
+
+    if (opened) {
+      stat.clicked++;
+      clicked++;
+      console.info('[AutoTask] ✓ 任务卡片 ' + clicked + '/' + pending.length + '：' + t.name
+        + '（+' + t.points + ' · ' + located.carrier + ' · ' + method
+        + ' · 已开任务标签页并保留）');
+    } else {
+      stat.clickFailed++;
+      console.warn('[AutoTask] ✗ 「' + t.name + '」卡片已找到但 ' + TASKLIST_CLICK_RETRIES
+        + ' 次点击都没开出任务页（method=' + method
+        + (lastRes ? ' · last=' + JSON.stringify(lastRes).slice(0, 160) : '')
+        + '）。按约束不直接打开 URL；请跑 dumpClickProbe / 查看控制台注入错误。');
+    }
+  }
+
+  stat.pages = stat.pages || [];
+  stat.pages.push({
+    page: 'tasklist', clicked, anchors: targets.length,
+    pending: pending.length, source: stat.taskListSource,
+    cardNotFound: stat.cardNotFound, clickFailed: stat.clickFailed
+  });
+  // 只 detach 调试会话，载体页与弹出的任务标签页全部保留
+  for (const id of stat.usedTabIds) {
+    try { await chrome.debugger.detach({ tabId: id }); } catch {}
+    cdpAttached.delete(id);
+  }
+  console.info('[AutoTask] 卡片点击完成：成功 ' + clicked + ' / 待点 ' + pending.length
+    + '，未找到卡片 ' + stat.cardNotFound + '，点击失败 ' + stat.clickFailed
+    + '（本版不直接打开任何任务 URL）');
+}
+
+
+/* ==========================================================================
+ * v2.5 · 完全照人操作：打开相应页面 → 滚动 → 鼠标点击卡片
+ *
+ * 前几版把这三步拆成了 fetch HTML / RSC 解析 / URL 指纹 / 跨 frame 定位 /
+ * CDP 调试会话 / 新标签页校验 / 多轮重试……任何一个环节返回空，整轮就静默不动。
+ * 而且 fetch 拿到的是登录页（标签页里却是登录态），任务列表直接为空。
+ *
+ * 这版全部删掉：
+ *   · 不 fetch 任何 HTML，任务卡就是当前这个真实标签页里看得见的 <a>
+ *   · 不 attach chrome.debugger（调试横幅 / 授权 / 占用都可能让整轮卡死）
+ *   · 不算指纹、不猜 iframe、不校验新标签页
+ *   · 打开页面 → 滚一遍触发渲染 → 注入扫描 → 逐张滚到卡片 + 鼠标事件 + a.click()
+ *   · 每步都打日志；0 张时把页面里所有 <a> 列出来，不再静默
+ * ======================================================================== */
+
+/* 官方返回的 title 有时是内部 ID，按「完成项数量 +1」兜底判分 */
+function hitByCount(before, after) {
+  try {
+    const b = (before && before.tasks || []).filter(t => t.complete).length;
+    const a = (after && after.tasks || []).filter(t => t.complete).length;
+    return a > b;
+  } catch { return false; }
+}
+
+async function humanWaitPage(tabId, token) {
+  for (let i = 0; i < 24 && isCurrent(token); i++) {
+    const t = await chrome.tabs.get(tabId).catch(() => null);
+    if (t && t.status === 'complete') break;
+    await nap(400, token);
+  }
+  await nap(HUMAN_PAGE_SETTLE_MS, token);
+}
+
+async function humanClickTasks(token, stat) {
+  const pages = FLYOUT_URLS.map((u, i) => ({ url: u, label: '侧栏 flyout ' + (i + 1), flyout: true }))
+    .concat([
+      { url: DASHBOARD_URL, label: '/dashboard' },
+      { url: EARN_URL, label: '/earn' }
+    ]);
+  let clicked = 0, cardTotal = 0;
+  stat.usedTabIds = stat.usedTabIds || new Set();
+  stat.humanEmpty = [];
+  stat.humanSignedOut = false;
+  stat.skipped = 0;
+  stat.officialVerified = 0;
+  stat.officialUnconfirmed = 0;
+  stat.officialAvailable = false;
+
+  for (const pg of pages) {
+    if (!isCurrent(token)) break;
+    let tabId = null;
+    try {
+      // ① 打开相应页面（复用同一个标签页，保持你已有的登录态）
+      tabId = await openOrNavigate('humanTabId', pg.url, true);
+      stat.usedTabIds.add(Number(tabId));
+      await ensureTabActive(tabId);
+      await humanWaitPage(tabId, token);
+
+      // v2.7 关键：chrome.debugger 一 attach，浏览器顶部会出现
+      // 「已开始调试此浏览器」横幅，把整个网页视口下推约 80px。
+      // 旧版先 scan 缓存坐标、点击时才 attach → 横幅出现后旧坐标全部点偏。
+      // 所以这里先 attach，等布局稳定下来，后面所有扫描/坐标都基于同一布局。
+      const earlyAttached = await cdpAttach(tabId).catch(() => false);
+      if (earlyAttached) {
+        console.info('[AutoTask] 调试会话已建立（横幅已出现），等待布局稳定后再定位卡片');
+        await nap(900, token);
+      }
+
+      // 侧栏面板默认收起：先点顶部积分入口
+      if (pg.flyout) {
+        const opened = await inject(tabId, ybInject, ['human.openPanel', {}]);
+        if (opened && opened.ok) { await nap(1200, token); }
+      }
+      // ② 滚动：先整页滚一遍触发懒加载 / hydration，再扫一次
+      if (HUMAN_SCROLL_RESCAN) {
+        await inject(tabId, ybInject, ['human.scroll', {}]);
+        await nap(1200, token);
+      }
+      let scan = await inject(tabId, ybInject, ['human.scan', {}]);
+      if ((!scan || !scan.total) && HUMAN_SCROLL_RESCAN) {
+        await inject(tabId, ybInject, ['human.scroll', {}]);
+        await nap(1600, token);
+        scan = await inject(tabId, ybInject, ['human.scan', {}]);
+      }
+      let cards = (scan && Array.isArray(scan.cards)) ? scan.cards : [];
+      const skipped = (scan && Array.isArray(scan.skipped)) ? scan.skipped : [];
+      stat.skipped += skipped.length;
+      cardTotal += cards.length;
+      console.info('[AutoTask] ' + pg.label + '：滚动后看到 ' + cards.length + ' 张可点任务卡，'
+        + '跳过 ' + skipped.length + ' 张不给分/已完成卡'
+        + (scan && scan.title ? '，标题「' + scan.title + '」' : ''));
+      for (const sk of skipped) {
+        console.info('[AutoTask]   ↳ 跳过「' + (sk.title || '').slice(0, 28) + '」(+'
+          + sk.points + ')：' + sk.reason);
+      }
+
+      /* 官方任务列表白名单增强：只保留接口里 !complete && pointsMax>0 的项。
+         接口不可用 / 标题对不上（内部 ID）时保留本地白名单结果，只打日志。 */
+      let official = null;
+      let lastOfficial = null;      // 逐次核验的基线，每次点完更新
+      if (HUMAN_VERIFY_OFFICIAL) {
+        official = await inject(tabId, ybInject, ['human.verify', {}]);
+        if (official && official.ok && Array.isArray(official.tasks) && official.tasks.length) {
+          stat.officialAvailable = true;
+          const pendingOfficial = official.tasks.filter(t => !t.complete && t.pointsMax > 0);
+          lastOfficial = official;
+          console.info('[AutoTask] 官方任务列表：' + official.tasks.length + ' 项，其中待完成且给分 '
+            + pendingOfficial.length + ' 项（已完成/0 分项不计）');
+          const readable = pendingOfficial.map(t => t.title.replace(/\s+/g, ''))
+            .filter(t => t.length >= 4 && !/^dailyset:|^more:|^\d+$/.test(t));
+          if (readable.length) {
+            const beforeN = cards.length;
+            const beforeCards = cards.slice();
+            cards = cards.filter(c => {
+              const ct = String(c.title || c.text || '').replace(/\s+/g, '');
+              return readable.some(t => t.indexOf(ct.slice(0, 6)) >= 0 || ct.indexOf(t.slice(0, 6)) >= 0);
+            });
+            if (cards.length === 0 && beforeN > 0) {
+              // 接口标题可能是英文 / 内部 ID，与页面中文标题对不上。
+              // 绝不因为数据格式差异把整轮变成「一张都不点」。
+              cards = beforeCards;
+              console.warn('[AutoTask] 官方任务标题与页面卡片对不上（可能是英文/内部 ID），'
+                + '撤销白名单过滤，保留本地严格白名单 ' + beforeN + ' 张');
+            } else if (cards.length !== beforeN) {
+              stat.skipped += beforeN - cards.length;
+              console.info('[AutoTask] 官方白名单过滤：' + beforeN + ' → ' + cards.length
+                + ' 张（其余不在今日给分任务列表里）');
+            }
+          }
+        } else {
+          console.info('[AutoTask] 官方接口不可用（'
+            + ((official && official.reason) || '无返回') + '），采用本地严格白名单');
+        }
+      }
+
+      if (scan && scan.signedOut) {
+        stat.humanSignedOut = true;
+        console.warn('[AutoTask] ' + pg.label + ' 当前显示的是 Microsoft 登录页。'
+          + '请在这个标签页里登录 Rewards 后再点「自动完成任务」——脚本没法替你登录。');
+      }
+      if (!cards.length) {
+        stat.humanEmpty.push(pg.label);
+        const probe = await inject(tabId, ybInject, ['human.probe', {}]);
+        console.warn('[AutoTask] ' + pg.label + ' 没扫到任务卡片。页面里共有 '
+          + (probe && probe.total ? probe.total : 0) + ' 个 <a>、'
+          + ((probe && probe.badgeCards) ? probe.badgeCards.length : 0) + ' 张 +N 徽章卡：');
+        for (const sk of ((probe && probe.skipped) || []).slice(0, 12)) {
+          console.warn('    [跳过] +' + sk.points + '  ' + (sk.title || '').slice(0, 30)
+            + ' → ' + sk.reason);
+        }
+        for (const bc of ((probe && probe.badgeCards) || []).slice(0, 12)) {
+          console.warn('    [徽章] +' + bc.points + '  ' + bc.w + 'x' + bc.h
+            + ' @(' + bc.x + ',' + bc.y + ')  ' + (bc.title || '').slice(0, 40));
+        }
+        for (const l of ((probe && probe.links) || []).slice(0, 15)) {
+          console.warn('    [链接] ' + l.w + 'x' + l.h + '  '
+            + (l.text || '').slice(0, 50) + '  ' + (l.href || '').slice(0, 110));
+        }
+        continue;
+      }
+
+      // ③ 逐张：滚到卡片 → 鼠标事件序列 → 原生 click()（target=_blank 自己开新标签页）
+      for (let order = 0; order < cards.length && isCurrent(token); order++) {
+        const c = cards[order];
+        await taskClickSpacing(token);            // 相邻点击固定 5s
+        const before = await tabIds();
+        let res = null, fresh = [], method = '', realMouse = false, aim = null;
+
+        // ① 点击前一刻才取坐标：滚进视口 → 重读 rect → 返回顶层视口实时中心点。
+        //    绝不用扫描时缓存的 c.x/c.y：调试横幅、hydration、内部滚动容器、
+        //    5s 等待、上一张点击后面板刷新，都会让旧坐标失效（点偏到空白）。
+        const aimPayload = {
+          idx: c.idx, href: c.href, order,
+          offerIndex: c.offerIndex, badgeIndex: c.badgeIndex, title: c.title || ''
+        };
+        aim = await inject(tabId, ybInject, ['human.aim', aimPayload]);
+        if (!aim || !aim.ok) {
+          // 面板可能在上一次点击后收起 / 刷新，展开后重新瞄准一次
+          await inject(tabId, ybInject, ['human.openPanel', {}]);
+          await nap(1000, token);
+          aim = await inject(tabId, ybInject, ['human.aim', aimPayload]);
+        }
+        if (!aim || !aim.ok) {
+          stat.aimFailed = (stat.aimFailed || 0) + 1;
+          console.warn('[AutoTask] ✗ 无法定位「' + (c.title || c.text || '').slice(0, 30) + '」'
+            + (aim ? '，当前页面卡片：' + JSON.stringify(aim.titles || []).slice(0, 200)
+                   : '，注入无返回'));
+          continue;
+        }
+        console.info('[AutoTask] 瞄准「' + (aim.title || aim.text || '').slice(0, 26) + '」'
+          + ' tag=' + aim.tag + ' kind=' + aim.kind
+          + ' rect=' + Math.round(aim.rect.left) + ',' + Math.round(aim.rect.top)
+          + ' ' + Math.round(aim.w) + 'x' + Math.round(aim.h)
+          + ' → 点击 (' + Math.round(aim.x) + ',' + Math.round(aim.y) + ')'
+          + ' 视口 ' + aim.vp.w + 'x' + aim.vp.h + ' scrollY=' + Math.round(aim.scrollY));
+
+        // ② 真实鼠标：chrome.debugger + Input.dispatchMouseEvent（isTrusted=true）
+        if (Number.isFinite(aim.x) && aim.x > 0 && Number.isFinite(aim.y) && aim.y > 0) {
+          const attached = await cdpAttach(tabId).catch(() => false);
+          if (attached) {
+            try {
+              await ensureTabActive(tabId);
+              await cdpClickAt(tabId, aim.x, aim.y);
+              realMouse = true;
+              method = 'CDP 真鼠标';
+              await nap(900, token);
+              fresh = registerNewTabs(before, await tabIds(), tabId, stat);
+            } catch (err) {
+              console.warn('[AutoTask] CDP 点击异常：' + (err && err.message || String(err)));
+            }
+          }
+        }
+
+        // ③ CDP 不可用或没开出任务页 → 页面内合成事件降级（明确标注，别当成成功）
+        if (!fresh.length) {
+          try {
+            res = await inject(tabId, ybInject, ['human.click', aimPayload]);
+          } catch (err) {
+            console.warn('[AutoTask] 点击异常：' + (err && err.message || String(err)));
+          }
+          method = realMouse ? 'CDP+合成补点' : '合成事件(降级·可能不计分)';
+          await nap(900, token);
+          fresh = registerNewTabs(before, await tabIds(), tabId, stat);
+        }
+
+        if (realMouse) stat.realMouse = (stat.realMouse || 0) + 1;
+        else stat.degraded = (stat.degraded || 0) + 1;
+        stat.clicked++;
+        clicked++;
+        console.info('[AutoTask] ✓ ' + pg.label + ' 点击 ' + (order + 1) + '/' + cards.length
+          + '：' + (aim.title || aim.text || '').slice(0, 34) + '（+' + aim.points + ' · ' + aim.kind + '）'
+          + ' · ' + method + ' @(' + Math.round(aim.x) + ',' + Math.round(aim.y) + ')'
+          + (res && res.ok ? ' · 合成事件 ' + res.dispatched + ' 段' : '')
+          + ' · 新标签页 ' + fresh.length + ' 个（保留不关）');
+
+        /* 点完核验：官方接口说 complete 变了才算真拿到分。
+           参考项目 activity_worker 的 confirmed_completed —— 点击成功 ≠ 完成。 */
+        if (HUMAN_VERIFY_OFFICIAL && stat.officialAvailable) {
+          await nap(1800, token);
+          const after = await inject(tabId, ybInject, ['human.verify', {}]);
+          if (after && after.ok && Array.isArray(after.tasks)) {
+            const name = String(aim.title || '').replace(/\s+/g, '');
+            const hit = after.tasks.find(t =>
+              String(t.title || '').replace(/\s+/g, '').slice(0, 6) === name.slice(0, 6));
+            if (hit && (hit.complete || (hit.pointsMax > 0 && hit.pointsEarned >= hit.pointsMax))) {
+              stat.officialVerified++;
+              console.info('[AutoTask]   ✓ 官方已确认计分：' + (aim.title || '').slice(0, 26));
+            } else {
+              stat.officialUnconfirmed++;
+              console.warn('[AutoTask]   ⚠ 官方未确认计分：' + (aim.title || '').slice(0, 26)
+                + '（可能需要答题/进一步互动，或这张本身不给分）');
+            }
+          } else if (after && after.ok && hitByCount(lastOfficial, after)) {
+            stat.officialVerified++;
+            console.info('[AutoTask]   ✓ 官方完成项 +1：' + (aim.title || '').slice(0, 26));
+          }
+          if (after && after.ok) lastOfficial = after;
+        }
+      }
+
+      // 参考项目 open_rewards_panel 是「找到即停」：flyout / dashboard / earn
+      // 展示的是同一组每日任务，继续遍历会把同一张卡重复点三遍。
+      console.info('[AutoTask] 已在 ' + pg.label + ' 找到并点击卡片，停止遍历其它候选页');
+      break;
+    } catch (err) {
+      console.warn('[AutoTask] ' + pg.label + ' 出错：' + (err && err.message || String(err)));
+    }
+  }
+
+  stat.pages = stat.pages || [];
+  stat.pages.push({ page: 'human', clicked, anchors: cardTotal, pending: cardTotal });
+  // 只 detach 调试会话，载体页 / 任务标签页全部保留
+  for (const id of stat.usedTabIds) {
+    try { await chrome.debugger.detach({ tabId: id }); } catch {}
+    cdpAttached.delete(id);
+  }
+  console.info('[AutoTask] 人类式点击完成：共点 ' + clicked + ' 张卡片，'
+    + '跳过 ' + (stat.skipped || 0) + ' 张不给分/已完成卡'
+    + '（CDP 真鼠标 ' + (stat.realMouse || 0) + ' / 降级 ' + (stat.degraded || 0) + '）'
+    + (stat.officialAvailable
+        ? '，官方确认计分 ' + (stat.officialVerified || 0) + ' / 未确认 ' + (stat.officialUnconfirmed || 0)
+        : '，官方核验不可用（以页面白名单为准）')
+    + (stat.humanEmpty.length ? '，空页面：' + stat.humanEmpty.join('、') : ''));
+}
+
+/**
+ * v2.5 主入口：默认 human —— 打开页面、滚动、鼠标点击卡片。
+ * 其余模式只作可切换的回退，默认都不走。
+ */
+async function completePendingTaskCards(level, token) {
+  lastTaskClickAt = 0;                      // 新一轮从零开始计时
+  const stat = {
+    clicked: 0, skipped: 0, real: false, openedTabs: 0, pages: [],
+    signedOut: false, fallbackOpened: 0, domClick: 0
+  };
+  if (TASK_MODE === 'human') {
+    console.info('[AutoTask] 任务模式：打开页面 → 滚动 → 鼠标点击卡片（不使用 CDP / 不抓 HTML）');
+    await humanClickTasks(token, stat);
+    return stat;
+  }
+  if (TASK_MODE === 'tasklist') {
+    console.info('[AutoTask] 任务模式：任务列表驱动（解析 dashboard/earn → 按任务 URL 找元素点击）');
+    await clickTargetsFromTaskList(token, stat);
+    return stat;
+  }
+  if (TASK_MODE === 'sidebar') {
+    console.info('[AutoTask] 任务模式：Bing 侧栏（' + SIDEBAR_URL + '）');
+    const done = new Set();
+    await clickCardsInSidebar(level, token, done, stat);
+    return stat;
+  }
+  return completePendingTaskCardsOnRewards(level, token, stat);
+}
+
+/** v2.0 回退：dashboard 与 earn 两页都扫、都点，每页独立去重。 */
+async function completePendingTaskCardsOnRewards(level, token, stat) {
+  for (let i = 0; i < TASK_PAGES.length; i++) {
+    if (!isCurrent(token)) break;
+    const url = TASK_PAGES[i];
+    console.info('[AutoTask] 扫描任务页 ' + (i + 1) + '/' + TASK_PAGES.length + '：' + url);
+    const done = new Set();                // ← 本页独立的已点集合
     await clickCardsOnPage(url, level, token, done, stat);
   }
   return stat;
@@ -2856,27 +5388,271 @@ async function completePendingTaskCards(level, token) {
 
 var autoCompleteActive = false;
 
+/* ============================================================================
+ * v1.0：每次执行「自动完成任务」之前，先同步状态，再决定是否动手
+ * ----------------------------------------------------------------------------
+ * 首次运行时本地缓存是空的，v2.9 只能靠官方接口判全完成；而官方接口字段
+ * （counters.pcSearch 是数组、日期键 11/8/2026 无前导零）解析不全，
+ * 判不出 → 照旧打开侧栏。这就是「装好第一次点仍然打开侧栏」的原因。
+ *
+ * 现在固定为「先同步 → 后判定」：
+ *   ① 本地缓存（同一 UTC 日、100%）→ 状态已同步，零请求
+ *   ② 官方接口只读同步（service worker fetch，不打开任何页面）
+ *   ③ 复用用户【已打开】的 Bing/Rewards 标签页，在页面上下文里重试同步
+ *      （带浏览器 Cookie，最可靠；不新建/激活/导航任何页面）
+ *   ④ 仍判不出 → 完整同步 Rewards 页面任务列表（refreshTodayTasks）
+ *   ⑤ 用同步后的最新状态判定；全完成即零动作返回
+ * 全部只读，任何一步都不会打开侧栏、不会点卡片、不会搜索。
+ * ========================================================================== */
+const ALL_DONE_MIN_ROWS = 3;        // 官方接口至少要给出 3 项才敢判「全完成」
+const OFFICIAL_CHECK_TIMEOUT = 2500;
+
+function sameUtcDay(ts) {
+  try {
+    return new Date(Number(ts)).toISOString().slice(0, 10)
+      === new Date().toISOString().slice(0, 10);
+  } catch { return false; }
+}
+
+/** 本地缓存：今日任务列表必须非空、未登录页、100% 且每项完成，且是同一 UTC 日。 */
+function cachedAllDone(tt) {
+  if (!tt || tt.signedOut || !Array.isArray(tt.items) || !tt.items.length) return false;
+  if (!sameUtcDay(tt.updatedAt)) return false;
+  if (Number(tt.percent) < 100) return false;
+  return tt.items.every(i => !!i.completed || Number(i.earned) >= Number(i.points));
+}
+
+/** 把官方 getuserinfo 摊平成 { name, points, earned, complete } 行。
+ *  字段兼容是刻意的：真实接口里 counters.pcSearch 常是【数组】、
+ *  dailySetPromotions 的键可能是 11/8/2026（无前导零）、
+ *  完成态字段可能是 complete / isCompleted / isComplete / completed。
+ *  解析不出足够行数时返回稀疏数组，由调用方按「宁可继续跑」兜底。 */
+function officialTaskRows(data) {
+  const dash = (data && data.dashboard) || {};
+  const rows = [];
+  const num = v => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
+  const push = (name, it) => {
+    if (!it || typeof it !== 'object') return;
+    const max = num(it.pointProgressMax ?? it.pointsMax ?? it.max ?? it.maxPoints ?? 0);
+    const cur = num(it.pointProgress ?? it.progress ?? it.current ?? it.pointsEarned ?? 0);
+    if (!(max > 0)) return;
+    // 保守判定：显式标未完成，或积分进度未满，一律算未完成。
+    // 接口偶有 complete=true 但 pointProgress 未满的矛盾数据，宁可继续跑。
+    const flag = it.complete ?? it.isCompleted ?? it.isComplete ?? it.completed;
+    const complete = flag !== false && cur >= max;
+    rows.push({ name: String(name), points: max, earned: Math.min(cur, max), complete });
+  };
+  const pushAny = (key, v) => {
+    if (Array.isArray(v)) v.forEach((x, i) => push(key + '#' + i, x));
+    else if (v && typeof v === 'object') push(key, v);
+  };
+
+  // 搜索配额 / 各类计数器：对象或数组都收
+  const user = dash.userStatus || {};
+  const counters = user.counters || dash.pointsCounters || {};
+  for (const key of Object.keys(counters)) pushAny(key, counters[key]);
+
+  // 当日每日任务集：兼容 ISO、M/D/YYYY、MM/DD/YYYY 三种键
+  const d = new Date();
+  const iso = d.toISOString().slice(0, 10);
+  const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(d.getUTCDate()).padStart(2, '0');
+  const mdy = (d.getUTCMonth() + 1) + '/' + d.getUTCDate() + '/' + d.getUTCFullYear();
+  const mdyPad = mm + '/' + dd + '/' + d.getUTCFullYear();
+  const dsp = dash.dailySetPromotions || {};
+  let daily = dsp[iso] || dsp[mdy] || dsp[mdyPad] || [];
+  if (!(Array.isArray(daily) && daily.length)) {
+    for (const k of Object.keys(dsp)) {
+      if (String(k) === mdy || String(k) === mdyPad || String(k).indexOf(iso) >= 0) {
+        if (Array.isArray(dsp[k])) { daily = dsp[k]; break; }
+      }
+    }
+  }
+  if (!(Array.isArray(daily) && daily.length) && Array.isArray(dsp)) daily = dsp;
+  for (const it of (Array.isArray(daily) ? daily : [])) {
+    if (it && typeof it === 'object') push(it.title || it.name || it.offerId || 'daily', it);
+  }
+
+  // 更多活动（排除未解锁的）
+  for (const it of (Array.isArray(dash.morePromotions) ? dash.morePromotions : [])) {
+    if (!it || typeof it !== 'object') continue;
+    if (String(it.exclusiveLockedFeatureStatus || '').toLowerCase() === 'locked') continue;
+    push(it.title || it.name || it.offerId || 'more', it);
+  }
+  return rows;
+}
+
+/** 由统一解析后的行判断是否「全部完成且数据可信」。 */
+function rowsAllDone(rows) {
+  if (!Array.isArray(rows) || !rows.length) return { ok: false, reason: 'no-rows' };
+  const pending = rows.filter(r => !r.complete).length;
+  const hasSearch = rows.some(r => /search/i.test(r.name));
+  // 必须包含搜索配额、至少 3 项、且无未完成项 —— 数据不全时宁可继续跑
+  const allDone = hasSearch && rows.length >= ALL_DONE_MIN_ROWS && pending === 0;
+  return { ok: allDone, pending, rows: rows.length, hasSearch,
+    reason: allDone ? 'all-done' : 'pending:' + pending };
+}
+
+/**
+ * 只读官方接口：绝对 URL + credentials:include，不打开任何标签页、不注入脚本。
+ * 超时 / 未登录 / 解析失败一律返回 null（不误判成「全完成」）。
+ */
+async function fetchOfficialTaskRows() {
+  const url = 'https://rewards.bing.com/api/getuserinfo?type=1&X-Requested-With=XMLHttpRequest';
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), OFFICIAL_CHECK_TIMEOUT);
+  try {
+    const res = await fetch(url, {
+      credentials: 'include', cache: 'no-store', redirect: 'error', signal: ctrl.signal,
+      headers: { 'X-Requested-With': 'XMLHttpRequest' }
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (!data || !data.dashboard) return null;
+    return officialTaskRows(data);
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * 复用用户【已经打开】的 Bing / Rewards 标签页，在页面上下文里重读官方状态。
+ * 页面上下文自带浏览器 Cookie，比 service worker 直接 fetch 更可靠；
+ * 不新建、不激活、不导航任何页面，也不改 DOM —— 只对已存在标签页做只读注入。
+ */
+async function syncFromExistingTab() {
+  if (typeof inject !== 'function' || typeof ybInject !== 'function' || !chrome.tabs) return null;
+  let tabs = [];
+  try {
+    tabs = await chrome.tabs.query({ url: ['https://rewards.bing.com/*', 'https://*.bing.com/*'] });
+  } catch { return null; }
+  if (!Array.isArray(tabs) || !tabs.length) return null;
+  // 优先 Rewards 页（同源请求最稳）
+  tabs.sort((a, b) => {
+    const ra = /rewards\.bing\.com/i.test(a.url || '') ? 0 : 1;
+    const rb = /rewards\.bing\.com/i.test(b.url || '') ? 0 : 1;
+    return ra - rb;
+  });
+  for (const t of tabs.slice(0, 6)) {
+    if (typeof t.id !== 'number') continue;
+    const r = await inject(t.id, ybInject, ['human.sync', {}]).catch(() => null);
+    if (r && r.ok && r.data && r.data.dashboard) {
+      const rows = officialTaskRows(r.data);
+      if (rows.length) return rows;
+    }
+  }
+  return null;
+}
+
+/**
+ * v1.0：每次执行前的固定前置步骤 —— 先同步状态，再判定是否全完成。
+ * 返回 { ok, source, synced, reason }；ok=true 时调用方必须零动作直接返回。
+ * 时序：缓存 → 官方只读 → 已开标签页只读 → 页面完整同步 → 判定。
+ * 任何同步都失败时一律返回 ok:false（宁可继续正常流程，绝不误判全完成）。
+ */
+async function checkAllTasksDone() {
+  const st = await load(['todayTasks', 'officialTaskState', 'taskSync']);
+
+  // ① 本地缓存已是今天且 100%：状态已同步过，零请求、零动作
+  if (cachedAllDone(st.todayTasks)) return { ok: true, source: 'cache', synced: false };
+
+  // ② 上一轮官方核验的短时状态（同一 UTC 日内有效）
+  const os = st.officialTaskState;
+  if (os && os.allDone && sameUtcDay(os.updatedAt)) {
+    return { ok: true, source: 'official-cache', synced: false };
+  }
+
+  // ③ 官方接口只读同步（service worker，不打开任何页面）
+  let rows = await fetchOfficialTaskRows();
+  let via = 'official';
+  console.info('[AutoTask] 先同步状态：官方接口 '
+    + (rows === null ? '不可用' : rows.length + ' 项'));
+
+  // ④ 官方拿不到 → 复用已打开的 Bing/Rewards 标签页再同步一次
+  if (rows === null || !rows.length) {
+    const fromTab = await syncFromExistingTab();
+    if (fromTab && fromTab.length) {
+      rows = fromTab; via = 'open-tab';
+      console.info('[AutoTask] 先同步状态：改用已打开的页面，读到 ' + rows.length + ' 项');
+    }
+  }
+
+  let verdict = rowsAllDone(rows);
+  if (rows !== null) {
+    await store({
+      officialTaskState: { allDone: verdict.ok, rows: verdict.rows,
+        pending: verdict.pending, updatedAt: Date.now() },
+      taskSync: { source: via, allDone: verdict.ok, rows: verdict.rows,
+        pending: verdict.pending, signedOut: false, updatedAt: Date.now() }
+    }).catch(() => {});
+  }
+  if (verdict.ok) return { ok: true, source: via, synced: true, rows: verdict.rows };
+
+  // ⑤ 仍判不出 → 完整同步 Rewards 页面任务列表（只读抓取，不打开侧栏）
+  //    这一段只在「确实还需要动手」时才会跑，全完成时绝不会走到这里。
+  let pageSync = { ok: false, signedOut: true, count: 0 };
+  try {
+    const r = await refreshTodayTasks(flowToken);
+    const { todayTasks } = await load(['todayTasks']);
+    pageSync = {
+      ok: !!r.ok,
+      signedOut: !!r.signedOut || !!(todayTasks && todayTasks.signedOut),
+      count: (r && r.count) || (todayTasks && todayTasks.items ? todayTasks.items.length : 0),
+      allDone: cachedAllDone(todayTasks)
+    };
+    await store({ taskSync: {
+      source: 'pages', allDone: pageSync.allDone, rows: pageSync.count,
+      signedOut: pageSync.signedOut, updatedAt: Date.now()
+    } }).catch(() => {});
+  } catch (err) {
+    console.warn('[AutoTask] 页面状态同步失败：' + (err && err.message || err));
+  }
+  console.info('[AutoTask] 先同步状态：页面任务 ' + pageSync.count + ' 项'
+    + (pageSync.signedOut ? '（检测到登录页）' : '') + '，全完成=' + !!pageSync.allDone);
+
+  if (pageSync.allDone && !pageSync.signedOut) {
+    return { ok: true, source: 'pages', synced: true, rows: pageSync.count };
+  }
+  return { ok: false, synced: true,
+    reason: verdict.reason + (pageSync.signedOut ? '/signed-out' : ''),
+    rows: verdict.rows, via };
+}
+
+
+
 /**
  * 一次完整的自动完成任务：
- *   刷新任务 → 点击未完成卡片（已完成跳过）→ 按剩余搜索分数自动决定次数跑拟人搜索 → 刷新
+ *   刷新任务 → 在 Bing 侧栏（或回退模式下的 dashboard/earn 两页）逐个点击未完成卡片
+ *            （每日活动 → 日常任务，统一 5s 间隔，任务页保留）
+ *            → 再进行日常搜索（按剩余搜索分数决定次数，搜索页保持焦点、结束关闭）→ 刷新
  * 定时触发与首页按钮都走这里；与正式运行互斥，点「停止」可中断。
  */
 async function runAutoComplete(opts) {
   const o = opts || {};
-  const st = await load(['running', 'todayTasks', 'todaySearch']);
-  // 今日任务已全部完成：不刷新、不打开页面、不点卡片、不搜索、不改状态
-  const tt = st.todayTasks;
-  const allDone = tt && Array.isArray(tt.items) && tt.items.length > 0
-    && Number(tt.percent) >= 100
-    && tt.items.every(i => !!i.completed || Number(i.earned) >= Number(i.points));
-  if (allDone && !o.force) {
-    console.info('[AutoTask] 今日任务已完成（100%），本次不执行任何操作');
-    return { ok: true, skipped: true, reason: 'allDone', clicked: 0, searches: 0 };
-  }
-  if (autoCompleteActive || flowActive || st.running) return { ok: false, reason: 'running' };
+  /* v1.0：防并发提前，保证「先同步状态」期间不会被第二次点击打断 */
+  if (autoCompleteActive || flowActive) return { ok: false, reason: 'running' };
   autoCompleteActive = true;
-  const token = ++flowToken;
   try {
+    /* 固定前置步骤：每次执行（按钮 / 定时 / 首次运行）都先同步状态再判定。
+       同步全程只读，不打开侧栏、不点卡片、不搜索、不写 running。 */
+    if (!o.force) {
+      const done = await checkAllTasksDone().catch(err => ({
+        ok: false, reason: 'sync-error:' + (err && err.message || err)
+      }));
+      if (done.ok) {
+        console.info('[AutoTask] 已先同步状态（' + done.source + '）：今日任务已完成，'
+          + '本次不执行任何操作 —— 不打开侧边栏、不点卡片、不搜索');
+        return { ok: true, skipped: true, reason: 'allDone', source: done.source,
+          synced: done.synced, clicked: 0, searches: 0 };
+      }
+      console.info('[AutoTask] 已先同步状态：仍有任务未完成（'
+        + (done.reason || 'unknown') + '），继续自动完成流程');
+    }
+    const st = await load(['running', 'todaySearch']);
+    if (st.running) return { ok: false, reason: 'running' };
+    const token = ++flowToken;
     const tasks = await getAutoTasks();
     const level = clampInt(Number(o.level) || tasks.level, 1, 3);
     await store({
@@ -2884,7 +5660,17 @@ async function runAutoComplete(opts) {
       error: null, warning: null, runLevel: level, lastActivity: Date.now(),
       runAuto: !o.manual, runAutoTime: o.time || null
     });
-    await refreshTodayTasks(token).catch(() => {});
+    // 先记下用户本来所在的标签页，任务/搜索阶段会抢焦点，结束后还回去
+    if (RESTORE_FOCUS_ON_FINISH) {
+      const cur = await load(['userActiveTabId']);
+      if (cur.userActiveTabId == null) {
+        const active = await chrome.tabs.query({ active: true, lastFocusedWindow: true }).catch(() => []);
+        const keep = Array.isArray(active) && active[0] && typeof active[0].id === 'number'
+          ? active[0].id : null;
+        await store({ userActiveTabId: keep });
+      }
+    }
+    // 状态已在 checkAllTasksDone 里同步过，这里不再重复刷新
     const clickRes = await completePendingTaskCards(level, token);
     const searches = isCurrent(token) ? await autoSearchCount(o.cap) : 0;
 
@@ -2898,9 +5684,32 @@ async function runAutoComplete(opts) {
     }
     // handleStart 会推进 flowToken，收尾刷新不复用旧 token
     await refreshTodayTasks().catch(() => {});
-    await closeTab('rewardsTabId').catch(() => {});
-    console.info('[AutoTask] 自动完成：点击 ' + clickRes.clicked + ' 张卡片，搜索 ' + searches + ' 次');
-    return { ok: true, clicked: clickRes.clicked, skipped: clickRes.skipped, searches, level };
+    // tasklist 模式的载体页与弹出的任务标签页都要保留，不清理
+    if (TASK_MODE === 'rewards') await closeTab('rewardsTabId').catch(() => {});
+    const perPage = (clickRes.pages || []).map(p => p.page === 'human'
+      ? p.page + '=' + p.clicked + '(卡片' + (p.anchors || 0) + ')'
+      : p.page === 'tasklist'
+      ? p.page + '=' + p.clicked + '(任务' + (p.anchors || 0) + '/待点' + (p.pending || 0)
+        + '/源' + (p.source || '?') + ')'
+      : p.page === 'sidebar'
+        ? p.page + '=' + p.clicked + '(卡' + (p.anchors || 0) + '/frames' + (p.frames || 0)
+          + (p.panelFound === false ? '/未找到面板' : '') + ')'
+        : p.page + '=' + p.clicked + '(卡' + (p.anchors || 0) + '/完成' + (p.doneSkipped || 0) + ')'
+    ).join(' / ') || '无';
+    console.info('[AutoTask] 自动完成[' + TASK_MODE + ']：共点击 ' + clickRes.clicked + ' 张（' + perPage
+      + '），保留任务标签页 ' + (clickRes.openedTabs || 0) + ' 个'
+      + '（DOM 降级点击 ' + (clickRes.domClick || 0)
+      + '，真鼠标 ' + (clickRes.realMouse || 0) + '/降级 ' + (clickRes.degraded || 0)
+      + '/瞄准失败 ' + (clickRes.aimFailed || 0)
+      + '/跳过不给分 ' + (clickRes.skipped || 0)
+      + '/官方确认 ' + (clickRes.officialVerified || 0)
+      + '，未找到卡片 ' + (clickRes.cardNotFound || 0)
+      + '，点击失败 ' + (clickRes.clickFailed || 0) + '）'
+      + (TASK_MODE === 'sidebar' && clickRes.sidebarPanelFound === false
+        ? '，[警告] 未在网页 DOM 找到侧栏，请看侧栏诊断日志' : '')
+      + (clickRes.signedOut ? '，[警告] 检测到登录页，请确认已登录 Rewards' : '')
+      + '，随后搜索 ' + searches + ' 次');
+    return { ok: true, clicked: clickRes.clicked, skippedCards: clickRes.skipped, searches, level };
   } finally {
     autoCompleteActive = false;
   }
@@ -2992,9 +5801,9 @@ async function testHumanSearch(opts) {
       cdpAttached.delete(Number(tabId));
       try { await chrome.tabs.remove(tabId); } catch {}
     }
-    // 测试期间因刷新任务可能打开的 Rewards / 任务点击后台页一并关闭
-    await closeTab('rewardsTabId').catch(() => {});
-    await closeTab('taskClickTabId').catch(() => {});
+    // 测试是独立功能：遗留的 Rewards / 任务点击后台页强制清理（主流程仍按 v1.8 保留）
+    await forceCloseTab('rewardsTabId').catch(() => {});
+    await forceCloseTab('taskClickTabId').catch(() => {});
     haltFlag = savedHalt;
   }
 }
