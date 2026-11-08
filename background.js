@@ -92,8 +92,15 @@ const KEEP_TASK_CLICK_ACTIVE = true;
 /** 已标记「已完成 / 已领取」的卡片默认跳过；设为 true 可强制重点 */
 const FORCE_CLICK_COMPLETED = false;
 
-/* 后台错误文案也跟随界面语言（uiLang 由弹窗写入 storage.local） */
-var bgLang = 'zh';
+/* 后台错误文案也跟随界面语言（uiLang 由弹窗写入 storage.local）。
+   uiLang = 'system'（默认）时按浏览器/系统语言解析成 zh / en。 */
+function resolveUiLang(v) {
+  if (v === 'zh' || v === 'en') return v;
+  const nav = (typeof navigator !== 'undefined' &&
+    ((navigator.languages && navigator.languages[0]) || navigator.language)) || '';
+  return /^zh\b/i.test(nav) ? 'zh' : 'en';
+}
+var bgLang = resolveUiLang('system');
 const BG_TEXT = {
   zh: {
     signIn: '请先在浏览器中登录 Microsoft Rewards（rewards.bing.com），然后重新开始。',
@@ -720,9 +727,18 @@ async function searchLoop(token) {
   let failures = 0;
   let stalled = 0;
   let lastProgress = null;
+  let lastBalance = null;
+  let unreadable = 0;
   {
-    const { todaySearch } = await load(['todaySearch']);
-    if (todaySearch && typeof todaySearch.progress === 'number') lastProgress = todaySearch.progress;
+    // 基线优先取本轮启动时的今日进度；checkingLimit 阶段无论 direct 还是注入兜底
+    // 拿到的值都算数，避免「基线为 null → 永远判不出积分停滞」。
+    const { todaySearch, todayStart, startPoints, startKnown } = await load(
+      ['todaySearch', 'todayStart', 'startPoints', 'startKnown']);
+    const base = (todayStart && typeof todayStart.progress === 'number')
+      ? todayStart.progress
+      : (todaySearch && typeof todaySearch.progress === 'number' ? todaySearch.progress : null);
+    if (base !== null) lastProgress = base;
+    if (startKnown && typeof startPoints === 'number') lastBalance = startPoints;
   }
 
   let tabId = null;
@@ -896,24 +912,43 @@ async function searchLoop(token) {
     if (!isCurrent(token) || haltFlag) return;
     await store({ currentSearch: current + 1, lastActivity: Date.now() });
 
-    /* 原版积分 / 每日上限 / 冷却检测，保持不变 */
-    if ((await load(['liveCheck'])).liveCheck) {
-      const { today, activities } = await directToday();
+    /* ================================================================
+     * 积分增长 / 每日上限 / Bing 冷却检测
+     * 不再依赖启动时的 liveCheck 标记：每轮直接读官方进度与余额，并允许
+     * 在运行中自建基线。这样「积分无法增加」时冷却流程一定会被触发，
+     * 不会因为首轮读不到进度、或 checkingLimit 走的是注入兜底而整体失效。
+     * ================================================================ */
+    {
+      const { today, balance, activities, any } = await readGainSignals();
       if (!isCurrent(token)) return;
       if (activities) await store({ todayActivities: activities });
-      if (today) {
-        await store({ todaySearch: today });
-        if (today.progress >= today.max && settings.autoStop) {
-          await store({ stoppedEarly: true });
-          return;
-        }
-        const noGain = lastProgress !== null && today.progress <= lastProgress && today.progress < today.max;
-        stalled = noGain ? stalled + 1 : 0;
-        lastProgress = today.progress;
-        if (settings.cooldownAware && stalled >= COOLDOWN_STALL) {
-          await enterCooldown(settings);
-          return;
-        }
+      if (today) await store({ todaySearch: today, liveCheck: true });
+
+      // 已计满：按上限提前结束，不进入冷却判定
+      if (today && today.progress >= today.max && settings.autoStop) {
+        await store({ stoppedEarly: true });
+        return;
+      }
+      const g = classifyGain(
+        { today, balance, any },
+        { lastProgress, lastBalance, unreadable }
+      );
+      lastProgress = g.lastProgress;
+      lastBalance = g.lastBalance;
+      unreadable = g.unreadable;
+      const noGain = g.noGain;
+      const suspicious = g.suspicious;
+
+      stalled = noGain ? stalled + 1 : 0;
+      if (suspicious) stalled = COOLDOWN_STALL;
+
+      if (settings.cooldownAware && stalled >= COOLDOWN_STALL) {
+        const reason = noGain ? 'progressStalled' : (suspicious ? 'signalsUnreadable' : 'stalled');
+        console.info('[HumanSearch] 积分连续 ' + stalled + ' 轮未增长（' + reason
+          + '），进入 Bing 冷却等待');
+        await store({ cooldownReason: reason });
+        await enterCooldown(settings);
+        return;
       }
     }
 
@@ -1495,6 +1530,63 @@ async function directToday() {
   };
 }
 
+/* ---------------------------------------------------------------------------
+ * 每轮结束后读取「积分是否还在增长」的信号。
+ *   · 主信号：/earn 的搜索计分进度 pointsCounters（progress / max）
+ *   · 兜底信号：/dashboard 的可用余额 availablePoints
+ * 两个通道独立请求，任意一个能读到就说明官方接口是通的；都读不到时 any=false，
+ * 由调用方按「疑似 Bing 冷却」处理（等待后重试比继续空跑更稳妥）。
+ * 这样即使 checkingLimit 阶段没拿到 liveCheck 基线，冷却检测也不会整体失效。
+ * ------------------------------------------------------------------------- */
+async function readGainSignals() {
+  const [todayRes, balRes] = await Promise.all([directToday(), directPoints()]);
+  const today = todayRes.today || null;
+  const balance = balRes.points !== null ? balRes.points : null;
+  return {
+    today,
+    balance,
+    activities: todayRes.activities || null,
+    any: !!(today || balance !== null)
+  };
+}
+
+/* 纯函数：由本轮信号 + 上一轮基线判定「积分是否没有增长」。
+   与 chrome API 解耦，便于单独验证所有边界情况：
+     · 基线缺失时先补建，不把首轮误判为停滞
+     · 已计满不判停滞（交给出纳上限逻辑提前结束）
+     · 进度读不到时改用余额；两个通道都读不到时按「疑似冷却」累计
+   返回更新后的基线，由调用方累加 stalled。 */
+function classifyGain(signals, prev) {
+  const { today, balance, any } = signals;
+  const maxed = !!(today && today.progress >= today.max);
+  let lastProgress = prev.lastProgress;
+  let lastBalance = prev.lastBalance;
+  const unreadable = any ? 0 : (prev.unreadable || 0) + 1;
+  let noGain = false;
+  if (today && !maxed) {
+    if (lastProgress === null) {
+      lastProgress = today.progress;   // 首次拿到进度：补建基线，本轮不计停滞
+    } else {
+      noGain = today.progress <= lastProgress;
+      lastProgress = today.progress;
+    }
+  } else if (balance !== null) {
+    if (lastBalance === null) {
+      lastBalance = balance;           // 首次拿到余额：补建基线，本轮不计停滞
+    } else {
+      noGain = !maxed && balance <= lastBalance;
+      lastBalance = balance;
+    }
+  }
+  return {
+    noGain,
+    suspicious: !any && unreadable >= COOLDOWN_STALL,
+    lastProgress,
+    lastBalance,
+    unreadable
+  };
+}
+
 function todayActivitiesFrom(html) {
   const list = parseActivities(html)
     .filter(a => a.enabled && a.id !== 'bing')
@@ -1700,13 +1792,30 @@ async function enterCooldown(settings) {
   const { cooldownCycles } = await load(['cooldownCycles']);
   const cycles = (cooldownCycles || 0) + 1;
   if (cycles > MAX_COOLDOWNS) {
-    await store({ cooldownGaveUp: true });
+    // 等待次数用尽仍无法增加积分：不再空跑，明确提前收尾，弹窗给出提示
+    console.info('[HumanSearch] 已等待 ' + MAX_COOLDOWNS + ' 次仍无积分增长，提前结束本轮');
+    chrome.alarms.clear('cooldownEnd');
+    await store({
+      cooldownGaveUp: true,
+      stoppedEarly: true,
+      cooldownUntil: null,
+      currentQuery: null
+    });
     return false;
   }
   const waitMs = Math.max(5, Number(settings.cooldownMinutes) || 15) * 60 * 1000;
   const until = Date.now() + waitMs;
-  await store({ phase: 'cooldown', cooldownUntil: until, cooldownWaitMs: waitMs, cooldownCycles: cycles, currentQuery: null });
+  await store({
+    phase: 'cooldown',
+    cooldownUntil: until,
+    cooldownWaitMs: waitMs,
+    cooldownCycles: cycles,
+    cooldownGaveUp: false,
+    currentQuery: null
+  });
   chrome.alarms.create('cooldownEnd', { when: until });
+  console.info('[HumanSearch] 第 ' + cycles + ' / ' + MAX_COOLDOWNS + ' 次冷却，等待 '
+    + Math.round(waitMs / 60000) + ' 分钟后自动继续');
   return true;
 }
 
@@ -1714,8 +1823,9 @@ async function endCooldown() {
   const st = await load(['running', 'phase']);
   if (!st.running || st.phase !== 'cooldown') return;
   chrome.alarms.clear('cooldownEnd');
-  await store({ phase: 'searching', cooldownUntil: null });
+  await store({ phase: 'searching', cooldownUntil: null, cooldownGaveUp: false });
   chrome.alarms.create('watchdog', { periodInMinutes: 0.5 });
+  console.info('[HumanSearch] 冷却结束，重新核对积分并继续搜索');
   if (!flowActive) runFlow(++flowToken);
 }
 
@@ -2293,11 +2403,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       .then(sendResponse)
       .catch(err => sendResponse({ ok: false, reason: 'error', message: err.message }));
     return true;
-  } else if (msg.type === 'testSearch') {
-    testHumanSearch({ level: msg.level })
-      .then(sendResponse)
-      .catch(err => sendResponse({ ok: false, reason: 'error', message: err.message }));
-    return true;
   } else if (msg.type === 'autoComplete') {
     runAutoComplete({ manual: true, level: msg.level, cap: msg.count })
       .then(sendResponse)
@@ -2456,11 +2561,11 @@ chrome.runtime.onStartup.addListener(() => {
 
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== 'local') return;
-  if (changes.uiLang) bgLang = changes.uiLang.newValue || 'zh';
+  if (changes.uiLang) bgLang = resolveUiLang(changes.uiLang.newValue);
   if (changes.autoTasks) rebuildAutoAlarm();
 });
 
-load(['uiLang']).then(s => { bgLang = s.uiLang || 'zh'; }).catch(() => {});
+load(['uiLang']).then(s => { bgLang = resolveUiLang(s.uiLang); }).catch(() => {});
 rebuildAutoAlarm();
 
 
@@ -5716,94 +5821,3 @@ async function runAutoComplete(opts) {
 }
 
 /* autoComplete 由主消息路由统一处理并回传 {skipped} 等结果，这里不再重复监听 */
-
-/* ---------------------------------------------------------------------------
- * 测试拟人搜索：独立后台标签页跑一次真实键鼠搜索，不写 running、
- * 不读积分、不影响自动任务日志。
- * ------------------------------------------------------------------------- */
-async function testHumanSearch(opts) {
-  const o = opts || {};
-  const level = clampInt(Number(o.level) || 3, 1, 3);
-  const st = await load(['running']);
-  if (flowActive || autoCompleteActive || st.running) return { ok: false, reason: 'running' };
-
-  const startedAt = Date.now();
-  const savedHalt = haltFlag;
-  haltFlag = false;
-  let tabId = null;
-  let realInput = false;
-  let keyword = '';
-
-  try {
-    const built = await buildQueries(1, []);
-    keyword = String((built.queries || [])[0] || '').trim();
-    if (!keyword) throw new Error(bgMsg('topics'));
-
-    const tab = await chrome.tabs.create({ url: HOME_URL, active: false });
-    tabId = tab.id;
-    const home = await waitForTab(tabId, isBingHome, PAGE_TIMEOUT, true);
-    if (!home) throw new Error(bgMsg('network'));
-
-    realInput = await cdpAttach(tabId);
-    let box = await probe(tabId, SEARCH_INPUTS);
-    if (!box) {
-      await chrome.tabs.update(tabId, { url: HOME_URL });
-      await waitForTab(tabId, isBingHome, PAGE_TIMEOUT, false);
-      box = await probe(tabId, SEARCH_INPUTS);
-    }
-    if (!box) throw new Error('找不到 Bing 搜索框');
-
-    const plan = humanClickPlan(box.box, [120, 140], level);
-    if (realInput) {
-      await cdpClickPlan(tabId, plan);
-      await sleep(rand(150, 500));
-      await cdpClearInput(tabId);
-      await sleep(rand(80, 250));
-      await cdpInsertText(tabId, keyword);
-      await sleep(rand(150, 450));
-      await cdpKey(tabId, 'Enter');
-    } else {
-      await domClick(tabId, plan.center[0], plan.center[1]);
-      await sleep(200);
-      await domClearInput(tabId);
-      await domInput(tabId, keyword);
-      await sleep(300);
-      await domKey(tabId, 'Enter');
-    }
-
-    let result = await waitForTab(tabId, isBingSearch, 10000, true);
-    if (!result || !isBingSearch(result.url)) {
-      await chrome.tabs.update(tabId, { url: directSearchUrl(keyword) });
-      result = await waitForTab(tabId, isBingSearch, PAGE_TIMEOUT, false);
-    }
-    if (!result || !isBingSearch(result.url)) throw new Error(bgMsg('network'));
-
-    for (const step of scrollPlan(level).slice(0, 2)) {
-      if (realInput) await cdpWheel(tabId, step.dy);
-      else await domWheel(tabId, step.dy);
-      await sleep(Math.min(900, step.dt * 350));
-    }
-    await sleep(600);
-
-    return {
-      ok: true, keyword, level, realInput, mode: 'paste',
-      trendCount: built.trendCount || 0, ms: Date.now() - startedAt
-    };
-  } catch (err) {
-    return {
-      ok: false, reason: 'error',
-      message: (err && err.message) || String(err),
-      keyword, level, realInput, ms: Date.now() - startedAt
-    };
-  } finally {
-    if (tabId != null) {
-      try { await chrome.debugger.detach({ tabId }); } catch {}
-      cdpAttached.delete(Number(tabId));
-      try { await chrome.tabs.remove(tabId); } catch {}
-    }
-    // 测试是独立功能：遗留的 Rewards / 任务点击后台页强制清理（主流程仍按 v1.8 保留）
-    await forceCloseTab('rewardsTabId').catch(() => {});
-    await forceCloseTab('taskClickTabId').catch(() => {});
-    haltFlag = savedHalt;
-  }
-}

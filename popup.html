@@ -17,10 +17,6 @@
         <h1 data-i18n="app.title">拟人搜索助手</h1>
       </div>
       <div class="header-actions">
-        <button id="lang-toggle" class="icon-btn lang-btn" type="button"
-                data-i18n-aria="a11y.language" data-i18n-title="a11y.language" aria-label="切换语言" title="切换语言">
-          <span id="lang-toggle-text">EN</span>
-        </button>
         <button id="settings-open" class="icon-btn" type="button" aria-label="打开设置" title="设置"
                 aria-haspopup="dialog" aria-controls="settings"
                 data-i18n-aria="a11y.settings" data-i18n-title="a11y.settings">
@@ -46,6 +42,7 @@
           </defs>
           <circle class="progress-track" cx="60" cy="60" r="52"/>
           <circle id="progress-arc" class="progress-fill" cx="60" cy="60" r="52"/>
+          <circle class="progress-halo" cx="60" cy="60" r="52"/>
         </svg>
         <div class="progress-label">
           <span id="progress-text" class="progress-count">0 / 0</span>
@@ -69,7 +66,8 @@
           <span id="end-points" class="point-value">—</span>
           <span id="tip-current" class="tip" role="tooltip"></span>
         </div>
-        <div class="point-card accent enter" style="--i:4" tabindex="0" aria-describedby="tip-earned">
+        <div id="claim-card" class="point-card clickable enter" style="--i:4" tabindex="0" role="link"
+             data-i18n-aria="points.earnedOpen" aria-label="打开 Rewards 领取积分" aria-describedby="tip-earned">
           <span id="earned-label" class="point-label" data-i18n="points.earned">可领取</span>
           <span id="earned-points" class="point-value">—</span>
           <span id="tip-earned" class="tip" role="tooltip"></span>
@@ -123,9 +121,10 @@
         <h3 class="set-title" data-i18n="settings.appearance">外观</h3>
         <div class="set-row">
           <span class="set-label" data-i18n="settings.language">语言 / Language</span>
-          <div class="segmented" id="set-lang" role="radiogroup" aria-label="Language">
-            <button type="button" role="radio" data-value="zh">中文</button>
-            <button type="button" role="radio" data-value="en">English</button>
+          <div class="segmented lang-segmented" id="set-lang" role="radiogroup" aria-label="Language">
+            <button type="button" role="radio" data-value="system" data-i18n="lang.system" aria-checked="true">跟随系统</button>
+            <button type="button" role="radio" data-value="zh" aria-checked="false">中文</button>
+            <button type="button" role="radio" data-value="en" aria-checked="false">English</button>
           </div>
         </div>
         <div class="set-row">
@@ -223,19 +222,7 @@
         <p id="set-auto-msg" class="preview-msg" role="status" hidden></p>
       </div>
 
-      <div class="set-group" id="test-group" style="--g:4">
-        <h3 class="set-title" data-i18n="test.title">测试拟人搜索</h3>
-        <div class="set-row column">
-          <span class="set-label"><span data-i18n="test.run">单次拟人搜索测试</span><small data-i18n="test.runHint">在后台标签页跑一次真实键鼠搜索，不读积分、不影响自动任务</small></span>
-          <div class="test-actions">
-            <button id="set-test-run" class="small-btn primary" type="button" data-i18n="test.runButton">运行测试</button>
-            <span id="set-test-status" class="test-status"></span>
-          </div>
-          <div id="set-test-result" class="test-result" hidden></div>
-        </div>
-      </div>
-
-      <button id="set-reset" class="reset-btn" type="button" style="--g:5" data-i18n="settings.reset">恢复默认设置</button>
+      <button id="set-reset" class="reset-btn" type="button" style="--g:4" data-i18n="settings.reset">恢复默认设置</button>
     </div>
   </section>
 

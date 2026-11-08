@@ -59,11 +59,13 @@ document.addEventListener('DOMContentLoaded', () => {
       'theme.light': '浅色', 'theme.dark': '深色', 'theme.system': '跟随系统',
       'theme.toLight': '切换到浅色主题', 'theme.toDark': '切换到深色主题',
       'progress.searches': '次搜索', 'progress.tasks': '今日任务', 'progress.ptsToday': '今日积分', 'progress.cooldown': '冷却中',
-      'progress.pleaseWait': '请稍候',
+      'progress.pleaseWait': '请稍候', 'progress.cooldownLeft': '冷却中 · {t} 后继续',
       'status.ready': '就绪', 'status.reading': '读取积分', 'status.checking': '检查今日进度',
       'status.searching': '搜索中', 'status.cooldown': 'Bing 冷却', 'status.finalizing': '收尾中',
       'status.completed': '已完成', 'status.limit': '已达上限', 'status.error': '出错',
       'status.allDone': '任务已完成，无需任何动作',
+      'status.cooldownRound': 'Bing 冷却（第 {n} / {max} 次等待）',
+      'status.gaveUp': 'Bing 持续冷却，积分未恢复，已提前结束',
       'status.completingTasks': '正在完成任务',
       'status.stopping': '正在停止', 'status.of': '第 {a} / {b} 次',
       'status.searchingTitle': '正在搜索：{q}',
@@ -93,11 +95,14 @@ document.addEventListener('DOMContentLoaded', () => {
       'tasks.skipped': '今日已跳过', 'tasks.off': '已停用', 'tasks.runNow': '立即运行',
       'tasks.remove': '删除该时间点', 'tasks.runningBusy': '已有任务在运行中，请稍后再试。',
       'tasks.started': '任务已启动，可在上方进度环查看。',
-      'tasks.added': '已添加 {time}', 'tasks.removed': '已删除 {time}',
+      'tasks.added': '已添加 {time}', 'tasks.autoAdded': '已自动添加 {time}',
+      'tasks.removed': '已删除 {time}',
       'tasks.duplicate': '该时间点已存在。', 'tasks.limit': '最多只能添加 10 个时间点。',
       'tasks.invalid': '请选择有效的时间（HH:MM）。',
       'tasks.disabledTip': '总开关已关闭，打开「设置 → 自动完成任务 → 定时自动运行」后才会定时执行。',
       'settings.title': '设置', 'settings.appearance': '外观', 'settings.language': '语言 / Language',
+      'lang.system': '跟随系统', 'points.earnedOpen': '打开 Rewards 领取积分',
+      'tip.claimOpen': '点击前往 Rewards 领取积分',
       'settings.theme': '主题', 'settings.reduce': '减少动画', 'settings.reduceHint': '关闭动效',
       'settings.searches': '搜索', 'settings.defaultCount': '默认搜索次数', 'settings.other': '其他',
       'settings.pace': '节奏', 'settings.paceHint': '每次结果停留时长',
@@ -108,7 +113,7 @@ document.addEventListener('DOMContentLoaded', () => {
       'auto.title': '自动完成任务', 'auto.enable': '定时自动运行',
       'auto.enableHint': '到点自动点击未完成任务卡片，并按剩余分数搜索，最多 10 个时间点',
       'auto.count': '搜索次数上限', 'auto.countHint': '按今日 Bing 搜索剩余分数自动决定，不超过此值', 'auto.times': '启动时间',
-      'auto.timesHint': '可添加多个，自动去重排序', 'auto.addTime': '添加',
+      'auto.timesHint': '留空直接点「添加」：首个默认 08:00，之后比最晚时间顺延 30 分钟，自动去重排序', 'auto.addTime': '添加',
       'auto.level': '拟人强度', 'auto.levelHint': '影响鼠标轨迹、滚动与每轮时长',
       'level.low': '低', 'level.mid': '中', 'level.high': '高',
       'settings.reset': '恢复默认设置', 'settings.resetConfirm': '再点一次确认重置',
@@ -131,16 +136,7 @@ document.addEventListener('DOMContentLoaded', () => {
       'todayTasks.sectionPromo': '日常任务', 'todayTasks.sectionOther': '其他任务',
       'todayTasks.groupTotal': '{a} / {b} 分',
       'todayTasks.done': '已完成', 'todayTasks.pending': '待完成',
-      'todayTasks.points': '{p} 分', 'todayTasks.open': '打开任务',
-      'test.title': '测试拟人搜索', 'test.run': '单次拟人搜索测试',
-      'test.runHint': '在后台标签页跑一次真实键鼠搜索，不读积分、不影响自动任务',
-      'test.runButton': '运行测试', 'test.running': '测试中…',
-      'test.ok': '测试通过', 'test.fail': '测试失败',
-      'test.runningBusy': '已有搜索在运行，请先停止',
-      'test.keyword': '关键词', 'test.input': '输入方式', 'test.inputCdp': 'CDP 真实键鼠',
-      'test.inputFallback': '页面内合成事件', 'test.mode': '路径', 'test.modePaste': '粘贴关键词',
-      'test.level': '拟人强度', 'test.elapsed': '耗时', 'test.error': '原因',
-      'test.hint': '测试会在后台标签页完成一次搜索后自动关闭，不会写入积分或自动任务记录。'
+      'todayTasks.points': '{p} 分', 'todayTasks.open': '打开任务'
     },
     en: {
       'app.title': 'Human Search Assistant',
@@ -150,11 +146,13 @@ document.addEventListener('DOMContentLoaded', () => {
       'theme.light': 'Light', 'theme.dark': 'Dark', 'theme.system': 'System',
       'theme.toLight': 'Switch to light theme', 'theme.toDark': 'Switch to dark theme',
       'progress.searches': 'searches', 'progress.tasks': 'Today\'s tasks', 'progress.ptsToday': 'pts today', 'progress.cooldown': 'cooldown',
-      'progress.pleaseWait': 'please wait',
+      'progress.pleaseWait': 'please wait', 'progress.cooldownLeft': 'Cooldown · resume in {t}',
       'status.ready': 'Ready', 'status.reading': 'Reading points', 'status.checking': 'Checking today',
       'status.searching': 'Searching', 'status.cooldown': 'Bing cooldown', 'status.finalizing': 'Finalizing',
       'status.completed': 'Completed', 'status.limit': 'Limit reached', 'status.error': 'Error',
       'status.allDone': 'All tasks done — nothing to do',
+      'status.cooldownRound': 'Bing cooldown (wait {n} of {max})',
+      'status.gaveUp': 'Bing kept cooling — points stalled, stopped early',
       'status.completingTasks': 'Completing tasks',
       'status.stopping': 'Stopping', 'status.of': 'Search {a} of {b}',
       'status.searchingTitle': 'Searching: {q}',
@@ -184,11 +182,14 @@ document.addEventListener('DOMContentLoaded', () => {
       'tasks.skipped': 'Skipped today', 'tasks.off': 'Disabled', 'tasks.runNow': 'Run now',
       'tasks.remove': 'Remove this time', 'tasks.runningBusy': 'A task is already running. Please try again later.',
       'tasks.started': 'Task started — watch the progress ring above.',
-      'tasks.added': 'Added {time}', 'tasks.removed': 'Removed {time}',
+      'tasks.added': 'Added {time}', 'tasks.autoAdded': 'Added {time} automatically',
+      'tasks.removed': 'Removed {time}',
       'tasks.duplicate': 'That time is already in the list.', 'tasks.limit': 'You can add up to 10 times.',
       'tasks.invalid': 'Pick a valid time (HH:MM).',
       'tasks.disabledTip': 'Scheduling is off. Turn on Settings → Auto-complete tasks → Scheduled runs.',
       'settings.title': 'Settings', 'settings.appearance': 'Appearance', 'settings.language': '语言 / Language',
+      'lang.system': 'System', 'points.earnedOpen': 'Open Rewards to claim points',
+      'tip.claimOpen': 'Click to open Rewards and claim',
       'settings.theme': 'Theme', 'settings.reduce': 'Reduce animations', 'settings.reduceHint': 'Turn off motion effects',
       'settings.searches': 'Searches', 'settings.defaultCount': 'Default searches', 'settings.other': 'Other',
       'settings.pace': 'Pace', 'settings.paceHint': 'Time spent on each result',
@@ -199,7 +200,7 @@ document.addEventListener('DOMContentLoaded', () => {
       'auto.title': 'Auto-complete tasks', 'auto.enable': 'Scheduled runs',
       'auto.enableHint': 'Click unfinished cards, then search as needed, up to 10 start times',
       'auto.count': 'Search cap', 'auto.countHint': 'Decided from remaining Bing search points, capped here', 'auto.times': 'Start times',
-      'auto.timesHint': 'Add multiple times, auto-sorted and deduped', 'auto.addTime': 'Add',
+      'auto.timesHint': 'Leave empty and tap Add: first defaults to 08:00, then +30 min from the latest time; auto-sorted and deduped', 'auto.addTime': 'Add',
       'auto.level': 'Human-like intensity', 'auto.levelHint': 'Affects mouse path, scrolling and round length',
       'level.low': 'Low', 'level.mid': 'Medium', 'level.high': 'High',
       'settings.reset': 'Reset to defaults', 'settings.resetConfirm': 'Tap again to reset',
@@ -222,20 +223,19 @@ document.addEventListener('DOMContentLoaded', () => {
       'todayTasks.sectionPromo': 'Daily tasks', 'todayTasks.sectionOther': 'Other',
       'todayTasks.groupTotal': '{a} / {b} pts',
       'todayTasks.done': 'Done', 'todayTasks.pending': 'Pending',
-      'todayTasks.points': '{p} pts', 'todayTasks.open': 'Open task',
-      'test.title': 'Test human-like search', 'test.run': 'Single test search',
-      'test.runHint': 'Runs one real mouse/keyboard search in a background tab — no points read, no auto-task changes',
-      'test.runButton': 'Run test', 'test.running': 'Testing…',
-      'test.ok': 'Test passed', 'test.fail': 'Test failed',
-      'test.runningBusy': 'A search is already running. Stop it first.',
-      'test.keyword': 'Keyword', 'test.input': 'Input', 'test.inputCdp': 'CDP real mouse/keyboard',
-      'test.inputFallback': 'In-page synthetic events', 'test.mode': 'Path', 'test.modePaste': 'Paste keyword',
-      'test.level': 'Intensity', 'test.elapsed': 'Elapsed', 'test.error': 'Reason',
-      'test.hint': 'The test opens a background tab, performs one search, then closes it. No points or auto-task logs are written.'
+      'todayTasks.points': '{p} pts', 'todayTasks.open': 'Open task'
     }
   };
 
-  let lang = 'zh';
+  /* 语言模式：system（默认，跟随浏览器/系统语言）| zh | en */
+  const normalizeLangMode = v => (v === 'zh' || v === 'en' ? v : 'system');
+  const systemLang = () => {
+    const nav = (navigator.languages && navigator.languages[0]) || navigator.language || '';
+    return /^zh\b/i.test(nav) ? 'zh' : 'en';
+  };
+  const resolveLang = mode => (mode === 'zh' || mode === 'en' ? mode : systemLang());
+  let langMode = 'system';
+  let lang = resolveLang(langMode);
   const t = (key, vars) => {
     let s = (I18N[lang] && I18N[lang][key]) || (I18N.zh[key]) || key;
     if (vars) for (const [k, v] of Object.entries(vars)) s = s.split('{' + k + '}').join(String(v));
@@ -249,7 +249,6 @@ document.addEventListener('DOMContentLoaded', () => {
     for (const el of document.querySelectorAll('[data-i18n-title]')) el.title = t(el.dataset.i18nTitle);
     for (const el of document.querySelectorAll('[data-i18n-aria]')) el.setAttribute('aria-label', t(el.dataset.i18nAria));
     for (const el of document.querySelectorAll('[data-i18n-ph]')) el.placeholder = t(el.dataset.i18nPh);
-    $('lang-toggle-text').textContent = lang === 'zh' ? 'EN' : '中';
     const label = root.getAttribute('data-theme') === 'dark' ? t('theme.toLight') : t('theme.toDark');
     themeBtn.setAttribute('aria-label', label);
     themeBtn.title = label;
@@ -257,11 +256,11 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function setLang(next) {
-    lang = next === 'en' ? 'en' : 'zh';
-    chrome.storage.local.set({ uiLang: lang });
+    langMode = normalizeLangMode(next);
+    lang = resolveLang(langMode);
+    chrome.storage.local.set({ uiLang: langMode });
     applyI18n();
     syncSettingsUI();
-    if (lastTestResult) renderTestResult(lastTestResult);
     refresh();
   }
 
@@ -286,7 +285,6 @@ document.addEventListener('DOMContentLoaded', () => {
   let settings = Object.assign({}, DEFAULTS);
   let autoTasks = Object.assign({}, AUTO_DEFAULTS);
   let diagText = '';
-  let lastTestResult = null;
 
   const fmt = n => Number(n || 0).toLocaleString();
   const isDigit = c => c >= '0' && c <= '9';
@@ -367,6 +365,17 @@ document.addEventListener('DOMContentLoaded', () => {
     chrome.storage.local.set({ error: null });
   });
 
+  /* 「可领取」卡片：外观与其他卡片一致，点击/键盘激活后打开 Rewards 面板领取 */
+  const CLAIM_URL = 'https://rewards.bing.com/dashboard';
+  const claimCard = $('claim-card');
+  const openClaimPage = () => {
+    chrome.tabs.create({ url: CLAIM_URL, active: true }).catch(() => {});
+  };
+  claimCard.addEventListener('click', openClaimPage);
+  claimCard.addEventListener('keydown', e => {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openClaimPage(); }
+  });
+
   noticeCopy.addEventListener('click', async () => {
     try {
       await navigator.clipboard.writeText(diagText);
@@ -418,7 +427,13 @@ document.addEventListener('DOMContentLoaded', () => {
   themeBtn.addEventListener('click', () => {
     applyTheme(root.getAttribute('data-theme') === 'dark' ? 'light' : 'dark');
   });
-  $('lang-toggle').addEventListener('click', () => setLang(lang === 'zh' ? 'en' : 'zh'));
+  /* 系统语言变化时，跟随系统模式下自动刷新界面文案 */
+  window.addEventListener('languagechange', () => {
+    if (langMode !== 'system') return;
+    lang = systemLang();
+    applyI18n();
+    refresh();
+  });
 
   function saveSettings(patch) {
     settings = Object.assign({}, settings, patch);
@@ -618,6 +633,12 @@ document.addEventListener('DOMContentLoaded', () => {
     const noticeActive = !running && Date.now() < allDoneNoticeUntil;
     if (noticeActive) {
       setStatus(t('status.allDone'), 'completed all-done', false);
+    } else if (d.cooldownGaveUp && !running) {
+      // 等待次数用尽仍无法增加积分：明确告知已提前结束
+      setStatus(t('status.gaveUp'), 'completed all-done', false);
+    } else if (phase === 'cooldown') {
+      const n = clampInt(d.cooldownCycles || 1, 1, MAX_COOLDOWNS);
+      setStatus(t('status.cooldownRound', { n, max: MAX_COOLDOWNS }), 'cooldown', false);
     } else if (showQuery) {
       setStatus(d.currentQuery, cls, true, t('status.searchingTitle', { q: d.currentQuery }));
     } else if (phase === 'searching') {
@@ -632,7 +653,14 @@ document.addEventListener('DOMContentLoaded', () => {
     const taskPct = hasTasks ? Math.max(0, Math.min(100, Number(tt.percent) || 0)) : 0;
     ring.classList.remove('spinning');
     setOdometer(progressText, hasTasks ? `${taskPct}%` : '—');
-    progressSub.textContent = t('progress.tasks');
+    // 冷却中让圆环副标题承担倒计时，每秒由轮询刷新
+    if (phase === 'cooldown' && cooldownLeft > 0) {
+      progressSub.textContent = t('progress.cooldownLeft', { t: clock(cooldownLeft) });
+      progressSub.classList.add('cooldown');
+    } else {
+      progressSub.textContent = t('progress.tasks');
+      progressSub.classList.remove('cooldown');
+    }
     setRing(hasTasks ? taskPct / 100 : 0);
 
     // 三张卡固定取 dashboard / earn 页面解析出的值，不再随运行状态估算
@@ -647,7 +675,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const panelNote = ps.signedOut ? t('tip.signedOut') : (ps.updatedAt ? '' : t('tip.loading'));
     setTip('tip-start', t('tip.startTitle'), [], panelNote || t('tip.available'));
     setTip('tip-current', t('tip.currentTitle'), [], panelNote || t('tip.todayPoints'));
-    setTip('tip-earned', t('tip.earnedTitle'), [], panelNote || t('tip.claimable'));
+    setTip('tip-earned', t('tip.earnedTitle'), [], panelNote || t('tip.claimOpen'));
 
     // 「今日搜索积分已领完」等提示与「今日 Bing 搜索」进度条已从界面移除
     setNotice(null);
@@ -728,7 +756,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function syncAutoUI() {
     $('set-auto').checked = !!autoTasks.enabled;
-    $('auto-opts').classList.toggle('off', !autoTasks.enabled);
+    const opts = $('auto-opts');
+    opts.classList.toggle('off', !autoTasks.enabled);
+    // 关闭总开关时仍可配置时间点，用悬浮说明当前不会定时执行
+    if (!autoTasks.enabled) opts.title = t('tasks.disabledTip');
+    else opts.removeAttribute('title');
     setSegment('set-auto-count-chips', autoTasks.count);
     const isPreset = [10, 20, 30, 50].includes(Number(autoTasks.count));
     const custom = $('set-auto-count');
@@ -751,7 +783,7 @@ document.addEventListener('DOMContentLoaded', () => {
       chip.append(label, del);
       wrap.appendChild(chip);
     }
-    $('set-lang') && setSegment('set-lang', lang);
+    $('set-lang') && setSegment('set-lang', langMode);
   }
 
   /* ------------------------------------------------------- 今日任务列表（首页） */
@@ -857,59 +889,6 @@ document.addEventListener('DOMContentLoaded', () => {
     refresh();
   });
 
-  /* ------------------------------------------------------- 测试拟人搜索（设置页） */
-  function renderTestResult(res) {
-    const box = $('set-test-result');
-    const status = $('set-test-status');
-    if (!res) { box.hidden = true; status.textContent = ''; return; }
-    const ok = !!res.ok;
-    status.textContent = t(ok ? 'test.ok' : 'test.fail');
-    status.className = 'test-status ' + (ok ? 'ok' : 'warn');
-
-    const rows = [];
-    if (res.keyword) rows.push([t('test.keyword'), res.keyword]);
-    rows.push([t('test.input'), res.realInput ? t('test.inputCdp') : t('test.inputFallback')]);
-    rows.push([t('test.mode'), t('test.modePaste')]);
-    rows.push([t('test.level'), t('tasks.level' + clampInt(res.level || 3, 1, 3, 3))]);
-    rows.push([t('test.elapsed'), ((Number(res.ms) || 0) / 1000).toFixed(1) + ' s']);
-    if (!ok) {
-      const reason = res.reason === 'running'
-        ? t('test.runningBusy')
-        : (res.message || t('error.extension', { msg: 'unknown' }));
-      rows.push([t('test.error'), localizeError(reason)]);
-    }
-
-    box.textContent = '';
-    for (const [k, v] of rows) {
-      const line = document.createElement('div');
-      line.className = 'test-row' + (k === t('test.error') ? ' err' : '');
-      const key = document.createElement('span');
-      key.textContent = k;
-      const val = document.createElement('span');
-      val.textContent = v;
-      line.append(key, val);
-      box.appendChild(line);
-    }
-    const hint = document.createElement('p');
-    hint.className = 'test-hint';
-    hint.textContent = t('test.hint');
-    box.appendChild(hint);
-    box.hidden = false;
-  }
-
-  $('set-test-run').addEventListener('click', async () => {
-    const btn = $('set-test-run');
-    btn.disabled = true;
-    $('set-test-status').textContent = t('test.running');
-    $('set-test-status').className = 'test-status';
-    $('set-test-result').hidden = true;
-    const res = await send('testSearch', { level: autoTasks.level });
-    btn.disabled = false;
-    btn.textContent = t('test.runButton');
-    lastTestResult = res || { ok: false, reason: 'error', message: 'no response', level: autoTasks.level };
-    renderTestResult(lastTestResult);
-  });
-
   /* ------------------------------------------------------------- 设置面板 */
   const panel = $('settings');
   const openBtn = $('settings-open');
@@ -957,7 +936,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function syncSettingsUI() {
     setSegment('set-theme', savedThemeMode());
-    setSegment('set-lang', lang);
+    setSegment('set-lang', langMode);
     $('set-reduce').checked = !!settings.reduceMotion;
     setSegment('set-count-chips', settings.defaultCount);
     const isPreset = [10, 20, 30, 50].includes(Number(settings.defaultCount));
@@ -1003,15 +982,45 @@ document.addEventListener('DOMContentLoaded', () => {
   });
   onSegment('set-auto-level', v => saveAutoTasks({ level: Number(v) }));
 
+  /* 启动时间：不手动输入时按默认规则生成
+     · 第一个时间点 = 当地时间 08:00
+     · 之后 = 当前最晚时间点 + 30 分钟（跨天取模，撞上已有时间就继续顺延） */
+  const toMinutes = hhmm => {
+    const [h, m] = hhmm.split(':').map(Number);
+    return h * 60 + m;
+  };
+  const toHHMM = mins => {
+    const v = ((mins % 1440) + 1440) % 1440;
+    return String(Math.floor(v / 60)).padStart(2, '0') + ':' + String(v % 60).padStart(2, '0');
+  };
+  function defaultAutoTime(times) {
+    if (!times.length) return '08:00';
+    const used = new Set(times);
+    const latest = Math.max(...times.map(toMinutes));
+    for (let step = 1; step <= 48; step++) {
+      const candidate = toHHMM(latest + step * 30);
+      if (!used.has(candidate)) return candidate;
+    }
+    return null;
+  }
+
   function addAutoTime() {
     const input = $('set-auto-time');
-    const value = String(input.value || '').trim();
-    if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(value)) { setAutoMsg(t('tasks.invalid'), true); return; }
+    const raw = String(input.value || '').trim();
+    const auto = raw === '';
+    let value = raw;
+    if (auto) {
+      if (autoTasks.times.length >= AUTO_MAX_TIMES) { setAutoMsg(t('tasks.limit'), true); return; }
+      value = defaultAutoTime(autoTasks.times);
+      if (!value) { setAutoMsg(t('tasks.duplicate'), true); return; }
+    } else if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(value)) {
+      setAutoMsg(t('tasks.invalid'), true); return;
+    }
     if (autoTasks.times.includes(value)) { setAutoMsg(t('tasks.duplicate'), true); return; }
     if (autoTasks.times.length >= AUTO_MAX_TIMES) { setAutoMsg(t('tasks.limit'), true); return; }
     saveAutoTasks({ times: [...autoTasks.times, value] });
     input.value = '';
-    setAutoMsg(t('tasks.added', { time: value }));
+    setAutoMsg(t(auto ? 'tasks.autoAdded' : 'tasks.added', { time: value }));
   }
   $('set-auto-time-add').addEventListener('click', addAutoTime);
   $('set-auto-time').addEventListener('keydown', e => {
@@ -1045,6 +1054,11 @@ document.addEventListener('DOMContentLoaded', () => {
     saveSettings(Object.assign({}, DEFAULTS));
     saveAutoTasks(Object.assign({}, AUTO_DEFAULTS));
     applyTheme('system');
+    langMode = 'system';
+    lang = systemLang();
+    chrome.storage.local.set({ uiLang: 'system' });
+    applyI18n();
+    syncSettingsUI();
     if (!countInput.disabled) countInput.value = DEFAULTS.defaultCount;
     refresh();
   });
@@ -1052,7 +1066,8 @@ document.addEventListener('DOMContentLoaded', () => {
   /* ------------------------------------------------------------------ 启动 */
   async function loadUiLang() {
     const { uiLang } = await chrome.storage.local.get(['uiLang']);
-    lang = uiLang === 'en' ? 'en' : 'zh';
+    langMode = normalizeLangMode(uiLang);
+    lang = resolveLang(langMode);
     applyI18n();
     syncSettingsUI();
     refresh();
@@ -1064,6 +1079,7 @@ document.addEventListener('DOMContentLoaded', () => {
     syncAutoUI();
   }
 
+  applyI18n();
   syncThemeControls();
   chrome.storage.local.set({ uiTheme: savedThemeMode() === 'system' ? null : savedThemeMode() });
   loadUiLang();
@@ -1085,8 +1101,10 @@ document.addEventListener('DOMContentLoaded', () => {
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== 'local') return;
     if (changes.uiLang) {
-      lang = changes.uiLang.newValue === 'en' ? 'en' : 'zh';
+      langMode = normalizeLangMode(changes.uiLang.newValue);
+      lang = resolveLang(langMode);
       applyI18n();
+      setSegment('set-lang', langMode);
     }
     if (changes.autoTasks) {
       autoTasks = normalizeAutoTasks(changes.autoTasks.newValue);
