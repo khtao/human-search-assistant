@@ -2,6 +2,8 @@
 
 **版本：1.3.4｜运行时：Electron 45.2.3｜目标平台：Ubuntu / Debian x86_64**
 
+项目主页与源码仓库：[github.com/khtao/human-search-assistant](https://github.com/khtao/human-search-assistant)。该地址同时写入 `package.json` 的 `homepage` 字段，供 Debian DEB 包元数据使用。
+
 本仓库只保留桌面版项目。应用使用 Electron 原生窗口与内置 Chromium，不依赖系统浏览器，也不需要单独安装 Playwright。
 
 ## 功能

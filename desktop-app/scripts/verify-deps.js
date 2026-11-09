@@ -23,6 +23,7 @@ group('1. Electron 与构建依赖');
 ck(pkg.devDependencies.electron === '45.2.3', 'Electron 精确锁定 45.2.3');
 ck(pkg.devDependencies['electron-builder'] === '26.18.1', 'electron-builder 精确锁定 26.18.1');
 ck((pkg.engines || {}).node === '>=22.12.0', 'Node.js 最低版本为 22.12.0');
+ck(pkg.homepage === 'https://github.com/khtao/human-search-assistant', 'package.json 提供有效项目 homepage，满足 Debian DEB 元数据要求');
 ck(Object.keys(pkg.dependencies || {}).length === 0, '没有额外 npm 运行时依赖');
 ck(lock.version === pkg.version && lock.packages[''].version === pkg.version,
    'package-lock 根项目版本与 package.json 一致');
