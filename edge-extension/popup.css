@@ -34,8 +34,6 @@
   --btn-primary-bg: linear-gradient(135deg, #0066FF, #0088FF);
   --btn-primary-shadow: 0 2px 8px rgba(0,102,255,0.25), 0 1px 2px rgba(0,0,0,0.1);
   --btn-danger-shadow: 0 2px 8px rgba(205,43,49,0.2);
-  --brand-icon-bg: linear-gradient(135deg, #0066FF, #0099FF);
-  --brand-icon-shadow: 0 2px 8px rgba(0,102,255,0.25);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -72,8 +70,6 @@
     --btn-primary-bg: linear-gradient(135deg, #2563EB, #3B82F6);
     --btn-primary-shadow: 0 2px 12px rgba(59,130,246,0.3);
     --btn-danger-shadow: 0 2px 12px rgba(248,81,73,0.25);
-    --brand-icon-bg: linear-gradient(135deg, #2563EB, #3B82F6);
-    --brand-icon-shadow: 0 2px 12px rgba(59,130,246,0.3);
     color-scheme: dark;
   }
 }
@@ -111,8 +107,6 @@
   --btn-primary-bg: linear-gradient(135deg, #2563EB, #3B82F6);
   --btn-primary-shadow: 0 2px 12px rgba(59,130,246,0.3);
   --btn-danger-shadow: 0 2px 12px rgba(248,81,73,0.25);
-  --brand-icon-bg: linear-gradient(135deg, #2563EB, #3B82F6);
-  --brand-icon-shadow: 0 2px 12px rgba(59,130,246,0.3);
   color-scheme: dark;
 }
 
@@ -132,6 +126,33 @@ body {
 
 .app { display: flex; flex-direction: column; }
 
+/* v3.0 · 扩展 popup 固定 380px，官网在独立标签页打开，
+   不存在桌面壳「右侧 WebContentsView 覆盖」的布局，这里不再改宽度。 */
+body.panel-open { overflow: hidden; }
+body.panel-open .app { width: 100%; max-width: 100%; }
+
+.panel-btn {
+  height: 30px;
+  padding: 0 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--surface);
+  color: var(--fg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color var(--transition), border-color var(--transition), transform var(--transition);
+}
+.panel-btn:hover { color: var(--accent); border-color: var(--border-strong); }
+.panel-btn:active { transform: scale(0.94); }
+.panel-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.panel-btn[aria-pressed="true"] { color: var(--accent); border-color: var(--accent); }
+.panel-btn[hidden] { display: none; }
+
 
 .header {
   display: flex;
@@ -146,12 +167,9 @@ body {
 
 .brand-icon {
   width: 28px; height: 28px;
-  background: var(--brand-icon-bg);
-  border-radius: 8px;
   display: flex; align-items: center; justify-content: center;
   color: #fff;
   flex-shrink: 0;
-  box-shadow: var(--brand-icon-shadow);
 }
 
 .brand h1 {
@@ -188,6 +206,62 @@ body {
 .icon-btn:hover { color: var(--accent); border-color: var(--border-strong); }
 .icon-btn:active { transform: scale(0.94); }
 .icon-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* v1.2 · 右上角登录状态提示（纯展示，不可点击）
+   未登录 → 灰色勋章图标 +「未登录」；已登录 → 金色勋章图标 +「已登录」。
+   不显示积分数字 / 头像，不注册 click / dblclick，没有 hover 气泡与点击反馈。 */
+.login-badge {
+  position: relative;
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  min-width: 52px;
+  height: 46px;
+  padding: 3px 5px;
+  background: transparent;
+  color: var(--fg-secondary, var(--fg));
+  border: 0;
+  border-radius: 12px;
+  cursor: default;
+  white-space: nowrap;
+  font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+  font-size: 10px;
+  transition: background-color var(--transition);
+}
+
+.login-badge-icon {
+  width: 26px; height: 26px;
+  display: block;
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, .07);
+  transition: transform var(--transition), filter var(--transition), opacity var(--transition);
+}
+.login-badge-icon[hidden] { display: none !important; }
+/* 未登录：整枚图标去色变灰；已登录：保留原图的橙色/金色 */
+.login-badge.signed-out .login-badge-icon { filter: grayscale(1); opacity: .58; }
+.login-badge.in .login-badge-icon { filter: none; opacity: 1; }
+.login-badge-text {
+  display: block;
+  line-height: 1.1;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0;
+  color: var(--fg-tertiary);
+}
+.login-badge.in .login-badge-text { color: #b8860b; }
+[data-theme="dark"] .login-badge.in .login-badge-text { color: #f0c05a; }
+
+/* v1.2：登录徽标是纯状态提示，不再有 hover 提示气泡与点击反馈。 */
+/* v1.2 rev2 · 修复 UI 崩溃：上一版把「tip 样式块」之后的整段 CSS 一起删掉了
+   （274–741 行：进度环 / 状态条 / 积分卡 / 今日任务 / 通知 / 错误条）。
+   SVG <circle> 失去 fill:none 与固定 130px 尺寸后变成铺满的纯黑大圆，
+   .ring-hover-card 失去 .ring-wrap 的 position:relative 后飘到页面中间。
+   这里把该段完整恢复，仅剔除 .login-badge-tip 相关规则。 */
+@media (prefers-reduced-motion: reduce) {
+  .login-badge, .login-badge-icon { transition: none; }
+}
 
 #reminder-toggle[aria-pressed="true"] {
   color: var(--accent);
@@ -926,7 +1000,10 @@ body.settings-open { min-height: 590px; }
 
 .settings {
   position: fixed;
+  /* v3.0：popup 没有右侧原生视图，设置面板直接铺满 380px。 */
   inset: 0;
+  width: 100%;
+  max-width: 100%;
   z-index: 50;
   display: flex;
   flex-direction: column;
@@ -936,6 +1013,8 @@ body.settings-open { min-height: 590px; }
   visibility: hidden;
   transition: transform 380ms cubic-bezier(0.22, 1, 0.36, 1), visibility 0s linear 380ms;
 }
+
+body.panel-open .settings { width: 100%; }
 
 .settings.open {
   transform: none;
@@ -1482,14 +1561,13 @@ a.tt-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px;
 .controls.under-points { padding-top: 14px; padding-bottom: 16px; }
 .controls.under-points .btn { margin-top: 0; }
 
-/* v1.7：品牌图标直接取 icons/icon48.png，放大到 32px，不再内联绘制 */
+/* v1.2 rev3：图标是透明 PNG，容器不再有背景色 / 阴影 / 圆角裁切。 */
 .brand-icon {
   width: 32px; height: 32px;
-  border-radius: 9px;
   background: transparent;
   box-shadow: none;
 }
-.brand-img { width: 32px; height: 32px; display: block; border-radius: 9px; }
+.brand-img { width: 32px; height: 32px; display: block; }
 
 /* 圆环副标题改用「今日任务」，不做大写/字距拉伸 */
 .progress-sub { text-transform: none; letter-spacing: 0; font-size: 11px; }
@@ -1499,3 +1577,110 @@ a.tt-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px;
 /* 今日任务卡片只做展示，不提供点击 */
 .tt-card { cursor: default; }
 .tt-card:hover { transform: none; box-shadow: none; }
+
+
+/* ==========================================================================
+ * v1.0.4 首页进度圆圈悬停：明确的信息卡 + 更明显的动画
+ *   旧版只画了一圈细虚点（stroke-dasharray:1 13），用户看到的就只有「黑圈」，
+ *   加上原生 title 黑框，观感是「悬停只有黑圈的提示信息」。
+ * ======================================================================== */
+.progress-section { position: relative; overflow: visible; }
+.ring-wrap { z-index: 5; }
+
+.ring-hover-card {
+  position: absolute;
+  top: calc(100% + 10px);
+  left: 50%;
+  width: max-content;
+  max-width: 296px;
+  padding: 10px 14px 9px;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
+  box-shadow: 0 14px 32px rgba(15, 23, 42, 0.16);
+  text-align: center;
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(-50%, -8px) scale(0.95);
+  transform-origin: 50% 0;
+  transition: opacity 220ms ease, transform 260ms cubic-bezier(0.34, 1.56, 0.64, 1);
+  z-index: 30;
+}
+.ring-hover-card .rhc-title {
+  display: block;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--fg-secondary);
+  letter-spacing: -0.01em;
+}
+.ring-hover-card .rhc-row {
+  display: block;
+  margin: 4px 0 3px;
+  font-size: 13px;
+  font-weight: 800;
+  color: var(--fg);
+  font-variant-numeric: tabular-nums;
+}
+.ring-hover-card .rhc-hint {
+  display: block;
+  font-size: 10px;
+  color: var(--fg-tertiary);
+}
+.ring-wrap:hover .ring-hover-card,
+.ring-wrap:focus-within .ring-hover-card {
+  opacity: 1;
+  transform: translate(-50%, 0) scale(1);
+}
+
+/* 点环改成明显的弧段 + 发光，不再是一圈若隐若现的黑点 */
+.ring-wrap:hover .progress-halo {
+  stroke-width: 3;
+  stroke-dasharray: 20 12;
+  opacity: 0.9;
+  filter: drop-shadow(0 0 5px var(--accent));
+  animation: halo-spin 2.4s linear infinite;
+}
+.ring-wrap:hover .progress-ring {
+  filter: drop-shadow(0 0 9px var(--accent-glow-strong));
+  transition: filter 260ms ease;
+}
+.ring-wrap:hover .progress-count { animation: ring-num-pop 520ms cubic-bezier(0.34, 1.56, 0.64, 1); }
+@keyframes ring-num-pop {
+  0% { transform: scale(1); }
+  45% { transform: scale(1.09); }
+  100% { transform: scale(1); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ring-wrap:hover .progress-halo { animation: none; }
+  .ring-wrap:hover .progress-count { animation: none; }
+}
+
+/* 设置：总开关关闭时仍可点击；说明写进页内，不再用原生 title 黑框 */
+.auto-opts.off { opacity: 0.62; pointer-events: auto; }
+.auto-opts.off :is(button, input, .segmented, .chips) { pointer-events: auto; }
+.auto-disabled-hint {
+  margin: 2px 0 10px;
+  padding: 7px 10px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: #b45309;
+  background: rgba(224, 138, 19, 0.10);
+  border: 1px solid rgba(224, 138, 19, 0.28);
+  border-radius: 8px;
+}
+[data-theme="dark"] .auto-disabled-hint { color: #f0b45e; }
+
+/* v1.3.1 · 刷新无动画：数据完整到达后一次性替换，不做补间 / 滚动 / 脉冲。
+   仅覆盖数据呈现元素；鼠标悬停圆环、设置面板开合等交互反馈保留。 */
+.progress-fill,
+.tt-fill,
+.daily-fill,
+.status,
+.status .status-dot,
+.point-value,
+.odo-digit,
+.odo-strip,
+.tip { transition: none !important; animation: none !important; }
+.status.running .status-dot,
+.status.cooldown .status-dot { animation: none !important; }
+.progress-ring.spinning { animation: none !important; }
