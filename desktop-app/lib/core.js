@@ -4,6 +4,17 @@
  * 主进程 main.js 与验证脚本 scripts/verify-shim.js 共用同一份实现。
  * ========================================================================== */
 
+
+/**
+ * Only these known Microsoft / Rewards authentication cookies can indicate a
+ * real sign-out when removed. Telemetry, preference, and experiment cookies
+ * are intentionally excluded: their removal must never clear cached points.
+ */
+const REWARDS_AUTH_COOKIE_NAME = /^(?:MSPAuth|MSPProf|MSPRequ|MSPOK|MSPShared|MSPBack|MSPState|MSPConsent|MSAAuth|__Host-MSAAUTH|ESTSAUTH(?:PERSISTENT|LIGHT)?|ESTSSC|ESTSAUTHCOOKIE|RPS(?:Sec)?Auth|RPSTAuth|KievRPSAuth|WLID|WLSSC|_RwBf(?:2)?)$/i;
+function isRewardsAuthCookie(cookie) {
+  return !!(cookie && typeof cookie.name === 'string' && REWARDS_AUTH_COOKIE_NAME.test(cookie.name));
+}
+
 /** chrome.storage.local.get 的 keys 参数归一化：支持数组 / 字符串 / 对象 / 空。 */
 function normalizeGetKeys(keys, data) {
   if (keys == null) return Object.assign({}, data);
@@ -116,6 +127,7 @@ function shouldProxyFetch(input) {
 
 module.exports = {
   normalizeGetKeys,
+  isRewardsAuthCookie,
   diffStorage,
   computeAlarmDelay,
   tabObject,

@@ -1,6 +1,6 @@
 {
   "name": "human-search-assistant-desktop",
-  "version": "1.3.4",
+  "version": "1.3.8",
   "description": "拟人搜索助手 · 跨平台桌面版（Windows / Ubuntu）",
   "main": "main.js",
   "author": "local",
@@ -8,7 +8,7 @@
   "private": true,
   "scripts": {
     "start": "node scripts/launch.js",
-    "verify": "node scripts/verify-v120.js && node scripts/verify-github-align.js && node scripts/verify-v130-flow.js && node scripts/verify-v131.js && node scripts/verify-main.js && node scripts/verify-sync.js && node scripts/verify-install.js && node scripts/verify-deps.js && node scripts/verify-launch.js",
+    "verify": "node scripts/verify-v120.js && node scripts/verify-github-align.js && node scripts/verify-v130-flow.js && node scripts/verify-v131.js && node scripts/verify-main.js && node scripts/verify-sync.js && node scripts/verify-install.js && node scripts/verify-deps.js && node scripts/verify-launch.js && node scripts/verify-task-click-v135.js && node scripts/verify-task-index-v137.js && node scripts/verify-v137.js && node scripts/verify-v138.js",
     "verify:render": "python3 scripts/verify-render.py",
     "fix:electron": "node scripts/fix-electron.js",
     "build:linux": "sh scripts/build-linux.sh",
@@ -40,7 +40,10 @@
     "verify:launch": "node scripts/verify-launch.js",
     "dist:deb": "electron-builder --config electron-builder.yml --linux deb --x64",
     "dist:appimage": "electron-builder --config electron-builder.yml --linux AppImage --x64",
-    "verify:browser": "node scripts/verify-v132.js && node scripts/verify-v133.js && node scripts/verify-debug.js && node scripts/verify-real-html.js"
+    "verify:browser": "node scripts/verify-v132.js && node scripts/verify-v133.js && node scripts/verify-debug.js && node scripts/verify-real-html.js",
+    "verify:task-click": "node scripts/verify-task-click-v135.js",
+    "verify:v137": "node scripts/verify-v137.js",
+    "verify:task-index": "node scripts/verify-task-index-v137.js"
   },
   "devDependencies": {
     "electron": "45.2.3",

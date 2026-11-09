@@ -80,6 +80,13 @@ const storageLocal = {
 
 /* ------------------------------------------------------------------ tabs */
 /* v1.0.9：主界面右侧的内嵌官网面板（仅桌面版有，扩展版隐藏对应按钮） */
+/* v1.3.8 · 桌面版专有设置：开机自动启动（Electron 登录项） */
+const desktopApp = {
+  isDesktop: true,
+  setAutoLaunch: enabled => invoke('chrome:app:autoLaunch', !!enabled),
+  getAutoLaunch: () => invoke('chrome:app:autoLaunch:get')
+};
+
 const desktopPanel = {
   show: url => invoke('chrome:panel:show', url || null),
   hide: () => invoke('chrome:panel:hide'),
@@ -193,8 +200,9 @@ const chromeApi = {
   /* 面板展开/收起状态（桌面版专用） */
   onPanel: makeEvent('ui:panel'),
   /* v1.3.2：桌面版任务侧栏——一次调用完成两页滚动扫描与逐张点击 */
-  taskPanel: { clickAll: () => invoke('chrome:task:clickAll') },
+  taskPanel: { clickAll: (index, options) => invoke('chrome:task:clickAll', index, options || {}) },
   desktopPanel,
+  desktopApp,
   tabs,
   scripting,
   debugger: debuggerApi,
@@ -242,6 +250,8 @@ contextBridge.exposeInMainWorld('__desktop', {
      12 秒 guard 竞速），返回渲染 DOM 的完整 HTML、可见文本与积分。 */
   readVisibleRewards: () => invoke('chrome:rewards:readVisible'),
   /* v1.3.2：即使 window.chrome 只剩半份，任务点击仍能走通 */
-  taskClickAll: () => invoke('chrome:task:clickAll'),
-  shimVersion: '1.3.2'
+  taskClickAll: (index, options) => invoke('chrome:task:clickAll', index, options || {}),
+  shimVersion: '1.3.8',
+  setAutoLaunch: enabled => invoke('chrome:app:autoLaunch', !!enabled),
+  getAutoLaunch: () => invoke('chrome:app:autoLaunch:get')
 });

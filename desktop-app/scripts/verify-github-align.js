@@ -108,6 +108,7 @@ const ADAPT_WHITELIST = {
   runFlow: 'V13 搜索阶段置位 desktopSearchGuard 硬拦截',
   finishRun: 'V13 预设流程收尾合并为一次两页同步',
   fetchBothPages: 'V13 透传 fresh，开始/收尾跳过 120s 快照',
+  summarizeTaskItems: 'V137 进度精确取整，只有 earned 达到 total 才显示 100%',
   refreshTodayTasks: 'V13 支持复用同一份 pages、可跳过 25s 注入兜底',
   autoSearchCount: 'V13 修正 cap=0 被 || 吞掉的 bug',
   maybeShowReminder: 'V13 禁用「浏览网页就抓 /earn」的空闲请求'
@@ -172,8 +173,8 @@ function testAlignment() {
     ck(!!ADAPT_WHITELIST[k], `  · ${k} → ${ADAPT_WHITELIST[k] || '未登记'}`);
   }
   const added = Object.keys(DK_F).filter(k => !(k in UP_F));
-  ck(added.every(k => /^desktop|^armOneShot|^readPageHtml|^preset|^syncStart/.test(k)),
-     `桌面版新增 ${added.length} 个函数全部是适配层或 v1.3.0 编排层`);
+  ck(added.every(k => /^desktop|^armOneShot|^readPageHtml|^preset|^syncStart|^taskClick|^buildTaskClickIndex|^isTaskSummaryComplete/.test(k)),
+     `桌面版新增 ${added.length} 个函数全部是适配层、同步定位索引或流程编排层`);
 
   group('4. 零监控口径（不重新引入周期定时器）');
   const periodic = (dkBg.match(/periodInMinutes\s*:/g) || []).length;

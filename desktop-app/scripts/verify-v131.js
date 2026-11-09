@@ -185,9 +185,19 @@ function makeCtx() {
      '同步结果标注了可见面板数据源，debug 可定位');
 
   group('4. 刷新期间 UI 不动：一次抓取、一次原子写回');
-  ck(writes.length === 1,
-     '整轮只写 storage 一次（实际 ' + writes.length + ' 次），中途不清空界面');
-  const w = writes[0] || { keys: [] };
+  /* v1.3.8：进度详情(activityDetail)与积分历史(pointsHistory)是独立业务键，
+     分别服务于圆圈下方详情与设置页日历；不参与「积分/任务/登录态一次原子
+     写回」的统计口径，也不与业务数据混在同一次 store 里。 */
+  const DETAIL_KEYS = ['activityDetail', 'pointsHistory'];
+  const isDetailWrite = w => w.keys.every(k => DETAIL_KEYS.indexOf(k) >= 0);
+  const dataWrites = writes.filter(w => !isDetailWrite(w));
+  const detailWrites = writes.filter(isDetailWrite);
+  ck(dataWrites.length === 1,
+     '整轮业务数据只写 storage 一次（实际 ' + dataWrites.length + ' 次），中途不清空界面');
+  ck(detailWrites.some(w => w.obj.activityDetail && w.obj.activityDetail.state === 'syncing'),
+     '「正在同步」详情单独写入，不混入业务数据');
+  ck(detailWrites.some(w => w.obj.pointsHistory), '当日积分历史单独写入，供积分日历汇总');
+  const w = dataWrites[0] || { keys: [] };
   ck(['pointsSummary', 'todayTasks', 'loginStatus']
      .every(k => w.keys.includes(k)),
      '积分 / 任务 / 登录态 同批原子写回 → storage.onChanged 只重绘一次');
@@ -198,8 +208,9 @@ function makeCtx() {
   const writesAfterFirst = writes.length;
   await vm.runInContext(
     "(async () => await desktopSyncRewards({ pages: await fetchBothPages(), reason: 'repeat' }))()", ctx);
-  ck(writes.length === writesAfterFirst,
-     '相同数据再同步一次：零写入（仅改变变化的值，UI 完全不动）');
+  const repeatWrites = writes.slice(writesAfterFirst).filter(w => !isDetailWrite(w));
+  ck(repeatWrites.length === 1 && repeatWrites[0].keys.length === 1 && repeatWrites[0].keys[0] === 'taskClickIndex',
+     '相同业务数据再同步只刷新 taskClickIndex 时间戳，不重复写积分/任务数据');
   ck(!w.keys.some(k => /^(startPoints|endPoints|finalEarned)$/.test(k)),
      '不同步写运行态临时字段，不触发额外动画');
   ck(/if \(el\.dataset\.odo === text\) return/.test(popupSource),

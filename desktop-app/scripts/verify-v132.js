@@ -55,7 +55,7 @@ function extractFn(name) {
   }
   throw new Error('提取函数失败: ' + name);
 }
-const taskClickSrc = new Function(extractFn('taskClickSrc') + '\nreturn taskClickSrc;')();
+const taskAimSrc = new Function(extractFn('taskAimSrc') + '\nreturn taskAimSrc;')();
 /* 大括号配对提取，避免正则在模板字符串/对象字面量里提前截断 */
 const quietFnSrc = extractFn('desktopQuietRun');
 const signOutFnSrc = extractFn('markSignedOut');
@@ -101,29 +101,20 @@ async function main() {
      '每张卡都带积分与合法 href');
   ck(cards.every((c, i) => c.idx === i), 'idx 连续，可供逐张点击定位');
 
-  group('2. 逐张点击：全部卡片都点到，扫描页不被覆盖');
-  await page.evaluate(() => {
-    window.__clicked = [];
-    for (const a of document.querySelectorAll('a[href]')) {
-      a.addEventListener('click', e => {
-        e.preventDefault();                       // 测试页不真的导航
-        window.__clicked.push(a.getAttribute('href'));
-      });
-    }
-  });
+  group('2. 逐张定位：每张卡都能重新定位到真实鼠标坐标');
   const results = [];
   for (const c of cards) {
-    const r = await page.evaluate(taskClickSrc(c));
+    const r = await page.evaluate(taskAimSrc(c));
     results.push(r);
   }
   ck(results.every(r => r && r.ok),
-     '10 张卡依次点击全部成功（' + results.filter(r => r && r.ok).length + '/10）');
-  const clicked = await page.evaluate(() => window.__clicked);
-  ck(clicked.length === 10, '实际触发 10 次 click 事件（' + clicked.length + '）');
-  ck(new Set(clicked).size === 10, '10 次点击落在 10 张不同的卡片上，无重复无遗漏');
+     '10 张卡全部定位成功（' + results.filter(r => r && r.ok).length + '/10）');
+  ck(results.every((r, i) => r.href === cards[i].href &&
+      r.x >= 0 && r.y >= 0 && r.x < r.viewport.width && r.y < r.viewport.height),
+     '每张卡返回匹配 href 且坐标位于可视区域');
   const urlAfter = await page.evaluate(() => location.href);
   ck(/about:blank|^$/.test(urlAfter),
-     '点击没有把扫描页导航走（结果页由主进程隐藏视图承接）');
+     '定位阶段不触发 DOM click，也不导航扫描页');
 
   group('3. 主进程：任务侧栏与隐藏结果视图');
   ck(/const TASK_PANEL_URLS = \[[\s\S]*?dashboard[\s\S]*?earn[\s\S]*?\]/.test(mainSource),
@@ -131,10 +122,12 @@ async function main() {
   ck(/function ensureTaskView\(\)/.test(mainSource) &&
      /function ensureTaskResultView\(\)/.test(mainSource),
      '存在任务侧栏与隐藏结果视图两个独立视图');
-  ck(/taskView\.webContents\.setWindowOpenHandler[\s\S]{0,300}?ensureTaskResultView\(\)/.test(mainSource),
-     '卡片 target=_blank 的任务页落到结果视图，扫描页保持不变');
-  ck(/for \(const url of TASK_PANEL_URLS\)[\s\S]{0,1200}?TASK_CLICK_INTERVAL_MS/.test(mainSource),
-     'IPC 遍历两页、相邻点击间隔 5 秒');
+  ck(/taskView\.webContents\.setWindowOpenHandler[\s\S]{0,300}?loadTaskResultFromClick\(url\)/.test(mainSource) &&
+     /function loadTaskResultFromClick[\s\S]{0,160}?ensureTaskResultView\(\)/.test(mainSource),
+     '鼠标点击打开的任务页落到隐藏结果视图，扫描页保持不变');
+  ck(/for \(const url of TASK_PANEL_URLS\)[\s\S]{0,5000}?dispatchTaskMouseClick\(dbg, aim\.x, aim\.y\)/.test(mainSource) &&
+     /const TASK_CLICK_SETTLE_MS = 350/.test(mainSource),
+     'IPC 遍历两页并使用 CDP 鼠标点击，不再等待固定 5 秒');
   ck(/if \(!state\.running\) break;/.test(mainSource),
      '点「停止」时立即中断剩余卡片');
   ck(/finally \{[\s\S]{0,200}?hideTaskView\(\)/.test(mainSource),

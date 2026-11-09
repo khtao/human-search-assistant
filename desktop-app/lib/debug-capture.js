@@ -116,6 +116,15 @@ function slug(url, max = 42) {
   } catch { return 'no-url'; }
 }
 
+const MAX_RECENT_LOGS = 80;
+const MAX_RECENT_EVENTS = 120;
+const MAX_PENDING_LOGS = 2000;
+const MAX_PENDING_EVENTS = 4000;
+function pushBounded(list, value, max) {
+  list.push(value);
+  if (list.length > max) list.splice(0, list.length - max);
+}
+
 class DebugCapture {
   constructor(opts) {
     const o = opts || {};
@@ -146,12 +155,14 @@ class DebugCapture {
     if (this.enabled) {
       this._flushTimer = setInterval(() => this.flush(), 400);
       if (this._flushTimer.unref) this._flushTimer.unref();
-      process.on('exit', () => { try { this.flush(); } catch {} });
+      this._onProcessExit = () => { try { this.flush(); } catch {} };
+      process.on('exit', this._onProcessExit);
     }
     this.start();
   }
 
   start() {
+    if (!this.enabled) return null;
     try {
       fs.mkdirSync(this.rootDir, { recursive: true });
       // 只保留最近 N 个会话，避免长期占用磁盘
@@ -213,17 +224,17 @@ class DebugCapture {
   log(scope, msg, data) {
     const line = `[${new Date().toISOString()}] [${scope}] ${String(msg)}` +
       (data === undefined ? '' : ' ' + JSON.stringify(data));
-    this.logLines.push(line);
+    pushBounded(this.logLines, line, MAX_RECENT_LOGS);
     if (this.enabled) {
-      this._pendingLogs.push(line);
+      pushBounded(this._pendingLogs, line, MAX_PENDING_LOGS);
       this.event({ t: Date.now(), type: 'log', scope, msg, data });
     }
     if (process.env.HSA_DEBUG_CONSOLE === '1') console.log(line);
   }
 
   event(ev) {
-    this.eventLines.push(ev);
-    if (this.enabled) this._pendingEvents.push(ev);
+    pushBounded(this.eventLines, ev, MAX_RECENT_EVENTS);
+    if (this.enabled) pushBounded(this._pendingEvents, ev, MAX_PENDING_EVENTS);
   }
 
   /** 记录一次 IPC 调用（用于判断「点击登录到底有没有发出消息」） */
@@ -261,6 +272,16 @@ class DebugCapture {
         this._manifestDirty = false;
       }
     } catch {}
+  }
+
+  /** Stop the debug flush timer and persist any remaining bounded buffers. */
+  close() {
+    if (this._flushTimer) { clearInterval(this._flushTimer); this._flushTimer = null; }
+    this.flush();
+    if (this._onProcessExit) {
+      process.removeListener('exit', this._onProcessExit);
+      this._onProcessExit = null;
+    }
   }
 
   /** 核心：保存一次抓到的页面 HTML */

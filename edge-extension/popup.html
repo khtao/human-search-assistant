@@ -27,7 +27,7 @@
         </div>
         <button id="settings-open" class="icon-btn" type="button" aria-label="打开设置" title="设置"
                 aria-haspopup="dialog" aria-controls="settings"
-                data-i18n-aria="a11y.settings" data-i18n-title="a11y.settings">
+                data-i18n-aria="a11y.settings" data-i18n-title="a11y.settings" data-tip-role="hint">
           <svg class="icon-gear" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
         </button>
       </div>
@@ -118,7 +118,7 @@
   <section id="settings" class="settings" role="dialog" aria-modal="true" aria-labelledby="settings-title" inert>
     <header class="settings-head">
       <button id="settings-back" class="icon-btn" type="button" aria-label="返回" title="返回"
-              data-i18n-aria="a11y.back" data-i18n-title="a11y.back">
+              data-i18n-aria="a11y.back" data-i18n-title="a11y.back" data-tip-role="hint">
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>
       </button>
       <h2 id="settings-title" data-i18n="settings.title">设置</h2>
@@ -130,9 +130,9 @@
         <div class="set-row">
           <span class="set-label" data-i18n="settings.language">语言 / Language</span>
           <div class="segmented lang-segmented" id="set-lang" role="radiogroup" aria-label="Language">
+            <button type="button" role="radio" data-value="zh" data-i18n="lang.zh" aria-checked="false">中文</button>
+            <button type="button" role="radio" data-value="en" data-i18n="lang.en" aria-checked="false">英文</button>
             <button type="button" role="radio" data-value="system" data-i18n="lang.system" aria-checked="true">跟随系统</button>
-            <button type="button" role="radio" data-value="zh" aria-checked="false">中文</button>
-            <button type="button" role="radio" data-value="en" aria-checked="false">English</button>
           </div>
         </div>
         <div class="set-row">
@@ -143,27 +143,52 @@
             <button type="button" role="radio" data-value="system" data-i18n="theme.system">跟随系统</button>
           </div>
         </div>
-        <label class="set-row">
-          <span class="set-label"><span data-i18n="settings.reduce">减少动画</span><small data-i18n="settings.reduceHint">关闭动效</small></span>
+        <label class="set-row" data-i18n-title="settings.reduceHint" data-tip-role="hint" title="关闭动效">
+          <span class="set-label"><span data-i18n="settings.reduce">减少动画</span></span>
           <input type="checkbox" id="set-reduce" class="switch">
         </label>
       </div>
 
+
+      <!-- v1.3.8 · 积分日历：支付宝收益日历风格，格子只显示积分，说明走悬停提示 -->
+      <div class="set-group" id="calendar-group" style="--g:1">
+        <h3 class="set-title" data-i18n="calendar.title">积分赚取日历</h3>
+        <div class="cal-head">
+          <button id="cal-prev" class="cal-nav" type="button" aria-label="上一周期" title="上一周期"
+                  data-i18n-aria="calendar.prev" data-i18n-title="calendar.prev" data-tip-role="hint">‹</button>
+          <span id="cal-range" class="cal-range">—</span>
+          <button id="cal-next" class="cal-nav" type="button" aria-label="下一周期" title="下一周期"
+                  data-i18n-aria="calendar.next" data-i18n-title="calendar.next" data-tip-role="hint">›</button>
+        </div>
+        <div class="cal-hero">
+          <div class="cal-hero-value"><span id="cal-total" class="cal-total">—</span><span class="cal-total-unit" data-i18n="calendar.unit">分</span></div>
+          <span id="cal-hero-label" class="cal-hero-label">本月累计积分</span>
+        </div>
+        <div class="segmented cal-segmented" id="cal-mode" role="radiogroup" aria-label="Calendar range">
+          <button type="button" role="radio" data-value="day" data-i18n="calendar.day" aria-checked="true">日</button>
+          <button type="button" role="radio" data-value="week" data-i18n="calendar.week" aria-checked="false">周</button>
+          <button type="button" role="radio" data-value="month" data-i18n="calendar.month" aria-checked="false">月</button>
+        </div>
+        <div id="cal-weekdays" class="cal-weekdays" aria-hidden="true"></div>
+        <div id="cal-grid" class="cal-grid" role="grid" aria-label="积分日历"
+             data-i18n-title="calendar.hoverTip" data-tip-role="hint"
+             title="按日历排布 · 格子只显示积分，不显示日期 · 淡蓝为有积分、灰色为无积分、未来留空。悬停方格查看当日详情"></div>
+        <p id="cal-summary" class="cal-summary"></p>
+      </div>
       <!-- 原 Daily reminders → 自动完成任务设置 -->
       <div class="set-group" id="auto-group" style="--g:3">
         <h3 class="set-title" data-i18n="auto.title">自动完成任务</h3>
-        <label class="set-row">
-          <span class="set-label"><span data-i18n="auto.skipCompleted">跳过已完成任务卡</span><small data-i18n="auto.skipCompletedHint">默认不跳过：点击所有包含积分的卡片</small></span>
+        <label class="set-row" data-i18n-title="auto.skipCompletedHint" data-tip-role="hint" title="默认不跳过：点击所有包含积分的卡片">
+          <span class="set-label"><span data-i18n="auto.skipCompleted">跳过已完成任务卡</span></span>
           <input type="checkbox" id="set-skip-completed" class="switch">
         </label>
-        <label class="set-row">
-          <span class="set-label"><span data-i18n="auto.enable">定时自动运行</span><small data-i18n="auto.enableHint">到点自动点击未完成任务卡片，并按剩余分数搜索</small></span>
+        <label class="set-row" data-i18n-title="auto.enableHint" data-tip-role="hint" title="到点自动点击未完成任务卡片，并按剩余分数搜索">
+          <span class="set-label"><span data-i18n="auto.enable">定时自动运行</span></span>
           <input type="checkbox" id="set-auto" class="switch">
         </label>
-        <p id="auto-disabled-hint" class="auto-disabled-hint" hidden></p>
         <div id="auto-opts" class="auto-opts">
-          <div class="set-row column">
-            <span class="set-label"><span data-i18n="auto.count">搜索次数上限</span><small data-i18n="auto.countHint">按今日 Bing 搜索剩余分数自动决定，不超过此值</small></span>
+          <div class="set-row column" data-i18n-title="auto.countHint" data-tip-role="hint" title="按今日 Bing 搜索剩余分数自动决定，不超过此值">
+            <span class="set-label"><span data-i18n="auto.count">搜索次数上限</span></span>
             <div class="chips" id="set-auto-count-chips" role="radiogroup" aria-label="Auto task searches">
               <button type="button" role="radio" data-value="10">10</button>
               <button type="button" role="radio" data-value="20">20</button>
@@ -172,16 +197,16 @@
               <input type="number" id="set-auto-count" min="1" max="150" step="1" aria-label="自定义搜索次数" data-i18n-aria="a11y.customCount" data-i18n-ph="settings.other" placeholder="其他">
             </div>
           </div>
-          <div class="set-row column">
-            <span class="set-label"><span data-i18n="auto.times">启动时间</span><small data-i18n="auto.timesHint">可添加多个，自动去重排序</small></span>
+          <div class="set-row column" data-i18n-title="auto.timesHint" data-tip-role="hint" title="可添加多个，自动去重排序">
+            <span class="set-label"><span data-i18n="auto.times">启动时间</span></span>
             <div class="time-add">
               <input type="time" id="set-auto-time" aria-label="启动时间" data-i18n-aria="a11y.autoTime">
               <button id="set-auto-time-add" class="small-btn" type="button" data-i18n="auto.addTime">添加</button>
             </div>
             <div id="set-auto-times" class="time-chips"></div>
           </div>
-          <div class="set-row">
-            <span class="set-label"><span data-i18n="auto.level">拟人强度</span><small data-i18n="auto.levelHint">影响鼠标轨迹、滚动与每轮时长</small></span>
+          <div class="set-row" data-i18n-title="auto.levelHint" data-tip-role="hint" title="影响鼠标轨迹、滚动与每轮时长">
+            <span class="set-label"><span data-i18n="auto.level">拟人强度</span></span>
             <div class="segmented" id="set-auto-level" role="radiogroup" aria-label="Human level">
               <button type="button" role="radio" data-value="1" data-i18n="level.low">低</button>
               <button type="button" role="radio" data-value="2" data-i18n="level.mid">中</button>
@@ -192,7 +217,8 @@
         <p id="set-auto-msg" class="preview-msg" role="status" hidden></p>
       </div>
 
-      <button id="set-reset" class="reset-btn" type="button" style="--g:4" data-i18n="settings.reset">恢复默认设置</button>
+
+      <button id="set-reset" class="reset-btn" type="button" style="--g:5" data-i18n="settings.reset">恢复默认设置</button>
     </div>
   </section>
 

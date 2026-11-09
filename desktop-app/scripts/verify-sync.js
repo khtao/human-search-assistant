@@ -225,14 +225,20 @@ async function main() {
   ck(!broadcasts.slice(s3).some(b => b.key === 'ui:sync' || b.key === 'ui:tick'),
      '不再广播 ui:sync / ui:tick 专用刷新界面事件');
 
-  group('5b. 认证 Cookie 删除 → 即时登出（用户动作，不是监控）');
+  const s3a = broadcasts.length;
+  cookieChanged({}, { domain: '.bing.com', name: 'MUID', value: '' }, 'explicit', true);
+  await sleep(50);
+  ck(!broadcasts.slice(s3a).some(b => b.key === 'storage.onChanged'),
+     '删除 MUID 等普通 Cookie 不会清空可用积分或触发登出');
+
+  group('5b. 认证 Cookie 删除不单独判定登出');
   const s3b = broadcasts.length;
   cookieChanged({}, { domain: '.live.com', name: 'WLID', value: '' }, 'explicit', true);
   await sleep(50);
-  ck(broadcasts.slice(s3b).some(b => b.key === 'storage.onChanged'),
-     '登出写回 loginStatus / pointsSummary / todayTasks 并经 storage.onChanged 重绘一次');
+  ck(!broadcasts.slice(s3b).some(b => b.key === 'storage.onChanged'),
+     '即使 WLID 等认证 Cookie 被轮换，也不直接清空可用积分');
   ck(!broadcasts.slice(s3b).some(b => b.key === 'ui:tick'),
-     '登出也不发专用刷新事件（storage.onChanged 已足够）');
+     'Cookie 变化不广播刷新事件；登录状态由明确登出 URL / Rewards 页面确认');
 
   group('6. v1.1.8 · popup 切回焦点零抓取');
   const b4 = dispatches.length, s4 = broadcasts.length;
