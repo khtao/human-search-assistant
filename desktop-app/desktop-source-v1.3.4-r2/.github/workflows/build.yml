@@ -1,0 +1,36 @@
+name: Ubuntu DEB 构建
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+
+jobs:
+  build-deb:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出源码
+        uses: actions/checkout@v4
+
+      - name: 安装 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: 安装 Linux 打包工具
+        run: sudo apt-get update && sudo apt-get install -y fakeroot dpkg-dev
+
+      - name: 构建并验证 DEB
+        run: npm run build:linux
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 上传 DEB 与校验文件
+        uses: actions/upload-artifact@v4
+        with:
+          name: human-search-assistant-ubuntu-x64
+          path: |
+            dist/*.deb
+            dist/SHA256SUMS.txt
+          if-no-files-found: error

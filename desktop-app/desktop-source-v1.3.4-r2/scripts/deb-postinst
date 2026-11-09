@@ -1,0 +1,22 @@
+#!/bin/sh
+# Ensure Electron's SUID sandbox helper has the ownership and mode expected by Chromium.
+set -eu
+
+case "${1:-configure}" in
+  configure)
+    if command -v dpkg-query >/dev/null 2>&1; then
+      dpkg-query -L human-search-assistant 2>/dev/null | while IFS= read -r helper; do
+        case "$helper" in
+          */chrome-sandbox)
+            if [ -f "$helper" ]; then
+              chown root:root "$helper"
+              chmod 4755 "$helper"
+            fi
+            ;;
+        esac
+      done
+    fi
+    ;;
+esac
+
+exit 0

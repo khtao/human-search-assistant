@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <script>
+  /* v1.1.3 · Electron 45 / Chromium 156 真机问题：window.chrome 可能被浏览器
+     内置的同名对象占用，contextBridge 对 'chrome' 的注入失败或只得到半份 API
+     （表现为右上角没有「官网」按钮、点登录毫无反应、抓不到积分）。
+     preload 已把同一份 shim 备份到 __hsaChrome；这段在任何业务脚本之前执行，
+     检测到 chrome 不完整就用备份覆盖。浏览器扩展版没有 __hsaChrome，空操作。 */
+  (function () {
+    try {
+      var backup = window.__hsaChrome;
+      if (!backup) return;
+      var cur = window.chrome;
+      if (cur && cur.storage && cur.storage.local && cur.desktopPanel) return;
+      Object.defineProperty(window, 'chrome', {
+        value: backup, configurable: true, writable: true
+      });
+    } catch (e) {
+      try { window.chrome = window.__hsaChrome; } catch (_) {}
+    }
+  })();
+  </script>
+  <title data-i18n="app.title">拟人搜索助手</title>
+  <link rel="stylesheet" href="popup.css">
+  <script src="theme.js"></script>
+</head>
+<body>
+  <div class="app" id="main">
+    <header class="header enter" style="--i:0">
+      <div class="brand">
+        <div class="brand-icon">
+          <img class="brand-img" src="icons/icon48.png" width="32" height="32" alt="">
+        </div>
+        <h1 data-i18n="app.title">拟人搜索助手</h1>
+      </div>
+      <div class="header-actions">
+        <!-- v1.1.5：顶端只保留「登录 / 已登录图标」与「设置」两个按键。
+             未登录显示「登录」两字（点击打开官网登录页）；已登录显示由上传截图重绘的
+             扁平圆形图标（无头像、无积分数字）。单击收起侧栏、双击跳转官网，
+             登录成功后自动收起侧栏。 -->
+        <button id="login-badge" class="login-badge signed-out" type="button"
+                aria-label="登录状态"
+                data-i18n-aria="a11y.login">
+          <img id="login-badge-icon" class="login-badge-icon"
+               src="icons/logged-in.png" width="28" height="28" alt="">
+          <span id="login-badge-text" class="login-badge-text" data-i18n="login.out">未登录</span>
+          <span id="login-badge-tip" class="login-badge-tip" role="tooltip"
+                data-i18n="login.tip">单击切换侧栏 · 双击打开官网</span>
+        </button>
+        <button id="settings-open" class="icon-btn" type="button" aria-label="打开设置" title="设置"
+                aria-haspopup="dialog" aria-controls="settings"
+                data-i18n-aria="a11y.settings" data-i18n-title="a11y.settings">
+          <svg class="icon-gear" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        </button>
+      </div>
+    </header>
+
+    <main>
+      <div class="progress-section enter" style="--i:1">
+        <div class="ring-wrap">
+        <svg class="progress-ring" viewBox="0 0 120 120" role="progressbar" aria-label="今日任务进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" data-i18n-aria="a11y.progress">
+          <defs>
+            <linearGradient id="ring-gradient" x1="0%" y1="0%" x2="100%" y2="100%">
+              <stop offset="0%" class="ring-stop-a"/>
+              <stop offset="100%" class="ring-stop-b"/>
+            </linearGradient>
+          </defs>
+          <circle class="progress-track" cx="60" cy="60" r="52"/>
+          <circle id="progress-arc" class="progress-fill" cx="60" cy="60" r="52"/>
+          <circle class="progress-halo" cx="60" cy="60" r="52"/>
+        </svg>
+        <div class="progress-label">
+          <span id="progress-text" class="progress-count">0 / 0</span>
+          <span id="progress-sub" class="progress-sub" data-i18n="progress.tasks">今日任务</span>
+        </div>
+        <div class="ring-hover-card" id="ring-hover-card" aria-hidden="true">
+          <span class="rhc-title" data-i18n="ring.tipTitle">今日进度速览</span>
+          <span class="rhc-row"></span>
+          <span class="rhc-hint" data-i18n="ring.tipHint">鼠标移入显示 · 点击主按钮开始执行</span>
+        </div>
+        </div>
+        <div id="status" class="status stopped" role="status" aria-live="polite">
+          <span class="status-dot"></span>
+          <span id="status-text" data-i18n="status.ready">就绪</span>
+        </div>
+      </div>
+
+      <div class="points-grid" role="group" aria-label="积分概览" data-i18n-aria="a11y.points">
+        <div class="point-card enter" style="--i:2" tabindex="0" aria-describedby="tip-start">
+          <span class="point-label" data-i18n="points.start">可用积分</span>
+          <span id="start-points" class="point-value">—</span>
+          <span id="tip-start" class="tip" role="tooltip"></span>
+        </div>
+        <div class="point-card enter" style="--i:3" tabindex="0" aria-describedby="tip-current">
+          <span class="point-label" data-i18n="points.current">今日积分</span>
+          <span id="end-points" class="point-value">—</span>
+          <span id="tip-current" class="tip" role="tooltip"></span>
+        </div>
+        <div id="claim-card" class="point-card clickable enter" style="--i:4" tabindex="0" role="link"
+             data-i18n-aria="points.earnedOpen" aria-label="打开 Rewards 领取积分" aria-describedby="tip-earned">
+          <span id="earned-label" class="point-label" data-i18n="points.earned">可领取</span>
+          <span id="earned-points" class="point-value">—</span>
+          <span id="tip-earned" class="tip" role="tooltip"></span>
+        </div>
+      </div>
+
+      <div class="controls under-points enter" style="--i:5">
+        <button id="btn-action" class="btn action" type="button" data-mode="start">
+          <span class="btn-fill" aria-hidden="true"></span>
+          <svg class="action-icon" width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><path class="action-shape" d="M3.5 1.8L12.2 7L12.2 7L3.5 12.2Z"/></svg>
+          <span id="btn-action-label" class="action-label" data-i18n="controls.start">自动完成任务</span>
+        </button>
+      </div>
+
+      <div id="error-banner" class="error-banner" hidden>
+        <svg width="14" height="14" viewBox="0 0 14 14" fill="currentColor" aria-hidden="true">
+          <path d="M7 0a7 7 0 1 0 0 14A7 7 0 0 0 7 0zm.5 3v5h-1V3h1zm-.5 7a.75.75 0 1 1 0-1.5.75.75 0 0 1 0 1.5z"/>
+        </svg>
+        <span id="error-text"></span>
+        <button id="error-dismiss" class="error-close" type="button" aria-label="关闭" data-i18n-aria="a11y.dismiss">&times;</button>
+      </div>
+
+      <!-- 今日任务列表：按扩展读取积分的同一思路从 Rewards 页面获取 -->
+      <section id="today-tasks" class="today-tasks enter" style="--i:6" aria-labelledby="today-tasks-title">
+        <div class="tt-head">
+          <h2 id="today-tasks-title" data-i18n="todayTasks.title">今日任务</h2>
+          <button id="today-tasks-refresh" class="link-btn" type="button" data-i18n="todayTasks.refresh">刷新</button>
+        </div>
+        <div id="today-tasks-summary" class="tt-summary"></div>
+        <div class="tt-bar"><span id="today-tasks-fill" class="tt-fill"></span></div>
+        <div id="today-tasks-groups" class="tt-groups"></div>
+        <p id="today-tasks-empty" class="tt-empty" data-i18n="todayTasks.loading">正在读取今日任务…</p>
+        <p id="today-tasks-note" class="tt-note" data-i18n="todayTasks.onlyPoints">仅显示带积分的任务</p>
+        <p id="today-tasks-msg" class="preview-msg" role="status" hidden></p>
+      </section>
+
+    </main>
+  </div>
+
+  <section id="settings" class="settings" role="dialog" aria-modal="true" aria-labelledby="settings-title" inert>
+    <header class="settings-head">
+      <button id="settings-back" class="icon-btn" type="button" aria-label="返回" title="返回"
+              data-i18n-aria="a11y.back" data-i18n-title="a11y.back">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>
+      </button>
+      <h2 id="settings-title" data-i18n="settings.title">设置</h2>
+    </header>
+
+    <div class="settings-body">
+      <div class="set-group" style="--g:0">
+        <h3 class="set-title" data-i18n="settings.appearance">外观</h3>
+        <div class="set-row">
+          <span class="set-label" data-i18n="settings.language">语言 / Language</span>
+          <div class="segmented lang-segmented" id="set-lang" role="radiogroup" aria-label="Language">
+            <button type="button" role="radio" data-value="system" data-i18n="lang.system" aria-checked="true">跟随系统</button>
+            <button type="button" role="radio" data-value="zh" aria-checked="false">中文</button>
+            <button type="button" role="radio" data-value="en" aria-checked="false">English</button>
+          </div>
+        </div>
+        <div class="set-row">
+          <span class="set-label" data-i18n="settings.theme">主题</span>
+          <div class="segmented" id="set-theme" role="radiogroup" aria-label="Theme">
+            <button type="button" role="radio" data-value="light" data-i18n="theme.light">浅色</button>
+            <button type="button" role="radio" data-value="dark" data-i18n="theme.dark">深色</button>
+            <button type="button" role="radio" data-value="system" data-i18n="theme.system">跟随系统</button>
+          </div>
+        </div>
+        <label class="set-row">
+          <span class="set-label"><span data-i18n="settings.reduce">减少动画</span><small data-i18n="settings.reduceHint">关闭动效</small></span>
+          <input type="checkbox" id="set-reduce" class="switch">
+        </label>
+      </div>
+
+      <div class="set-group" style="--g:2">
+        <h3 class="set-title" data-i18n="settings.automation">自动化</h3>
+        <label class="set-row">
+          <span class="set-label"><span data-i18n="settings.cooldown">等待 Bing 冷却</span><small data-i18n="settings.cooldownHint">积分暂停时等待后继续</small></span>
+          <input type="checkbox" id="set-cooldown" class="switch">
+        </label>
+        <div id="cooldown-opts" class="sub-opts">
+          <div class="set-row">
+            <span class="set-label" data-i18n="settings.cooldownWait">等待时长</span>
+            <div class="segmented" id="set-cooldown-min" role="radiogroup" aria-label="Cooldown wait">
+              <button type="button" role="radio" data-value="10">10m</button>
+              <button type="button" role="radio" data-value="15">15m</button>
+              <button type="button" role="radio" data-value="20">20m</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 原 Daily reminders → 自动完成任务设置 -->
+      <div class="set-group" id="auto-group" style="--g:3">
+        <h3 class="set-title" data-i18n="auto.title">自动完成任务</h3>
+        <label class="set-row">
+          <span class="set-label"><span data-i18n="auto.enable">定时自动运行</span><small data-i18n="auto.enableHint">到点自动点击未完成任务卡片，并按剩余分数搜索</small></span>
+          <input type="checkbox" id="set-auto" class="switch">
+        </label>
+        <p id="auto-disabled-hint" class="auto-disabled-hint" hidden></p>
+        <div id="auto-opts" class="auto-opts">
+          <div class="set-row column">
+            <span class="set-label"><span data-i18n="auto.count">搜索次数上限</span><small data-i18n="auto.countHint">按今日 Bing 搜索剩余分数自动决定，不超过此值</small></span>
+            <div class="chips" id="set-auto-count-chips" role="radiogroup" aria-label="Auto task searches">
+              <button type="button" role="radio" data-value="10">10</button>
+              <button type="button" role="radio" data-value="20">20</button>
+              <button type="button" role="radio" data-value="30">30</button>
+              <button type="button" role="radio" data-value="50">50</button>
+              <input type="number" id="set-auto-count" min="1" max="150" step="1" aria-label="自定义搜索次数" data-i18n-aria="a11y.customCount" data-i18n-ph="settings.other" placeholder="其他">
+            </div>
+          </div>
+          <div class="set-row column">
+            <span class="set-label"><span data-i18n="auto.times">启动时间</span><small data-i18n="auto.timesHint">可添加多个，自动去重排序</small></span>
+            <div class="time-add">
+              <input type="time" id="set-auto-time" aria-label="启动时间" data-i18n-aria="a11y.autoTime">
+              <button id="set-auto-time-add" class="small-btn" type="button" data-i18n="auto.addTime">添加</button>
+            </div>
+            <div id="set-auto-times" class="time-chips"></div>
+          </div>
+          <div class="set-row">
+            <span class="set-label"><span data-i18n="auto.level">拟人强度</span><small data-i18n="auto.levelHint">影响鼠标轨迹、滚动与每轮时长</small></span>
+            <div class="segmented" id="set-auto-level" role="radiogroup" aria-label="Human level">
+              <button type="button" role="radio" data-value="1" data-i18n="level.low">低</button>
+              <button type="button" role="radio" data-value="2" data-i18n="level.mid">中</button>
+              <button type="button" role="radio" data-value="3" data-i18n="level.high">高</button>
+            </div>
+          </div>
+        </div>
+        <p id="set-auto-msg" class="preview-msg" role="status" hidden></p>
+      </div>
+
+      <button id="set-reset" class="reset-btn" type="button" style="--g:4" data-i18n="settings.reset">恢复默认设置</button>
+    </div>
+  </section>
+
+  <script src="popup.js"></script>
+  <script>
+  /* v1.0.4 独立兜底：这一段不依赖 popup.js 的 DOMContentLoaded 链路。
+     若 popup.js 因任何原因初始化失败 / 定时器被节流，主进程 1 秒 IPC 心跳
+     仍会驱动这里把「正在启动…」「正在读取今日任务…」强制复位。 */
+  (function () {
+    if (!window.chrome || !chrome.onTick || !chrome.onTick.addListener) return;
+    var boot = Date.now();
+    var fixed = false;
+    var zh = (document.documentElement.lang || '').indexOf('zh') === 0;
+    chrome.onTick.addListener(function () {
+      if (Date.now() - boot < 3500) return;
+      try {
+        var b = document.getElementById('btn-action');
+        if (!b) return;
+        chrome.storage.local.get(['running', 'todayTasks']).then(function (s) {
+          if (s && s.running) { fixed = false; return; }
+          if (!fixed && b.dataset.mode === 'stop') {
+            b.dataset.mode = 'start';
+            b.disabled = false;
+            b.classList.remove('is-stop');
+            var l = document.getElementById('btn-action-label');
+            if (l) l.textContent = zh ? '自动完成任务' : 'Auto-complete Tasks';
+            var st = document.getElementById('status');
+            if (st) st.className = 'status stopped';
+            fixed = true;
+          }
+          var e = document.getElementById('today-tasks-empty');
+          if (e && /正在读取|Loading/.test(e.textContent) && !(s && s.todayTasks && s.todayTasks.updatedAt)) {
+            e.textContent = zh ? '暂时读不到任务数据，点「刷新」重试' : 'Could not load tasks. Tap Refresh to retry.';
+          }
+        }).catch(function () {});
+      } catch (err) {}
+    });
+  })();
+  </script>
+</body>
+</html>

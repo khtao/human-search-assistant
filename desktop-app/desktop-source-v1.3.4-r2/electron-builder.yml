@@ -1,0 +1,67 @@
+appId: com.local.humansearchassistant
+productName: 拟人搜索助手
+copyright: Local personal tool · 非 Microsoft 官方产品
+
+# Ubuntu / Debian 专用配置。此文件不声明 win / nsis / portable，
+# 避免 electron-builder 在 Linux 目标构建时将非目标平台配置纳入校验。
+directories:
+  buildResources: build
+  output: dist
+
+files:
+  - main.js
+  - preload.js
+  - host.html
+  - lib/core.js
+  - lib/debug-capture.js
+  - src/**/*
+  - build/icon.png
+  - package.json
+  - '!src/**/*.md'
+  - '!**/*.md'
+  - '!**/.DS_Store'
+  - '!lib/electron-lite.js'
+  - '!scripts/**'
+  - '!tests/**'
+  - '!docs/**'
+  - '!README*'
+  - '!package-lock.json'
+
+linux:
+  executableName: human-search-assistant
+  icon: build/icon.png
+  category: Utility
+  maintainer: Local Maintainer <maintainer@example.invalid>
+  target:
+    - target: deb
+      arch: [x64]
+  artifactName: HumanSearchAssistant-Ubuntu-${version}-${arch}.${ext}
+  desktop:
+    entry:
+      Name: 拟人搜索助手
+      GenericName: Desktop Assistant
+      Comment: 本地运行的拟人搜索助手
+      Categories: Utility;
+      StartupWMClass: human-search-assistant-desktop
+
+deb:
+  afterInstall: scripts/deb-postinst
+  packageName: human-search-assistant
+  packageCategory: utils
+  priority: optional
+  depends:
+    - libgtk-3-0 | libgtk-3-0t64
+    - libnotify4
+    - libnss3
+    - libxss1
+    - libxtst6
+    - libasound2 | libasound2t64
+    - xdg-utils
+    - libatspi2.0-0 | libatspi2.0-0t64
+    - libatk-bridge2.0-0 | libatk-bridge2.0-0t64
+    - libdrm2
+    - libgbm1
+    - libx11-xcb1
+
+compression: maximum
+asar: true

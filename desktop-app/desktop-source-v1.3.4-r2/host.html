@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <script>
+  /* v1.1.3 · Electron 45 / Chromium 156 真机问题：window.chrome 可能被浏览器
+     内置的同名对象占用，contextBridge 对 'chrome' 的注入失败或只得到半份 API
+     （表现为右上角没有「官网」按钮、点登录毫无反应、抓不到积分）。
+     preload 已把同一份 shim 备份到 __hsaChrome；这段在任何业务脚本之前执行，
+     检测到 chrome 不完整就用备份覆盖。浏览器扩展版没有 __hsaChrome，空操作。 */
+  (function () {
+    try {
+      var backup = window.__hsaChrome;
+      if (!backup) return;
+      var cur = window.chrome;
+      if (cur && cur.storage && cur.storage.local && cur.desktopPanel) return;
+      Object.defineProperty(window, 'chrome', {
+        value: backup, configurable: true, writable: true
+      });
+    } catch (e) {
+      try { window.chrome = window.__hsaChrome; } catch (_) {}
+    }
+  })();
+  </script>
+  <title>background host</title>
+</head>
+<body>
+<!--
+  后台宿主：把 MV3 service worker 的 background.js 当作普通页面脚本加载。
+  该文件属于「壳」，插件源码 src/ 下所有文件保持 1:1 原样。
+
+  这里唯一做的事：把全局 fetch 换成走主进程会话的代理，用于热搜词源等
+  纯数据请求（带上登录 Cookie、绕过 CORS），业务代码无感知。
+
+  v1.0.8 起，Rewards 的积分与任务列表不再走 fetch：background.js 会在
+  两个常驻的内置浏览器窗口里打开 /dashboard 与 /earn，再用
+  chrome.scripting.executeScript 读真实页面 DOM。登录、搜索、点任务卡片
+  也全部在应用内窗口完成，不依赖系统浏览器、不读取浏览器 Cookie 库。
+-->
+<script>
+(function () {
+  const d = window.__desktop;
+  if (!d || typeof d.fetchRaw !== 'function') return;
+
+  // 只挑可结构化克隆的字段；AbortSignal 不能跨 IPC，改由 abort 通道取消。
+  function pick(init) {
+    const out = {};
+    if (init && typeof init.method === 'string') out.method = init.method;
+    if (init && init.headers && typeof init.headers === 'object' && !Array.isArray(init.headers)) {
+      out.headers = {};
+      for (const k of Object.keys(init.headers)) {
+        const v = init.headers[k];
+        if (typeof v === 'string' || typeof v === 'number') out.headers[k] = String(v);
+      }
+    }
+    if (init && typeof init.body === 'string') out.body = init.body;
+    if (init && typeof init.cache === 'string') out.cache = init.cache;
+    if (init && (init.credentials === 'include' || init.credentials === 'omit')) out.credentials = init.credentials;
+    // 登录探测用 redirect:'error'：未登录被 302 到 login.live.com 时不能当成成功
+    if (init && (init.redirect === 'error' || init.redirect === 'manual')) out.redirect = init.redirect;
+    return out;
+  }
+
+  window.fetch = async function (input, init) {
+    const url = String(input && input.url ? input.url : input);
+    if (!/^https?:\/\//i.test(url)) {
+      throw new Error('[desktop] 仅代理 http(s) 请求：' + url);
+    }
+    const id = d.nextId();
+    const signal = init && init.signal;
+    if (signal && signal.aborted) {
+      const e = new Error('The operation was aborted'); e.name = 'AbortError'; throw e;
+    }
+    const raw = d.fetchRaw(url, pick(init), id);
+    let r;
+    if (signal) {
+      // d.abort(id) 通知主进程取消；同时本地竞速，保证即使 IPC 无响应，
+      // AbortController 触发时这个 fetch 也一定 reject（否则登录探测会永久挂起）。
+      signal.addEventListener('abort', () => d.abort(id), { once: true });
+      r = await Promise.race([
+        raw,
+        new Promise((_resolve, reject) => {
+          signal.addEventListener('abort', () => {
+            const e = new Error('The operation was aborted'); e.name = 'AbortError'; reject(e);
+          }, { once: true });
+        })
+      ]);
+    } else {
+      r = await raw;
+    }
+    if (r.error && !r.ok) {
+      // 与 fetchRewardsPage() 的错误分支兼容：保留 ok/status/url/error
+    }
+    return {
+      ok: !!r.ok,
+      status: r.status,
+      url: r.url,
+      headers: r.headers || {},
+      error: r.error || null,
+      text: async () => r.body,
+      json: async () => JSON.parse(r.body),
+      clone: function () { return this; }
+    };
+  };
+})();
+</script>
+
+<!-- 原插件后台逻辑，一字未改 -->
+<script src="./src/background.js"></script>
+<script>
+  /* background.js 是同步脚本：执行到这一行时 chrome.runtime.onMessage 的
+     监听器已全部注册完毕。此时通知主进程放行消息队列最准确，避免
+     Windows 真 Electron 冷启动慢时消息发到未就绪的窗口而永久丢失。 */
+  /* v1.1.3 · debug：把后台窗口的真实形状与监听器状态发给主进程落盘。
+     如果 background.js 没加载成功，hostReady 不会回报、所有消息排队超时，
+     任务区就会永远停在「正在读取今日任务…」。 */
+  try {
+    const d = window.__desktop;
+    const c = window.chrome;
+    const probe = {
+      chromeKeys: c ? Object.keys(c).slice(0, 40) : [],
+      hasStorage: !!(c && c.storage && c.storage.local),
+      hasTabs: !!(c && c.tabs),
+      hasScripting: !!(c && c.scripting),
+      hasRuntime: !!(c && c.runtime),
+      hasOnMessage: !!(c && c.runtime && c.runtime.onMessage),
+      onMessageListeners: !!(c && c.runtime && c.runtime.onMessage &&
+        typeof c.runtime.onMessage.hasListeners === 'function' &&
+        c.runtime.onMessage.hasListeners()),
+      backgroundLoaded: typeof window.fetchRewardsPage === 'function' ||
+        typeof window.classifyLogin === 'function',
+      desktopKeys: d ? Object.keys(d) : [],
+      readyState: document.readyState
+    };
+    if (d && typeof d.debugLog === 'function') d.debugLog('host', 'background.js 加载完成 / 回报 ready', probe);
+    if (d && typeof d.hostReady === 'function') d.hostReady();
+  } catch (err) {
+    try { window.__desktop.debugLog('host', 'hostReady 回报异常', { error: String(err && err.message || err) }); } catch (_) {}
+    try { window.__desktop.hostReady(); } catch (_) {}
+  }
+</script>
+</body>
+</html>

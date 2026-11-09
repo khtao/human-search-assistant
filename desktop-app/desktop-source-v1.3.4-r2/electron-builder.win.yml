@@ -1,0 +1,52 @@
+appId: com.local.humansearchassistant
+productName: 拟人搜索助手
+copyright: Local personal tool · 非 Microsoft 官方产品
+
+# Windows 专用配置。与 Linux 配置分离，避免跨平台配置互相触发 schema 校验。
+directories:
+  buildResources: build
+  output: dist
+
+files:
+  - main.js
+  - preload.js
+  - host.html
+  - lib/core.js
+  - lib/debug-capture.js
+  - src/**/*
+  - build/icon.ico
+  - package.json
+  - '!src/**/*.md'
+  - '!**/*.md'
+  - '!**/.DS_Store'
+  - '!lib/electron-lite.js'
+  - '!scripts/**'
+  - '!tests/**'
+  - '!docs/**'
+  - '!README*'
+  - '!package-lock.json'
+
+win:
+  icon: build/icon.ico
+  target:
+    - target: nsis
+      arch: [x64]
+    - target: portable
+      arch: [x64]
+  artifactName: HumanSearchAssistant-Windows-${version}-${arch}.${ext}
+  signingHashAlgorithms: [sha256]
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: 拟人搜索助手
+  deleteAppDataOnUninstall: false
+
+portable:
+  artifactName: HumanSearchAssistant-Windows-Portable-${version}.${ext}
+
+compression: maximum
+asar: true
