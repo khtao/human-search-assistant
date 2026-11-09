@@ -8,18 +8,21 @@ preload.js 等价的 chrome.* stub，用来证明：
   1. host.html 能加载「一字未改」的 src/background.js 且无脚本错误；
   2. 全局 fetch 被换成会话代理后仍返回 background.js 期待的 Response-like；
   3. popup.html 在兼容层下正常渲染，点击「可领取」会走 chrome.tabs.create；
-  4. 冷却状态能通过 storage 状态正确显示。
+  4. 桌面设置页的 skipCompletedCards 控件可读写。
 
 运行： python3 scripts/verify-render.py
 """
 import json
 import os
 import time
+from functools import partial
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+from threading import Thread
 from playwright.sync_api import sync_playwright
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-EXE = '/usr/local/bin/chromium'
-PAGE = 'file://' + ROOT + '/'
+EXE = os.environ.get('HSA_CHROMIUM') or next((p for p in ('/usr/bin/chromium', '/usr/bin/chromium-browser', '/usr/local/bin/chromium') if os.path.exists(p)), '/usr/local/bin/chromium')
+PAGE = None
 checks = []
 
 
@@ -122,7 +125,7 @@ def make_stub(seed, desktop=False):
     return base.replace('SEED', json.dumps(seed or {}, ensure_ascii=False))
 
 
-def run(browser, name, url, seed, cooldown=False, desktop=False):
+def run(browser, name, url, seed, desktop=False):
     ctx = browser.new_context(viewport={'width': 420, 'height': 900}, locale='zh-CN')
     ctx.add_init_script(make_stub(seed, desktop))
     page = ctx.new_page()
@@ -153,6 +156,14 @@ def run(browser, name, url, seed, cooldown=False, desktop=False):
         r['badgeTextVisible'] = page.locator('#login-badge-text').is_visible()
         r['pointsGridHidden'] = not page.locator('.points-grid').is_visible()
         r['loginAria'] = page.locator('#login-badge').get_attribute('aria-label')
+        # v1.3.7：桌面设置页面与浏览器插件共用同一组控件，检查新设置能读写。
+        page.locator('#settings-open').click()
+        page.wait_for_timeout(80)
+        r['skipCompletedExists'] = page.locator('#set-skip-completed').count()
+        r['skipCompletedDefault'] = page.locator('#set-skip-completed').is_checked()
+        page.locator('#set-skip-completed').check()
+        r['skipCompletedPersisted'] = page.evaluate("window.__storage.settings.skipCompletedCards")
+        page.locator('#settings-back').click()
         # v1.3.3：先明确置为未登录，点击徽标才是「去登录」并登记等待登录。
         # 已登录时单击只是开关侧栏（纯界面动作），不登记、不会自动收起。
         page.evaluate("""window.__setStorage({loginStatus:'out',
@@ -191,78 +202,79 @@ def run(browser, name, url, seed, cooldown=False, desktop=False):
         if shot:
             try: page.screenshot(path=shot, full_page=True)
             except Exception: pass   # 截图只是可选产物，绝不让验证因此失败
-    elif cooldown:
-        r['status'] = page.locator('#status-text').inner_text()
-        r['sub'] = page.locator('#progress-sub').inner_text()
     r['fetchCalls'] = page.evaluate('window.__fetchCalls.length')
     ctx.close()
     return r
 
 
 def main():
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True, executable_path=EXE,
-                                    args=['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu'])
-        host = run(browser, 'host', PAGE + 'host.html', {})
-        popup = run(browser, 'popup', PAGE + 'src/popup.html', {
-            'phase': 'idle', 'running': False,
-            'todayTasks': {'items': [{'name': '今日 Bing 搜索', 'points': 60, 'earned': 60,
-                                      'section': 'search', 'completed': True}],
-                           'percent': 100, 'earned': 60, 'total': 60},
-            'pointsSummary': {'available': 20182, 'today': 257, 'claimable': 0, 'updatedAt': 1700000000000}
-        })
-        desktop = run(browser, 'desktop', PAGE + 'src/popup.html', {
-            'phase': 'idle', 'running': False,
-            'pointsSummary': {'available': 20192, 'today': 257, 'claimable': 0, 'updatedAt': 1700000000000}
-        }, desktop=True)
-        cooldown = run(browser, 'cooldown', PAGE + 'src/popup.html', {
-            'running': True, 'phase': 'cooldown', 'cooldownCycles': 2,
-            'cooldownGaveUp': False, 'cooldownUntil': int(time.time() * 1000) + 900000,
-            'todayTasks': {'items': [], 'percent': 50},
-            'pointsSummary': {'available': 20182, 'today': 257, 'claimable': 0, 'updatedAt': 1}
-        }, cooldown=True)
-        browser.close()
+    global PAGE
+    server = ThreadingHTTPServer(('127.0.0.1', 0), partial(SimpleHTTPRequestHandler, directory=ROOT))
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    PAGE = f'http://127.0.0.1:{server.server_port}/'
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True, executable_path=EXE,
+                                        args=['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu'])
+            host = run(browser, 'host', PAGE + 'host.html', {})
+            popup = run(browser, 'popup', PAGE + 'src/popup.html', {
+                'phase': 'idle', 'running': False,
+                'todayTasks': {'items': [{'name': '今日 Bing 搜索', 'points': 60, 'earned': 60,
+                                          'section': 'search', 'completed': True}],
+                               'percent': 100, 'earned': 60, 'total': 60},
+                'pointsSummary': {'available': 20182, 'today': 257, 'claimable': 0, 'updatedAt': 1700000000000}
+            })
+            desktop = run(browser, 'desktop', PAGE + 'src/popup.html', {
+                'phase': 'idle', 'running': False,
+                'settings': {'skipCompletedCards': False},
+                'pointsSummary': {'available': 20192, 'today': 257, 'claimable': 0, 'updatedAt': 1700000000000}
+            }, desktop=True)
+            browser.close()
 
-    print(json.dumps([host, popup, desktop, cooldown], ensure_ascii=False, indent=2))
-    print('\n=== 断言汇总 ===')
-    ck(not host['pageErrors'], 'host.html 加载未改动的 background.js 无脚本错误')
-    ck(host['fetchProxyInstalled'], 'host 已安装 fetch 会话代理')
-    ck(host['responseLike']['ok'] and host['responseLike']['status'] == 200,
-       '代理 fetch 返回 Response-like（ok/status/text）')
-    ck(not popup['pageErrors'], 'popup.html 在兼容层下无脚本错误')
-    ck(popup['title'] == '拟人搜索助手', '主窗口标题正确')
-    ck(popup['langToggle'] == 0, '首页语言切换按钮已移除（沿用修改版）')
-    ck('accent' not in (popup['claimClass'] or ''), '可领取卡片与其他卡片外观一致')
-    ck(popup['tabsCreated'] == ['https://rewards.bing.com/dashboard'], '点击可领取卡片走 chrome.tabs.create')
-    ck(popup['testGroup'] == 0, '拟人搜索测试功能已移除')
-    ck(desktop['panelToggleCount'] == 0 and desktop['topVisibleButtons'] == 2,
-       'v1.1.5 顶端只保留登录、设置两个按键，收起按钮已删除')
-    ck(desktop['badgeIconCount'] == 1 and desktop['badgeTextVisible'],
-       '未登录显示灰色重绘图标 +「未登录」文字')
-    ck(not desktop['pointsGridHidden'], '左侧三张积分卡保留以呈现今日积分')
-    ck(not desktop['pageErrors'], '桌面版 popup 无脚本错误')
-    ck(any(c == ['show', 'https://rewards.bing.com/dashboard'] for c in desktop['panelCalls']),
-       '点击登录按钮直达右侧官网登录页（不开新窗口）')
-    ck('panel-open' in desktop['bodyClass'],
-       '面板广播仍同步 body.panel-open（收起按钮删除后布局不跑偏）')
-    ck(desktop['appWidth'] == '400px', '展开时左侧助手 UI 固定 400px')
-    ck(desktop['autoHideOnLogin'] and desktop['badgeIconVisibleAfterLogin'] and
-       desktop['badgeTextVisibleAfterLogin'],
-       '登录成功后显示金色重绘图标 +「已登录」并自动收起右侧侧栏')
-    ck(desktop['singleClickCalls'] == [['hide']],
-       '已登录单击徽标收起/关闭侧栏')
-    ck(any(c[0] == 'show' for c in desktop['doubleClickCalls']) and
-       not any(c[0] == 'hide' for c in desktop['doubleClickCalls']),
-       '已登录双击徽标跳转官网，且不会顺带收起（单击定时器已取消）')
-    ck(not cooldown['pageErrors'], '冷却状态渲染无脚本错误')
-    ck('第 2 / 6 次等待' in cooldown['status'], '冷却状态栏显示等待轮次')
-    ck('冷却中' in cooldown['sub'], '圆环副标题显示倒计时')
-    for ok, msg in checks:
-        print(('✓ ' if ok else '✗ ') + msg)
-    bad = [m for ok, m in checks if not ok]
-    print(f'\n共 {len(checks)} 项，通过 {len(checks)-len(bad)} 项，失败 {len(bad)} 项')
-    if bad:
-        raise SystemExit(1)
+        print(json.dumps([host, popup, desktop], ensure_ascii=False, indent=2))
+        print('\n=== 断言汇总 ===')
+        ck(not host['pageErrors'], 'host.html 加载未改动的 background.js 无脚本错误')
+        ck(host['fetchProxyInstalled'], 'host 已安装 fetch 会话代理')
+        ck(host['responseLike']['ok'] and host['responseLike']['status'] == 200,
+           '代理 fetch 返回 Response-like（ok/status/text）')
+        ck(not popup['pageErrors'], 'popup.html 在兼容层下无脚本错误')
+        ck(popup['title'] == '拟人搜索助手', '主窗口标题正确')
+        ck(popup['langToggle'] == 0, '首页语言切换按钮已移除（沿用修改版）')
+        ck('accent' not in (popup['claimClass'] or ''), '可领取卡片与其他卡片外观一致')
+        ck(popup['tabsCreated'] == ['https://rewards.bing.com/dashboard'], '点击可领取卡片走 chrome.tabs.create')
+        ck(popup['testGroup'] == 0, '拟人搜索测试功能已移除')
+        ck(desktop['panelToggleCount'] == 0 and desktop['topVisibleButtons'] == 2,
+           'v1.1.5 顶端只保留登录、设置两个按键，收起按钮已删除')
+        ck(desktop['badgeIconCount'] == 1 and desktop['badgeTextVisible'],
+           '未登录显示灰色重绘图标 +「未登录」文字')
+        ck(not desktop['pointsGridHidden'], '左侧三张积分卡保留以呈现今日积分')
+        ck(not desktop['pageErrors'], '桌面版 popup 无脚本错误')
+        ck(desktop['skipCompletedExists'] == 1 and not desktop['skipCompletedDefault'],
+           '桌面设置页显示跳过已完成任务卡，默认关闭')
+        ck(desktop['skipCompletedPersisted'] is True, '桌面设置变更写入 skipCompletedCards')
+        ck(any(c == ['show', 'https://rewards.bing.com/dashboard'] for c in desktop['panelCalls']),
+           '点击登录按钮直达右侧官网登录页（不开新窗口）')
+        ck('panel-open' in desktop['bodyClass'],
+           '面板广播仍同步 body.panel-open（收起按钮删除后布局不跑偏）')
+        ck(desktop['appWidth'] == '400px', '展开时左侧助手 UI 固定 400px')
+        ck(desktop['autoHideOnLogin'] and desktop['badgeIconVisibleAfterLogin'] and
+           desktop['badgeTextVisibleAfterLogin'],
+           '登录成功后显示金色重绘图标 +「已登录」并自动收起右侧侧栏')
+        ck(desktop['singleClickCalls'] == [['hide']],
+           '已登录单击徽标收起/关闭侧栏')
+        ck(any(c[0] == 'show' for c in desktop['doubleClickCalls']) and
+           not any(c[0] == 'hide' for c in desktop['doubleClickCalls']),
+           '已登录双击徽标跳转官网，且不会顺带收起（单击定时器已取消）')
+        for ok, msg in checks:
+            print(('✓ ' if ok else '✗ ') + msg)
+        bad = [m for ok, m in checks if not ok]
+        print(f'\n共 {len(checks)} 项，通过 {len(checks)-len(bad)} 项，失败 {len(bad)} 项')
+        if bad:
+            raise SystemExit(1)
+    finally:
+        server.shutdown()
+        server.server_close()
 
 
 if __name__ == '__main__':

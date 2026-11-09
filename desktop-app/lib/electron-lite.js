@@ -364,7 +364,13 @@ class LiteBrowserView {
 const userData = () => process.env.HSA_USER_DATA ||
   path.join(os.homedir(), '.config', 'human-search-assistant-desktop');
 
+/* v1.3.8：无头验证替身也提供登录项 API，保证 IPC 在 CI 里可测 */
+let liteLoginItemOpenAtLogin = false;
 const app = {
+  setLoginItemSettings: settings => {
+    liteLoginItemOpenAtLogin = !!(settings && settings.openAtLogin);
+  },
+  getLoginItemSettings: () => ({ openAtLogin: liteLoginItemOpenAtLogin }),
   requestSingleInstanceLock: () => true,
   on: () => {},
   getPath: () => { const d = userData(); try { fs.mkdirSync(d, { recursive: true }); } catch {} return d; },

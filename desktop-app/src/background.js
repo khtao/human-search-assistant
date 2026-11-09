@@ -46,7 +46,7 @@ let desktopGuardBlocks = 0;
  *  · 任务卡片：每日活动(每日任务) → 日常任务；点击弹出的任务页保留不关闭
  *  · 搜索标签页运行期间保持焦点、结束关闭（后台节流会让搜索暂停）
  * ======================================================================== */
-const TASK_CLICK_INTERVAL_MS = 5000;   // 相邻两次任务点击的间隔
+const TASK_CLICK_INTERVAL_MS = 350;   // 索引定位后留出短暂渲染间隔
 const KEEP_TASK_TABS = true;            // 任务阶段打开的标签页一律不关闭
 const KEEP_SEARCH_TAB_FOCUSED = true;   // 每轮搜索前把搜索页拉回焦点，防后台节流暂停
 const FOCUS_WINDOW_TOO = true;          // 同时把浏览器窗口置为系统前台
@@ -1712,8 +1712,7 @@ const DEFAULT_SETTINGS = {
   reminderTo: '23:00',
   reminderSeconds: 5,
   reduceMotion: false,
-  cooldownAware: true,
-  cooldownMinutes: 15
+  skipCompletedCards: false
 };
 
 async function getSettings() {
@@ -2971,6 +2970,165 @@ function cardsFromRewardsHtml(html) {
   return out.filter(r => r.points > 0 && r.name);
 }
 
+
+/* v1.3.7：同步阶段建立任务点击索引。
+ * 这里只保存可复用的任务身份/DOM 特征，不保存坐标或 DOM 引用；
+ * 点击阶段按 href / data-bi-id / id / aria-label 快速定位，再读取实时坐标。
+ */
+function taskClickNormalizeText(value) {
+  return String(value || '').replace(/\s+/g, '').toLowerCase();
+}
+function taskClickAttr(attrs, name) {
+  const m = new RegExp('(?:^|\\s)' + String(name || '') + '\\s*=\\s*(?:"([^"]*)"|\\x27([^\\x27]*)\\x27|([^\\s>]+))', 'i').exec(String(attrs || ''));
+  return m ? String(m[1] != null ? m[1] : m[2] != null ? m[2] : m[3] || '')
+    .replace(/&amp;/gi, '&').replace(/&#x27;|&#39;/gi, "'").trim() : '';
+}
+function taskClickResolveUrl(raw, pageUrl) {
+  const value = normalizeTaskUrl(raw || '');
+  if (!value) return '';
+  try { return new URL(value, pageUrl).href; }
+  catch { return /^https?:\/\//i.test(value) ? value : ''; }
+}
+function taskClickAnchorsFromHtml(html, pageUrl) {
+  const source = decodePayload(String(html || ''));
+  const out = [];
+  let anchorIndex = 0;
+  for (const m of source.matchAll(/<a\b([^>]*)>([\s\S]*?)<\/a>/gi)) {
+    const attrs = m[1] || '';
+    const body = m[2] || '';
+    const rawHref = taskClickAttr(attrs, 'href');
+    const href = taskClickResolveUrl(rawHref, pageUrl);
+    const text = cleanText(body);
+    const titleMatch = /<(?:h[2-6]|p)[^>]*(?:text-globalBody2Strong|line-clamp-3|title|Title)[^>]*>([\s\S]*?)<\/(?:h[2-6]|p)>/i.exec(body)
+      || /<img[^>]*\balt=["']([^"']+)["']/i.exec(body);
+    const title = cleanText(titleMatch && titleMatch[1]);
+    const pointsMatch = /(?:\+|＋)\s*([\d,]{1,5})(?![\d,])/.exec(text);
+    const points = pointsMatch ? Number(pointsMatch[1].replace(/,/g, '')) : 0;
+    out.push({
+      anchorIndex: anchorIndex++, href,
+      dataBiId: taskClickAttr(attrs, 'data-bi-id'),
+      dataOfferId: taskClickAttr(attrs, 'data-offer-id'),
+      dataTestId: taskClickAttr(attrs, 'data-testid'),
+      id: taskClickAttr(attrs, 'id'),
+      ariaLabel: taskClickAttr(attrs, 'aria-label'),
+      titleAttr: taskClickAttr(attrs, 'title'),
+      target: taskClickAttr(attrs, 'target'),
+      title: title,
+      text: text.slice(0, 240),
+      points: Number.isFinite(points) ? points : 0
+    });
+  }
+  return out;
+}
+function taskClickBestAnchor(item, anchors) {
+  const wantedUrl = taskClickResolveUrl(item && item.url, 'https://rewards.bing.com/');
+  const wantedFp = wantedUrl ? taskUrlFp(wantedUrl) : '';
+  const wantedTitle = taskClickNormalizeText(item && item.name);
+  const wantedDesc = taskClickNormalizeText(item && item.description);
+  const wantedPoints = Number(item && item.points) || 0;
+  let best = null, bestScore = 0;
+  for (const anchor of anchors || []) {
+    if (wantedPoints && anchor.points > 0 && anchor.points !== wantedPoints
+        && anchor.href !== wantedUrl) continue;
+    let score = 0;
+    if (wantedUrl && anchor.href) {
+      if (anchor.href === wantedUrl) score += 120;
+      else if (wantedFp && taskUrlFp(anchor.href) === wantedFp) score += 55;
+    }
+    const title = taskClickNormalizeText(anchor.title);
+    const text = taskClickNormalizeText(anchor.text);
+    if (wantedTitle && title === wantedTitle) score += 65;
+    else if (wantedTitle && (text.includes(wantedTitle) || (title.length >= 5 && wantedTitle.includes(title)))) score += 45;
+    if (wantedDesc && text.includes(wantedDesc)) score += 8;
+    if (wantedPoints && anchor.points === wantedPoints) score += 22;
+    else if (wantedPoints && anchor.points > 0) score -= 18;
+    if (score > bestScore) { best = anchor; bestScore = score; }
+  }
+  return bestScore >= 38 ? best : null;
+}
+function buildTaskClickIndex(pages, allItems) {
+  const entries = [], seen = new Set();
+  const pageDefs = [
+    { page: '/dashboard', url: DASHBOARD_URL, result: pages && pages.dash },
+    { page: '/earn', url: EARN_URL, result: pages && pages.earn }
+  ];
+  for (const def of pageDefs) {
+    const r = def.result;
+    if (!r || !r.ok || !r.html) continue;
+    let pageItems = cardsFromRewardsHtml(r.html);
+    if (def.page === '/earn') {
+      if (typeof desktopEarnCards === 'function') pageItems = pageItems.concat(desktopEarnCards(r.html));
+      else if (typeof earnCardsFromHtml === 'function') pageItems = pageItems.concat(earnCardsFromHtml(r.html));
+    }
+    const anchors = taskClickAnchorsFromHtml(r.html, def.url);
+    /* DOM 快照/注入补充项也从同一批同步结果尝试匹配；没有 href/DOM 锚点的估算项不进入点击索引。 */
+    const parsedKeys = new Set(pageItems.map(it => [taskClickNormalizeText(it && it.name),
+      taskClickNormalizeText(it && it.description), Number(it && it.points) || 0, it && it.section].join('|')));
+    for (const extra of (Array.isArray(allItems) ? allItems : [])) {
+      if (!extra || !(Number(extra.points) > 0) || !extra.name || !SECTION_LABEL[extra.section]
+          || extra.section === 'search') continue;
+      const extraKey = [taskClickNormalizeText(extra.name), taskClickNormalizeText(extra.description),
+        Number(extra.points) || 0, extra.section].join('|');
+      if (parsedKeys.has(extraKey)) continue;
+      const extraMatch = taskClickBestAnchor(extra, anchors);
+      const fallbackPage = extra.section === 'daily' ? '/dashboard' : '/earn';
+      if (!extraMatch && (!extra.url || fallbackPage !== def.page)) continue;
+      pageItems.push(extra);
+      parsedKeys.add(extraKey);
+    }
+    for (const item of pageItems) {
+      if (!item || !(Number(item.points) > 0) || !item.name || !SECTION_LABEL[item.section]
+          || item.section === 'search') continue;
+      const match = taskClickBestAnchor(item, anchors);
+      const url = (match && match.href) || taskClickResolveUrl(item.url, def.url);
+      const fp = url ? taskUrlFp(url) : '';
+      const identity = (fp ? fp + '|' : '') + [taskClickNormalizeText(item.name), taskClickNormalizeText(item.description),
+        Number(item.points) || 0, item.section].join('|');
+      if (!identity || seen.has(identity)) continue;
+      seen.add(identity);
+      const locator = {
+        href: url,
+        dataBiId: match && match.dataBiId || '',
+        dataOfferId: match && match.dataOfferId || '',
+        dataTestId: match && match.dataTestId || '',
+        id: match && match.id || '',
+        ariaLabel: match && match.ariaLabel || '',
+        titleAttr: match && match.titleAttr || '',
+        anchorText: match && match.text || '',
+        anchorIndex: match ? match.anchorIndex : -1,
+        title: String(item.name || '').slice(0, 100),
+        description: String(item.description || '').slice(0, 160),
+        points: Number(item.points) || 0,
+        section: item.section
+      };
+      entries.push({
+        key: identity,
+        page: def.page,
+        pageUrl: def.url,
+        name: String(item.name || '').slice(0, 100),
+        description: String(item.description || '').slice(0, 160),
+        points: Number(item.points) || 0,
+        section: item.section,
+        completed: !!item.completed || Number(item.earned) >= Number(item.points),
+        url: url,
+        target: match && match.target || '',
+        source: item.source || 'sync-html',
+        locator: locator
+      });
+    }
+  }
+  entries.sort((a, b) => (a.section === b.section ? 0 : a.section === 'daily' ? -1 : 1)
+    || (a.page === b.page ? 0 : a.page === '/dashboard' ? -1 : 1));
+  return {
+    schemaVersion: 1,
+    source: 'sync-html',
+    updatedAt: Date.now(),
+    count: entries.length,
+    pendingCount: entries.filter(x => !x.completed).length,
+    items: entries
+  };
+}
+
 /**
  * v2.0：注入到 Rewards 页面读取「今日任务」展示数据。
  * 与点击逻辑保持同一套识别规则：以 a[href] 为入口，积分走 +N / 徽章 <p> 双通道。
@@ -3120,9 +3278,16 @@ function summarizeTaskItems(items, extra) {
   const total = items.reduce((s, r) => s + r.points, 0);
   return Object.assign({
     items, earned, total,
-    percent: total ? Math.round((earned / total) * 100) : 0,
+    percent: total ? (earned >= total ? 100 : Math.floor((earned / total) * 100)) : 0,
     updatedAt: Date.now()
   }, extra || {});
+}
+
+/** A displayed 100% is reserved for exact completion, not rounded-up progress. */
+function isTaskSummaryComplete(summary) {
+  if (!summary || summary.signedOut) return false;
+  const total = Number(summary.total), earned = Number(summary.earned);
+  return Number.isFinite(total) && total > 0 && Number.isFinite(earned) && earned >= total;
 }
 
 /** 一次刷新：任务列表（第一条搜索）+ 首页三项积分，共用两个页面抓取结果。
@@ -5768,14 +5933,10 @@ async function syncStart(token, cap) {
     }
   });
 
-  const items = sync.todayTasks.items || [];
-  const searchItem = items.find(i => i.section === 'search');
-  const searchPending = !searchItem || Number(searchItem.earned) < Number(searchItem.points);
-  /* 全完成判定只用本次同步的真实数据：估算 / 不足 3 项 / 搜索未满一律继续跑 */
-  const allDone = !sync.todayTasks.signedOut && !sync.todayTasks.approx
-    && items.length >= 3 && !searchPending
-    && Number(sync.todayTasks.percent) >= 100
-    && items.every(i => !!i.completed || Number(i.earned) >= Number(i.points));
+  const items = Array.isArray(sync.todayTasks.items) ? sync.todayTasks.items : [];
+  /* 完成判定与界面 100% 使用同一精确总分口径；不再依赖至少 3 项、
+     某一条搜索任务名称或逐项 completed 标志，避免 UI 已满仍触发卡片点击。 */
+  const allDone = isTaskSummaryComplete(sync.todayTasks);
 
   return {
     ok: true, pages, startPoints, todaySearch,
@@ -6304,7 +6465,7 @@ function desktopSame(a, b) {
 async function desktopSyncRewards(opts) {
   const o = opts || {};
   const pages = o.pages || await fetchBothPages(o.fresh ? { fresh: true } : undefined);
-  const prev = await load(['pointsSummary', 'todayTasks', 'todaySearch', 'loginStatus']);
+  const prev = await load(['pointsSummary', 'todayTasks', 'todaySearch', 'loginStatus', 'taskClickIndex']);
   const prevPs = prev.pointsSummary || {};
   const prevTt = prev.todayTasks || {};
   const prevSearch = prev.todaySearch || null;
@@ -6332,7 +6493,7 @@ async function desktopSyncRewards(opts) {
     return {
       ok: false, pages: pages, signedOut: true, reachable: !!pages.reachable,
       reason: 'signedOut', pointsSummary: prevPs, todayTasks: prevTt,
-      todaySearch: prevSearch, loginStatus: prevLogin, items: [], changed: []
+      todaySearch: prevSearch, loginStatus: prevLogin, taskClickIndex: prev.taskClickIndex || null, items: [], changed: []
     };
   }
   /* v1.3.3：值缺失时一律沿用上一次有效值，绝不把 UI 先清空成 —。
@@ -6385,18 +6546,21 @@ async function desktopSyncRewards(opts) {
   const loginStatus = signedIn ? 'in' : (signedOut ? 'out' : (prevLogin || 'unknown'));
   const todayTasks = summarizeTaskItems(items, { approx: approx, signedOut: false });
   const todaySearch = counter || prevSearch || null;
+  /* v1.3.7：直接用本次同步的两页 HTML 建立点击索引；点击时不再重新扫描整页。 */
+  const taskClickIndex = buildTaskClickIndex(pages, cards);
 
-  /* 只写变化的值：相同积分/任务/登录态一律不写，storage.onChanged 不触发重绘。
+  /* 只写变化的值：相同积分/任务/登录态/定位索引一律不写，storage.onChanged 不触发重绘。
      所有变化同批写入，一次原子 store → UI 最多重绘一次。 */
   const candidate = {
     pointsSummary: pointsSummary, todayTasks: todayTasks,
-    todaySearch: todaySearch, loginStatus: loginStatus
+    todaySearch: todaySearch, loginStatus: loginStatus,
+    taskClickIndex: taskClickIndex
   };
   const patch = Object.assign({}, o.extra || {});
   for (const [k, v] of Object.entries(candidate)) {
     const before = k === 'pointsSummary' ? prevPs : k === 'todayTasks' ? prevTt
-      : k === 'todaySearch' ? prevSearch : prevLogin;
-    if (!desktopSame(before, v)) patch[k] = v;
+      : k === 'todaySearch' ? prevSearch : k === 'taskClickIndex' ? prev.taskClickIndex : prevLogin;
+    if (k === 'taskClickIndex' ? (!before || before.updatedAt !== v.updatedAt) : !desktopSame(before, v)) patch[k] = v;
   }
   if (Object.keys(patch).length) await store(patch);
   /* 本次完全没读到官网数据（两页抓取失败且无可见快照）时不算同步成功：
@@ -6412,7 +6576,8 @@ async function desktopSyncRewards(opts) {
       : (pages.signedOut || signedOut ? 'signedOut' : 'unreachable'),
     pointsSummary: pointsSummary,
     todayTasks: todayTasks, todaySearch: todaySearch,
-    loginStatus: loginStatus, items: items, changed: Object.keys(patch)
+    loginStatus: loginStatus, taskClickIndex: taskClickIndex,
+    items: items, changed: Object.keys(patch)
   };
 }
 
@@ -6449,10 +6614,13 @@ refreshToday = async function () {
  * 上传版函数体一行未改，这里只换绑定（verify:align 白名单登记）。
  * ======================================================================== */
 const uploadCompletePendingTaskCards = completePendingTaskCards;
+/* v1.3.5：桌面版任务点击统一交给主进程 CDP 鼠标输入。
+   不再回退到上传版 humanClickTasks 的 DOM 合成事件；CDP 不可用就明确记失败。 */
 completePendingTaskCards = async function (level, token) {
   const stat = {
-    clicked: 0, skipped: 0, real: false, openedTabs: 0, pages: [],
-    signedOut: false, fallbackOpened: 0, domClick: 0
+    clicked: 0, skipped: 0, real: false, realMouse: 0,
+    openedTabs: 0, pages: [], signedOut: false,
+    fallbackOpened: 0, domClick: 0, degraded: 0, clickFailed: 0
   };
   const panel = (typeof chrome !== 'undefined' && chrome.taskPanel &&
                  typeof chrome.taskPanel.clickAll === 'function') ? chrome.taskPanel
@@ -6460,33 +6628,64 @@ completePendingTaskCards = async function (level, token) {
        typeof window.__desktop.taskClickAll === 'function')
       ? { clickAll: window.__desktop.taskClickAll } : null;
   if (!panel) {
-    /* 浏览器扩展参照版 / 无任务侧栏时回退上传版原文 */
-    return uploadCompletePendingTaskCards(level, token);
+    stat.clickFailed = 1;
+    stat.reason = 'desktop-task-panel-unavailable';
+    console.warn('[AutoTask] 桌面任务侧栏不可用；为保证真实鼠标点击，不回退到 DOM.click()');
+    return stat;
   }
+
+  const clickState = await load(['taskClickIndex']);
+  const clickIndex = clickState && clickState.taskClickIndex;
+  if (!clickIndex || clickIndex.schemaVersion !== 1 || !Array.isArray(clickIndex.items)) {
+    stat.clickFailed = 1;
+    stat.reason = 'task-click-index-missing';
+    console.warn('[AutoTask] 同步任务定位索引不存在；请先刷新积分和任务列表');
+    return stat;
+  }
+
+  const clickSettings = await getSettings();
+  const skipCompletedCards = !!clickSettings.skipCompletedCards;
   let r = null;
   try {
     r = await Promise.race([
-      panel.clickAll(),
+      panel.clickAll(clickIndex, { skipCompletedCards: skipCompletedCards }),
       sleep(180000).then(() => ({ ok: false, reason: 'timeout' }))
     ]);
   } catch (err) {
-    console.warn('[AutoTask] 任务侧栏点击失败：' + String(err && err.message || err));
-    return uploadCompletePendingTaskCards(level, token);
+    stat.clickFailed = 1;
+    stat.reason = String(err && err.message || err);
+    console.warn('[AutoTask] CDP 任务鼠标点击失败：' + stat.reason);
+    return stat;
   }
-  if (!r || !r.ok) return uploadCompletePendingTaskCards(level, token);
+  if (!r || !r.ok) {
+    stat.clickFailed = Number(r && r.failed) || 1;
+    stat.reason = r && r.reason || 'cdp-task-click-failed';
+    console.warn('[AutoTask] CDP 任务鼠标点击未完成：' + stat.reason
+      + '；不执行 DOM 合成点击兜底');
+    return stat;
+  }
+
   for (const p of (r.pages || [])) {
     stat.pages.push({
       page: /\/earn/.test(p.url || '') ? 'earn' : 'dashboard',
       clicked: Number(p.clicked) || 0,
       anchors: Number(p.found) || 0,
-      doneSkipped: Number(p.skipped) || 0
+      doneSkipped: Number(p.skipped) || 0,
+      failed: Number(p.failed) || 0,
+      skipped: Number(p.skipped) || 0
     });
     stat.clicked += Number(p.clicked) || 0;
     stat.skipped += Number(p.skipped) || 0;
+    stat.clickFailed += Number(p.failed) || 0;
   }
-  stat.openedTabs = stat.clicked;
-  stat.domClick = stat.clicked;
-  stat.real = true;
+  /* 只有主进程实际完成 CDP mousePressed + mouseReleased 才计入 realMouse。 */
+  stat.realMouse = Number(r.clicked) || stat.clicked;
+  stat.clickUnconfirmed = Number(r.clickUnconfirmed) || 0;
+  stat.real = stat.realMouse > 0;
+  stat.skipped += Number(r.skipped) || 0;
+  stat.openedTabs = Number(r.opened) || 0;
+  stat.domClick = 0;
+  stat.degraded = 0;
   return stat;
 };
 
@@ -6504,3 +6703,192 @@ restoreUserFocus = async function () { /* 桌面版不抢回系统焦点 */ };
 
 /* v1.3.1：syncRewards 已并入上方主消息监听器（A7 分支），此处不再重复注册。
    独立监听器会被主监听器结尾的 sendResponse({ok:true}) 抢先应答而收不到消息。 */
+
+/* ==========================================================================
+ * v1.3.8 · 精简运行详情 + 积分历史（只追加包装与监听，不改任何核心函数体）
+ *
+ *  · 详情是单行双语文本，直接显示在 popup 原有的状态行（绿色字位置），
+ *    不再新增文本框。文案只保留「做什么 / 在哪 / 下一步 / 多久」。
+ *  · 延迟动作写 until（= at + delayMs），popup 把 {s} 替换为剩余秒数倒计时。
+ *  · 每次同步把「今日积分」按本地日期写入 pointsHistory，供日历按日/周/月汇总。
+ *  · 静默开关只由桌面主进程用于视图 bounds；后台业务链路完全不感知，
+ *    因此静默模式与正常模式的同步、点击、搜索、详情写入完全一致。
+ * ========================================================================== */
+let desktopActivityLast = { key: '', at: 0 };
+function desktopActivityFmt(n) {
+  return Number.isFinite(Number(n)) ? Number(n).toLocaleString() : '—';
+}
+function desktopActivityShort(u) {
+  return String(u || '').replace(/^https?:\/\/(www\.|cn\.)?/, '')
+    .replace('rewards.bing.com', 'Rewards').slice(0, 42);
+}
+function desktopActivityWrite(info) {
+  const o = info || {};
+  const zh = Array.isArray(o.zh) ? o.zh.join(' · ') : String(o.zh || '');
+  const en = Array.isArray(o.en) ? o.en.join(' · ') : String(o.en || '');
+  const now = Date.now();
+  const delayMs = Math.max(0, Math.round(Number(o.delayMs) || 0));
+  const payload = {
+    at: now, until: delayMs ? now + delayMs : 0,
+    state: o.state || 'running', zh: zh, en: en,
+    page: o.page || '', card: o.card || '', next: o.next || '',
+    delayMs: delayMs, query: o.query || ''
+  };
+  const key = payload.state + '|' + delayMs + '|' + zh + '|' + en;
+  if (key === desktopActivityLast.key && now - desktopActivityLast.at < 1000) {
+    return Promise.resolve();
+  }
+  desktopActivityLast = { key: key, at: now };
+  try { return Promise.resolve(store({ activityDetail: payload })).catch(() => {}); }
+  catch { return Promise.resolve(); }
+}
+function desktopActivityDayKey(d) {
+  const x = d || new Date();
+  return x.getFullYear() + '-' + String(x.getMonth() + 1).padStart(2, '0')
+    + '-' + String(x.getDate()).padStart(2, '0');
+}
+async function desktopActivityRecordHistory(sync) {
+  try {
+    const snap = await load(['pointsHistory', 'pointsSummary']);
+    const hist = (snap && snap.pointsHistory && typeof snap.pointsHistory === 'object')
+      ? Object.assign({}, snap.pointsHistory) : {};
+    const ps = (sync && sync.pointsSummary) || (snap && snap.pointsSummary) || {};
+    const key = desktopActivityDayKey();
+    const prev = hist[key] || {};
+    const today = Number.isFinite(ps.today)
+      ? Math.max(Number(prev.today) || 0, Number(ps.today))
+      : (Number(prev.today) || 0);
+    const available = Number.isFinite(ps.available) ? ps.available : (Number(prev.available) || 0);
+    const claimable = Number.isFinite(ps.claimable) ? ps.claimable : (Number(prev.claimable) || 0);
+    if (prev.today === today && prev.available === available && prev.claimable === claimable) return;
+    hist[key] = { today: today, available: available, claimable: claimable, at: Date.now() };
+    const keys = Object.keys(hist).sort();
+    while (keys.length > 400) delete hist[keys.shift()];
+    await store({ pointsHistory: hist });
+  } catch {}
+}
+function desktopActivityTaskNames(items, limit) {
+  const out = [];
+  for (const it of (items || [])) {
+    const n = String((it && it.name) || '').trim().slice(0, 28);
+    if (n && out.indexOf(n) < 0) out.push(n);
+    if (out.length >= (limit || 2)) break;
+  }
+  return out.join('、');
+}
+
+/* ① 同步：正在同步 → 同步完成（绿色字），并落下当日积分历史 */
+const desktopActivityOrigSync = desktopSyncRewards;
+desktopSyncRewards = async function (opts) {
+  await desktopActivityWrite({
+    state: 'syncing', page: '/dashboard, /earn',
+    zh: '正在同步 · /dashboard + /earn 读取积分',
+    en: 'Syncing · reading /dashboard + /earn'
+  });
+  const r = await desktopActivityOrigSync(opts);
+  await desktopActivityRecordHistory(r);
+  const ps = (r && r.pointsSummary) || {};
+  await desktopActivityWrite({
+    state: (r && r.ok) ? 'synced' : 'syncFailed', page: '/dashboard, /earn',
+    zh: (r && r.ok)
+      ? '同步完成 · 今日 ' + desktopActivityFmt(ps.today) + ' 分 / 可用 ' + desktopActivityFmt(ps.available) + ' 分'
+      : '同步未完成 · 保留上次积分数据',
+    en: (r && r.ok)
+      ? 'Synced · today ' + desktopActivityFmt(ps.today) + ' / ' + desktopActivityFmt(ps.available) + ' pts available'
+      : 'Sync incomplete · kept last points'
+  });
+  return r;
+};
+
+/* ② 自动执行任务：开始 / 结束，文案精简为一行 */
+const desktopActivityOrigAuto = runAutoComplete;
+runAutoComplete = async function (opts) {
+  await desktopActivityWrite({
+    state: 'autoStart',
+    zh: '开始自动任务 · 同步积分 → 点击卡片 → 补全搜索',
+    en: 'Auto-start · sync points → cards → searches'
+  });
+  const r = await desktopActivityOrigAuto(opts);
+  const skipped = !!(r && (r.skipped === true || r.reason === 'allDone'));
+  await desktopActivityWrite({
+    state: skipped ? 'allDone' : 'done',
+    zh: skipped ? '全部完成 · 今日任务已做满，无需额外动作'
+      : '任务完成 · 点击 ' + desktopActivityFmt(r && r.clicked) + ' 张卡片 / 搜索 '
+        + desktopActivityFmt(r && r.searches) + ' 次',
+    en: skipped ? 'All done · daily tasks are complete'
+      : 'Done · ' + desktopActivityFmt(r && r.clicked) + ' cards / '
+        + desktopActivityFmt(r && r.searches) + ' searches'
+  });
+  return r;
+};
+
+/* ③ 任务卡片：点哪张、下一步 */
+const desktopActivityOrigCards = completePendingTaskCards;
+completePendingTaskCards = async function (level, token) {
+  const snap = await load(['taskClickIndex']).catch(() => ({}));
+  const names = desktopActivityTaskNames(
+    (snap && snap.taskClickIndex && snap.taskClickIndex.items) || [], 2);
+  await desktopActivityWrite({
+    state: 'clicking', page: '/dashboard, /earn', card: names,
+    zh: '点击卡片 · ' + (names || '/dashboard + /earn') + ' · 打开任务页确认 · 下一步：搜索',
+    en: 'Cards · ' + (names || '/dashboard + /earn') + ' · open task page · Next: search'
+  });
+  const r = await desktopActivityOrigCards(level, token);
+  await desktopActivityWrite({
+    state: 'clicking', card: names,
+    zh: '已点击 ' + desktopActivityFmt(r && r.clicked) + ' 张卡片 · 下一步：按剩余分数搜索',
+    en: 'Clicked ' + desktopActivityFmt(r && r.clicked) + ' cards · Next: search for remaining points'
+  });
+  return r;
+};
+
+/* ④ 打开页面：只写简短页面名 */
+const desktopActivityOrigOpen = openOrNavigate;
+openOrNavigate = async function (key, url, active) {
+  await desktopActivityWrite({
+    state: 'opening', page: String(url || ''),
+    zh: '打开页面 · ' + desktopActivityShort(url) + ' · 等待任务卡渲染',
+    en: 'Opening · ' + desktopActivityShort(url) + ' · waiting for cards'
+  });
+  return desktopActivityOrigOpen(key, url, active);
+};
+
+/* ⑤ 延迟动作：{s} 由 popup 替换为剩余秒数倒计时，到点自动停 */
+const desktopActivityOrigNap = nap;
+nap = async function (ms, token) {
+  const wait = Math.max(0, Math.round(Number(ms) || 0));
+  if (wait >= 800) {
+    await desktopActivityWrite({
+      state: 'waiting', delayMs: wait, next: '继续下一步',
+      zh: '{s} 秒后继续 · 下一步：核对积分',
+      en: 'Continuing in {s}s · Next: check points'
+    });
+  }
+  return desktopActivityOrigNap(ms, token);
+};
+
+/* ⑥ 搜索信息 / 收尾：订阅已有业务键，不改动搜索循环本身 */
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area !== 'local' || !changes) return;
+  const cq = changes.currentQuery;
+  if (cq && typeof cq.newValue === 'string' && cq.newValue.trim()) {
+    const q = cq.newValue.trim();
+    load(['currentSearch', 'totalSearch', 'phase']).then(s => {
+      const cur = Number(s && s.currentSearch) || 0;
+      const total = Number(s && s.totalSearch) || 0;
+      return desktopActivityWrite({
+        state: 'searching', query: q, page: 'Bing /search',
+        zh: '搜索 ' + (cur || 1) + '/' + (total || '?') + ' · 关键词「' + q + '」· 之后核对积分',
+        en: 'Search ' + (cur || 1) + '/' + (total || '?') + ' · "' + q + '" · then check points'
+      });
+    }).catch(() => {});
+  }
+  const ph = changes.phase;
+  if (ph && ph.newValue === 'completed') {
+    desktopActivityWrite({
+      state: 'synced',
+      zh: '同步完成 · 积分与任务状态已刷新',
+      en: 'Synced · points and tasks refreshed'
+    }).catch(() => {});
+  }
+});

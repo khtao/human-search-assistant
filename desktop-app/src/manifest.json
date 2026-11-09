@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Human Search Assistant",
   "description": "Human-like Bing search automation with bilingual UI, scored task cards and points parsed from the live Rewards dashboard/earn pages, plus scheduled runs.",
-  "version": "2.9",
+  "version": "1.3.8",
   "minimum_chrome_version": "116",
   "icons": {
     "16": "icons/icon16.png",
