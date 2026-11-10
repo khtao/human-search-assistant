@@ -1,4 +1,5 @@
 document.addEventListener('DOMContentLoaded', () => {
+  const HSA_CORE = globalThis.HSA_CORE;
   const $ = id => document.getElementById(id);
   const root = document.documentElement;
   const body = document.body;
@@ -36,7 +37,7 @@ document.addEventListener('DOMContentLoaded', () => {
     'diag', 'diagLimit', 'todayStart', 'liveCheck', 'stoppedEarly', 'currentQuery', 'todayActivities',
     'cooldownUntil', 'cooldownWaitMs', 'cooldownCycles', 'cooldownGaveUp', 'searchMaxedAtStart',
     'runAuto', 'runAutoTime', 'runLevel', 'todayTasks', 'pointsSummary',
-    'loginStatus', 'loginCheckedAt', 'autoResult'
+    'loginStatus', 'loginCheckedAt', 'autoResult', 'activityDetail'
   ];
   const DEFAULTS = {
     defaultCount: 30,
@@ -44,7 +45,7 @@ document.addEventListener('DOMContentLoaded', () => {
     autoStop: true,
     reduceMotion: false,
     dontSkipCompletedCards: false,   
-    cardClickIntervalSec: 5,
+    cardClickIntervalSec: HSA_CORE.DEFAULTS.cardClickIntervalSec,
   };
   const AUTO_DEFAULTS = { enabled: false, times: [], count: 30, level: 3 };
   const AUTO_MAX_TIMES = 10;
@@ -70,7 +71,7 @@ document.addEventListener('DOMContentLoaded', () => {
       'status.ready': '就绪', 'status.reading': '读取积分', 'status.checking': '检查今日进度',
       'status.searching': '搜索中', 'status.cooldown': 'Bing 冷却', 'status.finalizing': '收尾中',
       'status.completed': '已完成', 'status.limit': '已达上限', 'status.error': '出错',
-      'status.allDone': '任务已完成，无需任何动作',
+      'status.allDone': '已完成，无需动作',
       'status.synced': '已同步积分',
       'status.cooldownRound': 'Bing 冷却（第 {n} / {max} 次等待）',
       'status.gaveUp': 'Bing 持续冷却，积分未恢复，已提前结束',
@@ -126,7 +127,7 @@ document.addEventListener('DOMContentLoaded', () => {
       'calendar.totalLabel': '本月累计积分', 'calendar.yearLabel': '本年累计积分',
       'calendar.summary': '日均 {avg} · 最高 {max} · {n} 天有积分',
       'calendar.empty': '暂无历史数据，同步后自动记录',
-      'calendar.earnedDays': '{n} 天有积分',  
+      'calendar.earnedDays': '{n} 天有积分', 'calendar.legendHas': '已获得', 'calendar.legendNone': '无积分',
       'calendar.navEmpty': '该周期暂无积分（仍可查看）',
       'calendar.hoverTip': '日视图显示每日积分，周/月视图显示汇总 · 淡蓝为有积分、灰色为无积分、未来留空。悬停查看详情',
       'calendar.cellTip': '{date} · 积分 {points} 分',
@@ -239,7 +240,7 @@ document.addEventListener('DOMContentLoaded', () => {
       'calendar.totalLabel': 'Points this month', 'calendar.yearLabel': 'Points this year',
       'calendar.summary': 'Avg {avg} · Best {max} · {n} days with points',
       'calendar.empty': 'No history yet — recorded after the next sync',
-      'calendar.earnedDays': '{n} days earned',  
+      'calendar.earnedDays': '{n} days earned', 'calendar.legendHas': 'Earned', 'calendar.legendNone': 'No points',
       'calendar.navEmpty': 'No points in this period (still viewable)',
       'calendar.hoverTip': 'Daily points with weekly/monthly summaries · blue = earned, grey = none, future = blank. Hover for details',
       'calendar.cellTip': '{date} · {points} pts',
@@ -583,9 +584,11 @@ document.addEventListener('DOMContentLoaded', () => {
     pendingStartUntil = 0;
     allDoneNoticeUntil = Date.now() + 8000;
     oneShotRefresh(8100);               
-    setStatus(t('status.allDone'), 'completed all-done', false);
+    const allDoneText = (typeof lang !== 'undefined' && lang === 'en')
+      ? HSA_CORE.TEXT.allDoneEn : HSA_CORE.TEXT.allDone;
+    setStatus(allDoneText, 'completed all-done', false);
     setAction('start', t('controls.start'), false);
-    statusEl.setAttribute('aria-label', t('status.allDone'));
+    statusEl.setAttribute('aria-label', allDoneText);
   }
 
   function showSyncedNotice() {
@@ -593,6 +596,63 @@ document.addEventListener('DOMContentLoaded', () => {
     oneShotRefresh(8100);
     setStatus(t('status.synced'), 'completed all-done', false);
     statusEl.setAttribute('aria-label', t('status.synced'));
+  }
+
+  /* S01=B：状态行显示运行详情与动态倒计时；全文可悬停查看，不新增日志框。 */
+  let hsaCountdownTimer = null;
+  function hsaStopCountdown() {
+    if (hsaCountdownTimer) { clearTimeout(hsaCountdownTimer); hsaCountdownTimer = null; }
+  }
+  function hsaScheduleCountdown(until, template, cls) {
+    hsaStopCountdown();
+    const step = () => {
+      hsaCountdownTimer = null;
+      const left = Math.max(0, Math.ceil((until - Date.now()) / 1000));
+      const text = template.split('{s}').join(String(left));
+      if (statusText.textContent !== text) {
+        statusText.textContent = text;
+        statusEl.dataset.key = cls + '||' + text + '|' + lang;
+      }
+      if (until <= Date.now()) return;
+      hsaCountdownTimer = setTimeout(step,
+        Math.min(1000, Math.max(120, (until - Date.now()) - (left - 1) * 1000)));
+    };
+    step();
+  }
+  function hsaActivityLine(d, phaseCls) {
+    const a = d && d.activityDetail;
+    if (!a || !a.at) return null;
+    if (!d.running && Date.now() - Number(a.at) > 12000) return null;
+    const line = HSA_CORE.formatActivityLine(Object.assign({}, a, { active: !!d.running }),
+      lang, Date.now());
+    if (!line) return null;
+    const cls = line.green ? 'completed all-done'
+      : (a.state === 'syncFailed' ? 'error' : phaseCls);
+    return { text: line.text, cls: cls + ' activity', until: line.until,
+             template: line.template };
+  }
+
+  /* T05=D：未确认的任务卡只给「可手动打开的链接」，不自动代开、不计成功。 */
+  function renderManualLinks(links) {
+    const box = $('today-tasks-msg');
+    if (!box) return;
+    const list = (Array.isArray(links) ? links : [])
+      .filter(x => x && /^https?:\/\//i.test(String(x.url || ''))).slice(0, 8);
+    if (!list.length) { box.hidden = true; box.textContent = ''; return; }
+    box.textContent = '';
+    const label = document.createElement('span');
+    label.textContent = HSA_CORE.manualLinkNotice(list.length, lang);
+    box.appendChild(label);
+    for (const item of list) {
+      const a = document.createElement('a');
+      a.href = String(item.url);
+      a.target = '_blank';
+      a.rel = 'noopener noreferrer';
+      a.textContent = String(item.title || item.url).slice(0, 40);
+      a.style.marginRight = '8px';
+      box.appendChild(a);
+    }
+    box.hidden = false;
   }
 
   function setStatus(text, cls, isQuery, title) {
@@ -693,21 +753,31 @@ document.addEventListener('DOMContentLoaded', () => {
     lastRunningSeen = running;
     const noticeActive = !running && Date.now() < allDoneNoticeUntil;
     const syncedActive = !running && Date.now() < syncedNoticeUntil;
-    if (noticeActive) {
-      setStatus(t('status.allDone'), 'completed all-done', false);
-    } else if (syncedActive) {
-      setStatus(t('status.synced'), 'completed all-done', false);
-    } else if (d.cooldownGaveUp && !running) {
-      setStatus(t('status.gaveUp'), 'completed all-done', false);
-    } else if (phase === 'cooldown') {
-      const n = clampInt(d.cooldownCycles || 1, 1, MAX_COOLDOWNS);
-      setStatus(t('status.cooldownRound', { n, max: MAX_COOLDOWNS }), 'cooldown', false);
-    } else if (showQuery) {
-      setStatus(d.currentQuery, cls, true, t('status.searchingTitle', { q: d.currentQuery }));
-    } else if (phase === 'searching') {
-      setStatus(d.stopRequested ? t('status.stopping') : t('status.of', { a: current, b: total }), cls, false);
+    /* S01=B：运行时优先显示当前步骤 / 倒计时详情。 */
+    const act = hsaActivityLine(d, cls);
+    if (act) {
+      setStatus(act.text, act.cls, false, act.text);
+      statusEl.setAttribute('aria-label', act.text);
+      if (act.until) hsaScheduleCountdown(act.until, act.template, act.cls);
+      else hsaStopCountdown();
     } else {
-      setStatus(label, cls, false);
+      hsaStopCountdown();
+      if (noticeActive) {
+        setStatus(t('status.allDone'), 'completed all-done', false);
+      } else if (syncedActive) {
+        setStatus(t('status.synced'), 'completed all-done', false);
+      } else if (d.cooldownGaveUp && !running) {
+        setStatus(t('status.gaveUp'), 'completed all-done', false);
+      } else if (phase === 'cooldown') {
+        const n = clampInt(d.cooldownCycles || 1, 1, MAX_COOLDOWNS);
+        setStatus(t('status.cooldownRound', { n, max: MAX_COOLDOWNS }), 'cooldown', false);
+      } else if (showQuery) {
+        setStatus(d.currentQuery, cls, true, t('status.searchingTitle', { q: d.currentQuery }));
+      } else if (phase === 'searching') {
+        setStatus(d.stopRequested ? t('status.stopping') : t('status.of', { a: current, b: total }), cls, false);
+      } else {
+        setStatus(label, cls, false);
+      }
     }
 
     const tt = d.todayTasks || {};
@@ -741,7 +811,11 @@ document.addEventListener('DOMContentLoaded', () => {
       const row = hc.querySelector('.rhc-row');
       if (row) row.textContent = t('progress.tasks') + ' · ' + (hasTasks ? taskPct + '%' : '—');
     }
-    const panelNote = ps.signedOut ? t('tip.signedOut') : (ps.updatedAt ? '' : t('tip.loading'));
+    /* D05=D：确认登出后保留历史值并标注「上次记录」。 */
+    const panelNote = ps.signedOut ? t('tip.signedOut')
+      : ps.displayLabel
+        ? String(lang === 'en' ? (ps.displayLabelEn || HSA_CORE.TEXT.historyLabelEn) : ps.displayLabel)
+        : (ps.updatedAt ? '' : t('tip.loading'));
     setTip('tip-start', t('tip.startTitle'), [], panelNote || t('tip.available'));
     setTip('tip-current', t('tip.currentTitle'), [], panelNote || t('tip.todayPoints'));
     setTip('tip-earned', t('tip.earnedTitle'), [], panelNote || t('tip.claimOpen'));
@@ -757,6 +831,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (d.autoResult && d.autoResult.at && d.autoResult.at !== lastAutoResultAt) {
       lastAutoResultAt = d.autoResult.at;
       const r = d.autoResult;
+      renderManualLinks(r.manualLinks);
       if (!running) {
         clearTimeout(startWatchdogTimer);
         pendingStartUntil = 0;
@@ -1023,7 +1098,8 @@ document.addEventListener('DOMContentLoaded', () => {
     $('set-dont-skip-completed').checked = !!settings.dontSkipCompletedCards;
     const ci = $('set-card-interval');
     if (ci) ci.value = Number.isFinite(Number(settings.cardClickIntervalSec))
-      ? Math.max(1, Math.min(60, Math.round(Number(settings.cardClickIntervalSec)))) : 5;
+      ? HSA_CORE.clampIntervalSec(settings.cardClickIntervalSec)
+      : HSA_CORE.DEFAULTS.cardClickIntervalSec;
     syncAutoUI();
     renderPointsCalendar();
   }
@@ -1039,7 +1115,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const cardIntervalInput = $('set-card-interval');
   if (cardIntervalInput) cardIntervalInput.addEventListener('change', e => {
     const n = Number(e.target.value);
-    const sec = Number.isFinite(n) ? Math.max(1, Math.min(60, Math.round(n))) : 5;
+    const sec = HSA_CORE.clampIntervalSec(n);
     e.target.value = sec;
     saveSettings({ cardClickIntervalSec: sec });
   });
@@ -1382,6 +1458,8 @@ document.addEventListener('DOMContentLoaded', () => {
       const host = closestTip(e.target);
       if (!host || !host.dataset.tip) return;
       tip.textContent = host.dataset.tip;
+      /* U08=D：短提示单行，长提示自动换行且全文可读。 */
+      tip.dataset.short = String(host.dataset.tip || '').length <= 40 ? '1' : '';
       tip.hidden = false;
       place(host);
     });

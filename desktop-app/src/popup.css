@@ -34,8 +34,6 @@
   --btn-primary-bg: linear-gradient(135deg, #0066FF, #0088FF);
   --btn-primary-shadow: 0 2px 8px rgba(0,102,255,0.25), 0 1px 2px rgba(0,0,0,0.1);
   --btn-danger-shadow: 0 2px 8px rgba(205,43,49,0.2);
-  --brand-icon-bg: linear-gradient(135deg, #0066FF, #0099FF);
-  --brand-icon-shadow: 0 2px 8px rgba(0,102,255,0.25);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -72,8 +70,6 @@
     --btn-primary-bg: linear-gradient(135deg, #2563EB, #3B82F6);
     --btn-primary-shadow: 0 2px 12px rgba(59,130,246,0.3);
     --btn-danger-shadow: 0 2px 12px rgba(248,81,73,0.25);
-    --brand-icon-bg: linear-gradient(135deg, #2563EB, #3B82F6);
-    --brand-icon-shadow: 0 2px 12px rgba(59,130,246,0.3);
     color-scheme: dark;
   }
 }
@@ -111,8 +107,6 @@
   --btn-primary-bg: linear-gradient(135deg, #2563EB, #3B82F6);
   --btn-primary-shadow: 0 2px 12px rgba(59,130,246,0.3);
   --btn-danger-shadow: 0 2px 12px rgba(248,81,73,0.25);
-  --brand-icon-bg: linear-gradient(135deg, #2563EB, #3B82F6);
-  --brand-icon-shadow: 0 2px 12px rgba(59,130,246,0.3);
   color-scheme: dark;
 }
 
@@ -171,15 +165,7 @@ body.panel-open .app { width: 400px; max-width: 400px; }
 
 .brand { display: flex; align-items: center; gap: 10px; min-width: 0; }
 
-.brand-icon {
-  width: 28px; height: 28px;
-  background: var(--brand-icon-bg);
-  border-radius: 8px;
-  display: flex; align-items: center; justify-content: center;
-  color: #fff;
-  flex-shrink: 0;
-  box-shadow: var(--brand-icon-shadow);
-}
+/* U02/A：品牌图标统一规则见 shared/hsa-shared.css（无蓝色底板）。 */
 
 .brand h1 {
   font-size: 15px;
@@ -1608,13 +1594,7 @@ a.tt-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px;
 .controls.under-points .btn { margin-top: 0; }
 
 /* v1.7：品牌图标直接取 icons/icon48.png，放大到 32px，不再内联绘制 */
-.brand-icon {
-  width: 32px; height: 32px;
-  border-radius: 9px;
-  background: transparent;
-  box-shadow: none;
-}
-.brand-img { width: 32px; height: 32px; display: block; border-radius: 9px; }
+/* U02/A：品牌图标统一规则见 shared/hsa-shared.css。 */
 
 /* 圆环副标题改用「今日任务」，不做大写/字距拉伸 */
 .progress-sub { text-transform: none; letter-spacing: 0; font-size: 11px; }
@@ -1807,18 +1787,7 @@ a.tt-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px;
 }
 .cal-summary { margin: 10px 0 2px; text-align: center; font-size: 11px; color: var(--fg-tertiary); line-height: 1.5; }
 
-/* 自定义悬停提示：挂在 body 上的 fixed 浮层，不受设置页滚动容器裁剪 */
-.hover-tip {
-  position: fixed; z-index: 9999; max-width: 260px; width: max-content;
-  padding: 8px 10px; border-radius: 10px;
-  background: var(--surface-raised); color: var(--fg);
-  border: 1px solid var(--border);
-  box-shadow: 0 8px 24px rgba(16, 24, 40, .14);
-  font-size: 11px; font-weight: 500; line-height: 1.55;
-  letter-spacing: 0; text-transform: none; white-space: normal;
-  pointer-events: none; animation: tipIn .14s ease-out;
-}
-.hover-tip[hidden] { display: none; }
+/* U08/D：悬停提示统一规则见 shared/hsa-shared.css（长文案换行且全文可读）。 */
 @keyframes tipIn { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }
 
 /* 运行详情复用状态行：排版放松一点，长句省略但悬停可看全文 */
@@ -1866,9 +1835,4 @@ a.tt-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px;
   background:var(--cal-gray-bg); color:var(--cal-gray-fg); }
 .cal-grid.cal-week .cal-past-empty .cal-period-points,
 .cal-grid.cal-month .cal-past-empty .cal-period-points { color:var(--cal-gray-fg); }
-.cal-legend { display:flex; justify-content:center; align-items:center; gap:17px;
-  margin-top:12px; font-size:10px; color:var(--fg-tertiary); }
-.cal-legend > span { display:inline-flex; align-items:center; gap:5px; }
-.cal-legend-dot { width:9px; height:9px; border-radius:3px; display:inline-block; }
-.cal-legend-dot.earned { background:var(--cal-has-fg); }
-.cal-legend-dot.empty { background:var(--cal-gray-fg); opacity:.55; }
+/* U07/B：日历图例统一规则见 shared/hsa-shared.css。 */

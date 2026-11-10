@@ -162,12 +162,7 @@ body.panel-open .app { width: 100%; max-width: 100%; }
 
 .brand { display: flex; align-items: center; gap: 10px; min-width: 0; }
 
-.brand-icon {
-  width: 28px; height: 28px;
-  display: flex; align-items: center; justify-content: center;
-  color: #fff;
-  flex-shrink: 0;
-}
+/* U02/A：品牌图标统一规则见 shared/hsa-shared.css（无蓝色底板）。 */
 
 .brand h1 {
   font-size: 15px;
@@ -1534,12 +1529,7 @@ a.tt-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px;
 .controls.under-points { padding-top: 14px; padding-bottom: 16px; }
 .controls.under-points .btn { margin-top: 0; }
 
-.brand-icon {
-  width: 32px; height: 32px;
-  background: transparent;
-  box-shadow: none;
-}
-.brand-img { width: 32px; height: 32px; display: block; }
+/* U02/A：品牌图标统一规则见 shared/hsa-shared.css。 */
 
 .progress-sub { text-transform: none; letter-spacing: 0; font-size: 11px; }
 
@@ -1712,18 +1702,7 @@ a.tt-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px;
 }
 .cal-summary { margin: 10px 0 2px; text-align: center; font-size: 11px; color: var(--fg-tertiary); line-height: 1.5; }
 
-.hover-tip {
-  position: fixed; z-index: 2147483647; max-width: 92vw; width: max-content;
-  padding: 8px 10px; border-radius: 10px;
-  background: var(--surface-raised); color: var(--fg);
-  border: 1px solid var(--border);
-  box-shadow: 0 8px 24px rgba(16, 24, 40, .14);
-  font-size: 11px; font-weight: 500; line-height: 1.4;
-  letter-spacing: 0; text-transform: none;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-  pointer-events: none; animation: tipIn .14s ease-out;
-}
-.hover-tip[hidden] { display: none; }
+/* U08/D：悬停提示统一规则见 shared/hsa-shared.css（长文案换行且全文可读）。 */
 @keyframes tipIn { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }
 
 .status.activity {

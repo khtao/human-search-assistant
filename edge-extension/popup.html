@@ -5,7 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title data-i18n="app.title">拟人搜索助手</title>
   <link rel="stylesheet" href="popup.css">
+  <link rel="stylesheet" href="shared/hsa-shared.css">
   <script src="theme.js"></script>
+  <script src="shared/hsa-core.js"></script>
 </head>
 <body>
   <div class="app" id="main">
@@ -26,7 +28,7 @@
         </div>
         <button id="settings-open" class="icon-btn" type="button" aria-label="打开设置" title="设置"
                 aria-haspopup="dialog" aria-controls="settings"
-                data-i18n-aria="a11y.settings" data-i18n-title="a11y.settings">
+                data-i18n-aria="a11y.settings" data-i18n-title="a11y.settings" data-tip-role="hint">
           <svg class="icon-gear" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
         </button>
       </div>
@@ -117,7 +119,7 @@
   <section id="settings" class="settings" role="dialog" aria-modal="true" aria-labelledby="settings-title" inert>
     <header class="settings-head">
       <button id="settings-back" class="icon-btn" type="button" aria-label="返回" title="返回"
-              data-i18n-aria="a11y.back" data-i18n-title="a11y.back">
+              data-i18n-aria="a11y.back" data-i18n-title="a11y.back" data-tip-role="hint">
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>
       </button>
       <h2 id="settings-title" data-i18n="settings.title">设置</h2>
@@ -129,9 +131,9 @@
         <div class="set-row">
           <span class="set-label" data-i18n="settings.language">语言 / Language</span>
           <div class="segmented lang-segmented" id="set-lang" role="radiogroup" aria-label="Language">
-            <button type="button" role="radio" data-value="system" data-i18n="lang.system" aria-checked="true">跟随系统</button>
             <button type="button" role="radio" data-value="zh" aria-checked="false">中文</button>
             <button type="button" role="radio" data-value="en" aria-checked="false">English</button>
+            <button type="button" role="radio" data-value="system" data-i18n="lang.system" aria-checked="true">跟随系统</button>
           </div>
         </div>
         <div class="set-row">
@@ -152,7 +154,7 @@
         <h3 class="set-title" data-i18n="auto.title">自动完成任务</h3>
         <label class="set-row" data-i18n-title="auto.cardIntervalHint" data-tip-role="hint" title="相邻两张任务卡片的点击间隔（1–60 秒）">
           <span class="set-label" data-i18n="auto.cardInterval">卡片点击间隔</span>
-          <span class="set-inline-number"><input type="number" id="set-card-interval" min="1" max="60" step="1" value="5" aria-label="卡片点击间隔（秒）"><span class="set-unit" data-i18n="settings.seconds">秒</span></span>
+          <span class="set-inline-number"><input type="number" id="set-card-interval" min="1" max="60" step="1" value="10" aria-label="卡片点击间隔（秒）"><span class="set-unit" data-i18n="settings.seconds">秒</span></span>
         </label>
         <label class="set-row" data-i18n-title="auto.dontSkipCompletedHint" data-tip-role="hint" title="默认关闭，只点主界面显示未完成的任务卡；开启后即使积分和任务全完成也逐张点击所有任务卡">
           <span class="set-label" data-i18n="auto.dontSkipCompleted">不跳过已完成任务卡</span>
@@ -194,7 +196,7 @@
         <p id="set-auto-msg" class="preview-msg" role="status" hidden></p>
       </div>
 
-      <details class="set-group cal-fold" id="calendar-group" style="--g:2">
+      <details class="set-group cal-fold" id="calendar-group" style="--g:2" open>
         <summary class="set-title" data-i18n="calendar.title">积分赚取日历</summary>
         <div class="cal-head">
           <button id="cal-prev" class="cal-nav" type="button" aria-label="上一周期" title="上一周期"
@@ -216,6 +218,7 @@
         <div id="cal-grid" class="cal-grid" role="grid" aria-label="积分日历"
              data-i18n-title="calendar.hoverTip" data-tip-role="hint"
              title="日视图显示每日积分，周/月视图显示汇总"></div>
+        <div class="cal-legend" aria-hidden="true"><span><i class="cal-legend-dot earned"></i><span data-i18n="calendar.legendHas">已获得</span></span><span><i class="cal-legend-dot empty"></i><span data-i18n="calendar.legendNone">无积分</span></span></div>
         <p id="cal-summary" class="cal-summary"></p>
       </details>
 
@@ -223,6 +226,7 @@
     </div>
   </section>
 
+  <script src="shared/hsa-recovery.js"></script>
   <script src="popup.js"></script>
   <script src="popup-bootstrap.js"></script>
 </body>

@@ -23,6 +23,7 @@ files:
   - lib/sidebar-task-cards.js
   - lib/memory-governor.js
   - src/**/*
+  - shared/**/*
   - build/icon.ico
   - build/icon.png
   - package.json

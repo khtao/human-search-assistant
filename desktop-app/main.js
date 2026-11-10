@@ -49,6 +49,7 @@ const { DebugCapture } = require('./lib/debug-capture');
    默认关闭可避免生产运行时持续的 HTML 落盘与 I/O。 */
 const DBG = new DebugCapture();
 const C = require('./lib/core');
+const HSA_CORE = require('./shared/hsa-core.js');
 const SidebarCards = require('./lib/sidebar-task-cards');
 const { MemoryGovernor, trimSnapshotHtml, SNAPSHOT_HTML_LIMIT } = require('./lib/memory-governor');
 
@@ -1384,13 +1385,59 @@ async function closeSidebarTaskPage(view) {
   hideTaskView();
 }
 
-async function scanSidebarCards(webContents) {
-  for (let i = 0; i < 6; i++) {
-    const res = await webContents.executeJavaScript(SidebarCards.SIDEBAR_SCAN_SOURCE, true).catch(() => null);
-    if (res && Array.isArray(res.cards) && res.cards.length) return res;
-    await new Promise(r => setTimeout(r, 700));
+/* T07：页面稳定后才允许下一次动作（与插件端 waitForTaskPageStable 同一策略）。 */
+async function hsaWaitPageStable(wc) {
+  const deadline = Date.now() + HSA_CORE.DEFAULTS.pageStableWaitMs;
+  while (wc && Date.now() < deadline) {
+    try {
+      if (!wc.isDestroyed() && !wc.isLoading()) {
+        const r = await wc.executeJavaScript('document.readyState', true);
+        if (r === 'complete') return true;
+      }
+    } catch (err) {}
+    await new Promise(resolve => setTimeout(resolve, 200));
   }
-  return null;
+  return false;
+}
+
+/* T02=A：先快速扫 DOM，再对懒加载容器做「有次数上限」的分段滚动，最后按共享
+   taskCardKey 去重。上限来自 shared/hsa-core.js，避免无限滚动常驻占用内存。 */
+async function scanSidebarCards(webContents) {
+  const plan = HSA_CORE.scanPlan();
+  const merged = new Map();
+  let last = null;
+  const collect = async () => {
+    const res = await webContents.executeJavaScript(
+      SidebarCards.SIDEBAR_SCAN_SOURCE, true).catch(() => null);
+    if (!res || !Array.isArray(res.cards)) return 0;
+    last = res;
+    for (const c of res.cards) {
+      const k = HSA_CORE.taskCardKey(c);
+      if (k && !merged.has(k)) merged.set(k, c);
+    }
+    return res.cards.length;
+  };
+  for (let i = 0; i < 6; i++) {
+    if (await collect()) break;
+    await new Promise(r => setTimeout(r, plan.retryMs));
+  }
+  if (!merged.size) {
+    for (let step = 1; step <= plan.maxSteps; step++) {
+      const y = step * plan.segmentPx;
+      await webContents.executeJavaScript(
+        '(function(){try{window.scrollTo(0,' + y + ');' +
+        'var s=document.scrollingElement||document.documentElement;' +
+        'if(s)s.scrollTop=' + y + ';' +
+        'for(var i=0;i<document.querySelectorAll("*").length&&i<400;i++){}' +
+        '}catch(e){}return true;})()', true).catch(() => null);
+      await new Promise(r => setTimeout(r, Math.min(plan.retryMs, 350)));
+      await collect();
+    }
+    await webContents.executeJavaScript('window.scrollTo(0,0)', true).catch(() => null);
+  }
+  const cards = [...merged.values()];
+  merged.clear();                 // 及时释放收集结果，不常驻引用 DOM 数据
+  return cards.length ? Object.assign({}, last || {}, { cards: cards }) : null;
 }
 
 ipcMain.handle('chrome:task:clickAll', async (_event, clickIndex, options) => {
@@ -1398,6 +1445,37 @@ ipcMain.handle('chrome:task:clickAll', async (_event, clickIndex, options) => {
   taskClickRunning = true;
   const pages = [];
   let totalClicked = 0, totalOpened = 0, totalFailed = 0, totalScanned = 0, totalUnconfirmed = 0;
+  /* T06=D / T05=D：三态计数、可手动打开的链接、实际触发方式；数组均有上限。 */
+  const manualLinks = [];
+  const triggerMethods = [];
+  let pageInteractionClicks = 0;
+  const noteTrigger = (method, reason) => {
+    if (triggerMethods.length < 64) triggerMethods.push({ method: method, reason: reason });
+  };
+  const noteUnconfirmed = (name, href) => {
+    totalUnconfirmed++;
+    if (/^https?:\/\//i.test(String(href || '')) && manualLinks.length < 20) {
+      manualLinks.push({ title: String(name || '未确认任务').slice(0, 60), url: String(href) });
+    }
+  };
+  /* T01=D：CDP 不可用时降级到官网卡片自身的页面交互，不把技术手段当成功条件。 */
+  const domClickFallback = async (wc, href) => {
+    const src = '(function(href){try{' +
+      'var as=document.querySelectorAll("a[href]");' +
+      'for(var i=0;i<as.length;i++){' +
+      'if(as[i].getAttribute("href")===href||as[i].href===href){as[i].click();return {ok:true};}}' +
+      'return {ok:false,reason:"no-anchor"};' +
+      '}catch(e){return {ok:false,reason:String(e&&e.message||e)}}})(' +
+      JSON.stringify(String(href || '')) + ')';
+    return await wc.executeJavaScript(src, true).catch(() => null);
+  };
+  const clickStates = () => ({
+    clickSent: totalClicked, pageOpened: totalOpened,
+    officialConfirmed: 0,   /* 官网确认只能由官网数据判定，桌面端绝不冒充 */
+    unconfirmed: totalUnconfirmed, failed: totalFailed,
+    pageInteractionClicks: pageInteractionClicks,
+    manualLinks: manualLinks.slice(0, 20), triggerMethods: triggerMethods.slice(0, 64)
+  });
   let debuggerAttachedHere = false;
   let lastPhysicalClickAt = 0;
   let tv = null, dbg = null;
@@ -1405,12 +1483,19 @@ ipcMain.handle('chrome:task:clickAll', async (_event, clickIndex, options) => {
     const index = clickIndex && clickIndex.schemaVersion === 1 ? clickIndex : null;
     const indexFresh = !!(index && Array.isArray(index.items) && Number.isFinite(index.updatedAt)
       && Date.now() - index.updatedAt <= 30 * 60 * 1000);
-    const indexedEntries = indexFresh ? index.items.filter(x => x &&
-      (x.page === '/dashboard' || x.page === '/earn')) : [];
+    /* T04=A：两版统一用共享 taskCardKey（索引 → 标题 → 链接）判断卡片身份。 */
+    const seenIndex = new Set();
+    const indexedEntries = indexFresh ? index.items.filter(x => {
+      if (!x || !(x.page === '/dashboard' || x.page === '/earn')) return false;
+      const k = HSA_CORE.taskCardKey(x);
+      if (!k || seenIndex.has(k)) return false;
+      seenIndex.add(k);
+      return true;
+    }) : [];
     const skipCompletedCards = !!(options && options.skipCompletedCards);
-    const intervalRaw = Number(options && options.cardClickIntervalSec != null ? options.cardClickIntervalSec : NaN);
-    const cardClickIntervalMs = (Number.isFinite(intervalRaw)
-      ? Math.min(60, Math.max(1, Math.round(intervalRaw))) : 10) * 1000;
+    /* T07=D：默认 10 秒、1~60 秒范围，与插件端同源。 */
+    const cardClickIntervalMs = HSA_CORE.clampIntervalSec(
+      options && options.cardClickIntervalSec) * 1000;
     // Count actual CDP mouse actions rather than time spent locating cards.
     const waitClickSpacing = async () => {
       while (lastPhysicalClickAt && state.running) {
@@ -1495,6 +1580,7 @@ ipcMain.handle('chrome:task:clickAll', async (_event, clickIndex, options) => {
           continue;
         }
         if (!(await waitClickSpacing())) break;
+        await hsaWaitPageStable(tv.webContents);
         const targetBlank = String(aim.target || card.target || '').toLowerCase() === '_blank';
         const samePageWatcher = !targetBlank ? watchMainFrameLoad(tv.webContents, 12000) : null;
         taskResultLoadPromise = null;
@@ -1514,17 +1600,28 @@ ipcMain.handle('chrome:task:clickAll', async (_event, clickIndex, options) => {
           });
           lastPhysicalClickAt = Date.now();
           await dispatchTaskMouseClick(dbg, aim.x, aim.y);
+          noteTrigger('cdp', '官网卡片真实鼠标路径');
           page.clicked++;
           totalClicked++;
           await wait(100);
         } catch (err) {
           if (samePageWatcher) samePageWatcher.cancel();
-          page.failed++; totalFailed++;
-          DBG.log('task', '侧栏 CDP 鼠标点击失败', {
-            name: card.name, x: aim.x, y: aim.y,
-            error: String(err && err.message || err)
-          });
-          continue;
+          /* T01=D：CDP 不可用时改用页面真实交互，并明确记录实际触发方式。 */
+          const dom = await domClickFallback(tv.webContents, aim.href || card.href);
+          if (dom && dom.ok) {
+            noteTrigger('page-interaction', 'CDP 不可用，降级页面交互');
+            pageInteractionClicks++;
+            page.clicked++;
+            totalClicked++;
+            await wait(100);
+          } else {
+            page.failed++; totalFailed++;
+            DBG.log('task', '侧栏 CDP 鼠标点击失败且页面交互亦不可用', {
+              name: card.name, x: aim.x, y: aim.y,
+              error: String(err && err.message || err), dom: dom
+            });
+            continue;
+          }
         }
 
         if (taskResultLoadPromise) {
@@ -1532,7 +1629,7 @@ ipcMain.handle('chrome:task:clickAll', async (_event, clickIndex, options) => {
           const opened = await taskResultLoadPromise;
           if (opened && opened.ok) { page.opened++; totalOpened++; }
           else {
-            totalUnconfirmed++;
+            noteUnconfirmed(card.name, aim.href || card.href);
             DBG.log('task', '侧栏点击已发送，但任务结果页未完成加载', { name: card.name, result: opened });
           }
         } else if (samePageWatcher) {
@@ -1547,11 +1644,11 @@ ipcMain.handle('chrome:task:clickAll', async (_event, clickIndex, options) => {
             await scanSidebarCards(tv.webContents);
           } else {
             samePageWatcher.cancel();
-            totalUnconfirmed++;
+            noteUnconfirmed(card.name, aim.href || card.href);
             await wait(TASK_CLICK_SETTLE_MS);
           }
         } else {
-          totalUnconfirmed++;
+          noteUnconfirmed(card.name, aim.href || card.href);
           await wait(TASK_CLICK_SETTLE_MS);
         }
         DBG.log('task', '侧栏积分卡 CDP 鼠标点击完成', {
@@ -1576,7 +1673,9 @@ ipcMain.handle('chrome:task:clickAll', async (_event, clickIndex, options) => {
         opened: totalOpened, failed: totalFailed, skipped: skippedBySetting,
         clickUnconfirmed: totalUnconfirmed, excludedNoPoints: excluded.length,
         stateSource: 'main-ui-task-state',
-        method: 'sidebar-flyout + CDP Input.dispatchMouseEvent'
+        method: 'sidebar-flyout + CDP Input.dispatchMouseEvent',
+        states: clickStates(), manualLinks: manualLinks.slice(0, 20),
+        triggerMethods: triggerMethods.slice(0, 64)
       };
     }
     DBG.log('task', '侧栏无可依据的主界面任务状态，回退到 dashboard/earn 索引点击', {
@@ -1648,6 +1747,7 @@ ipcMain.handle('chrome:task:clickAll', async (_event, clickIndex, options) => {
         }
 
         if (!(await waitClickSpacing())) break;
+        await hsaWaitPageStable(tv.webContents);
         taskResultLoadPromise = null;
         const targetBlank = String(aim.target || entry.target || '').toLowerCase() === '_blank';
         const samePageWatcher = !targetBlank ? watchMainFrameLoad(tv.webContents, 12000) : null;
@@ -1668,18 +1768,28 @@ ipcMain.handle('chrome:task:clickAll', async (_event, clickIndex, options) => {
           // Timestamp corresponds to the beginning of the CDP mouse action.
           lastPhysicalClickAt = Date.now();
           await dispatchTaskMouseClick(dbg, aim.x, aim.y);
+          noteTrigger('cdp', '索引卡片真实鼠标路径');
           page.clicked++;
           totalClicked++;
           await new Promise(resolve => setTimeout(resolve, 100));
         } catch (err) {
           if (samePageWatcher) samePageWatcher.cancel();
-          page.failed++;
-          totalFailed++;
-          DBG.log('task', 'CDP 索引鼠标点击失败', {
-            name: entry.name, x: aim.x, y: aim.y,
-            error: String(err && err.message || err)
-          });
-          continue;
+          const dom = await domClickFallback(tv.webContents, aim.href || entry.url);
+          if (dom && dom.ok) {
+            noteTrigger('page-interaction', 'CDP 不可用，降级页面交互');
+            pageInteractionClicks++;
+            page.clicked++;
+            totalClicked++;
+            await new Promise(resolve => setTimeout(resolve, 100));
+          } else {
+            page.failed++;
+            totalFailed++;
+            DBG.log('task', 'CDP 索引鼠标点击失败且页面交互亦不可用', {
+              name: entry.name, x: aim.x, y: aim.y,
+              error: String(err && err.message || err)
+            });
+            continue;
+          }
         }
 
         if (taskResultLoadPromise) {
@@ -1689,7 +1799,7 @@ ipcMain.handle('chrome:task:clickAll', async (_event, clickIndex, options) => {
             page.opened++;
             totalOpened++;
           } else {
-            totalUnconfirmed++;
+            noteUnconfirmed(entry.name, aim.href || entry.url);
             DBG.log('task', '鼠标点击已发送，但结果页未完成加载', {
               name: entry.name, result: opened
             });
@@ -1705,11 +1815,11 @@ ipcMain.handle('chrome:task:clickAll', async (_event, clickIndex, options) => {
             await loadTaskPage(tv, pageDef.url);
           } else {
             samePageWatcher.cancel();
-            totalUnconfirmed++;
+            noteUnconfirmed(entry.name, aim.href || entry.url);
             await new Promise(resolve => setTimeout(resolve, TASK_CLICK_SETTLE_MS));
           }
         } else {
-          totalUnconfirmed++;
+          noteUnconfirmed(entry.name, aim.href || entry.url);
           await new Promise(resolve => setTimeout(resolve, TASK_CLICK_SETTLE_MS));
         }
         DBG.log('task', '同步索引任务卡 CDP 鼠标点击完成', {
@@ -1729,7 +1839,10 @@ ipcMain.handle('chrome:task:clickAll', async (_event, clickIndex, options) => {
 
     return {
       ok: true, pages, clicked: totalClicked, scanned: totalScanned,
-      opened: totalOpened, failed: totalFailed, skipped: skippedCompleted, clickUnconfirmed: totalUnconfirmed, method: 'sync-index + CDP Input.dispatchMouseEvent'
+      opened: totalOpened, failed: totalFailed, skipped: skippedCompleted,
+      clickUnconfirmed: totalUnconfirmed, method: 'sync-index + CDP Input.dispatchMouseEvent',
+      states: clickStates(), manualLinks: manualLinks.slice(0, 20),
+      triggerMethods: triggerMethods.slice(0, 64)
     };
   } catch (err) {
     DBG.log('task', '任务卡片索引点击整体失败', { error: String(err && err.stack || err) });
@@ -2172,9 +2285,8 @@ function markSignedOut(reason) {
   const prevLogin = state.loginStatus;
   const prevPoints = state.pointsSummary || {};
   if (prevLogin === 'out' && !Number.isFinite(prevPoints.available)) return;
-  const nextPoints = Object.assign({}, prevPoints, {
-    available: null, signedOut: true, updatedAt: now
-  });
+  /* D05=D：隐藏当前可用余额，保留历史 / 今日值并标记为「上次记录」。 */
+  const nextPoints = HSA_CORE.logoutPresentation(prevPoints, now).pointsSummary;
   state.loginStatus = 'out';
   state.loginCheckedAt = now;
   state.signOutSignalAt = now;

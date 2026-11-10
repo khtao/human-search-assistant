@@ -1,3 +1,7 @@
+/* 共享核心：插件版与桌面版共用的决策与纯逻辑（单一真源见 shared/） */
+importScripts('shared/hsa-core.js');
+const HSA_CORE = globalThis.HSA_CORE;
+
 const DASHBOARD_URL = 'https://rewards.bing.com/dashboard';
 const EARN_URL = 'https://rewards.bing.com/earn';
 const HOME_URL = 'https://www.bing.com/?mkt=zh-CN';
@@ -16,7 +20,7 @@ const ACTIVE_PHASES = ['fetchingStartPoints', 'checkingLimit', 'searching', 'fet
 let searchGuard = false;           
 let guardBlocks = 0;
 
-const TASK_CLICK_INTERVAL_MS = 5000;   
+const TASK_CLICK_INTERVAL_MS = HSA_CORE.DEFAULTS.cardClickIntervalSec * 1000;
 const FLYOUT_SCAN_STEP_MS = 420;       
 const FLYOUT_SCAN_MAX_SEGMENTS = 24;   
 const FLYOUT_SCAN_SETTLE_MS = 900;     
@@ -1265,23 +1269,54 @@ function parseSearchCounter(html) {
 let fetchCount = 0;
 let lastFetchAt = 0;
 
-async function fetchRewardsPage(path) {
+/* D01=A：优先官网原始网络数据；D06=D：后台展示允许 120 秒短期缓存并标记采集时间，
+   用户刷新 / 开始 / 收尾一律强制新数据。缓存有条目数与字节上限，避免常驻大 HTML。 */
+const hsaHtmlCache = new Map();
+function hsaCacheTrim(now) {
+  for (const [k, v] of hsaHtmlCache) {
+    if (!v || now - v.at > HSA_CORE.DEFAULTS.htmlCacheTtlMs) hsaHtmlCache.delete(k);
+  }
+  while (hsaHtmlCache.size > HSA_CORE.DEFAULTS.htmlCacheMaxEntries) {
+    const oldest = hsaHtmlCache.keys().next().value;
+    if (oldest == null) break;
+    hsaHtmlCache.delete(oldest);
+  }
+}
+async function fetchRewardsPage(path, opts) {
   if (searchGuard) {
     guardBlocks++;
     return { ok: false, status: 0, url: null, html: '', error: 'mid-search sync blocked' };
   }
+  const policy = HSA_CORE.syncCachePolicy((opts && opts.reason) || 'background');
+  const fresh = !!(opts && opts.fresh) || policy.fresh;
+  const key = 'https://rewards.bing.com' + path;
+  const now = Date.now();
+  hsaCacheTrim(now);
+  if (!fresh) {
+    const hit = hsaHtmlCache.get(key);
+    if (hit && now - hit.at <= HSA_CORE.DEFAULTS.htmlCacheTtlMs) {
+      return Object.assign({}, hit.value, { source: 'cache', collectedAt: hit.at });
+    }
+  }
   fetchCount++;
-  lastFetchAt = Date.now();
+  lastFetchAt = now;
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), DIRECT_TIMEOUT);
   try {
-    const res = await fetch('https://rewards.bing.com' + path, {
+    const res = await fetch(key, {
       credentials: 'include',
       cache: 'no-store',
       signal: ctrl.signal
     });
-    const html = await res.text();
-    return { ok: res.ok, status: res.status, url: res.url, html };
+    const html = (await res.text()).slice(0, HSA_CORE.DEFAULTS.htmlCacheMaxBytes);
+    const value = { ok: res.ok, status: res.status, url: res.url, html,
+                    collectedAt: Date.now(), source: 'official-network' };
+    if (res.ok && html.length > 800) {
+      hsaHtmlCache.delete(key);
+      hsaHtmlCache.set(key, { at: Date.now(), value: value });
+      hsaCacheTrim(Date.now());
+    }
+    return value;
   } catch (err) {
     return {
       ok: false, status: 0, url: null, html: '',
@@ -1366,7 +1401,7 @@ const DEFAULT_SETTINGS = {
   autoStop: true,
   reduceMotion: false,
   dontSkipCompletedCards: false,
-  cardClickIntervalSec: 5        
+  cardClickIntervalSec: HSA_CORE.DEFAULTS.cardClickIntervalSec
 };
 
 async function getSettings() {
@@ -2051,18 +2086,58 @@ function mergeTrio(a, b) {
   return out;
 }
 
-async function fetchBothPages() {
+async function fetchBothPages(opts) {
+  const o = opts || {};
   const [dash, earn] = await Promise.all([
-    fetchRewardsPage('/dashboard'),
-    fetchRewardsPage('/earn')
+    fetchRewardsPage('/dashboard', o),
+    fetchRewardsPage('/earn', o)
   ]);
   return {
     dash, earn,
     signedOut: (isSignInPage(dash.html) && isSignInPage(earn.html))
       || (isRewardsShell(dash.html) && isRewardsShell(earn.html)),
     shellSignedOut: isRewardsShell(dash.html) || isRewardsShell(earn.html),
-    reachable: dash.ok || earn.ok
+    reachable: dash.ok || earn.ok,
+    collectedAt: Math.max(Number(dash.collectedAt) || 0, Number(earn.collectedAt) || 0)
   };
+}
+
+/* D02/D03：读取当前账号已打开官网页面的新鲜快照（只读，用完即释放）。
+   快照只用于补缺和降级同步，绝不覆盖官网本次已确认的任务状态。 */
+async function readVisibleRewardsSnapshot() {
+  try {
+    const list = await chrome.tabs.query({ url: 'https://rewards.bing.com/*' });
+    const tab = (Array.isArray(list) ? list : []).find(t =>
+      t && t.id != null && /\/(?:dashboard|earn)(?:\/|[?#]|$)/i.test(String(t.url || '')));
+    if (!tab) return null;
+    const res = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      func: () => {
+        const text = String(document.body && document.body.innerText || '').slice(0, 30000);
+        const rows = [];
+        const seen = new Set();
+        for (const a of document.querySelectorAll('a[href]')) {
+          const name = String(a.innerText || a.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 80);
+          if (!name || seen.has(name)) continue;
+          seen.add(name);
+          const m = /(\d+)\s*(?:分|points|pts)/i.exec(name);
+          rows.push({ name, points: m ? Number(m[1]) : 0, earned: 0,
+                      completed: /已完成|complete/i.test(name), section: 'daily' });
+        }
+        return {
+          url: location.href,
+          html: document.documentElement.outerHTML.slice(0, 600 * 1024),
+          text: text,
+          rows: rows.slice(0, 60),
+          signedOut: /Sign in to your Microsoft account|登录到 Microsoft 帐户/i.test(text),
+          at: Date.now()
+        };
+      }
+    });
+    const d = Array.isArray(res) ? res[0] && res[0].result : null;
+    if (!d || !HSA_CORE.isFreshSnapshot(d, Date.now())) return null;
+    return d;
+  } catch (err) { return null; }
 }
 
 function jsonArrayObjects(clean, key) {
@@ -3499,16 +3574,35 @@ function registerNewTabs(before, after, tabId, stat) {
   return added;
 }
 
+/* T07：等待当前页面加载稳定后才允许下一次点击动作，避免网页未加载完盲目继续。 */
+async function waitForTaskPageStable(token) {
+  const deadline = Date.now() + HSA_CORE.DEFAULTS.pageStableWaitMs;
+  while (isCurrent(token) && Date.now() < deadline) {
+    try {
+      const list = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+      const tab = Array.isArray(list) ? list[0] : null;
+      if (!tab || tab.status === 'complete') return true;
+    } catch (err) {}
+    await nap(250, token);
+  }
+  return false;
+}
+
 async function taskClickSpacing(token) {
-  let interval = TASK_CLICK_INTERVAL_MS;
+  let seconds;
   try {
     const cfg = await getSettings();
-    const seconds = Number(cfg.cardClickIntervalSec);
-    if (Number.isFinite(seconds))
-      interval = Math.round(Math.min(60, Math.max(1, seconds)) * 1000);
-  } catch {}
+    seconds = Number(cfg.cardClickIntervalSec);
+  } catch (err) {}
+  const interval = HSA_CORE.clampIntervalSec(seconds) * 1000;
   const left = interval - (Date.now() - lastTaskClickAt);
-  if (left > 0) await nap(left, token);
+  if (left > 0) {
+    hsaActivityPush({ state: 'waiting', delayMs: left,
+      zh: '等待 {s} 秒后点击下一张任务卡',
+      en: 'Wait {s}s before the next card' }).catch(() => {});
+    await nap(left, token);
+  }
+  await waitForTaskPageStable(token);
   lastTaskClickAt = Date.now();
 }
 
@@ -3643,11 +3737,13 @@ async function collectFlyoutCardsFull(tabId, token, stat, needPanel, includeDone
 }
 
 async function humanClickTasks(token, stat) {
-  const pages = [
-    { url: PRIMARY_FLYOUT_URL, label: '侧栏 flyout', flyout: true, page: 'flyout' },
-    { url: DASHBOARD_URL, label: '/dashboard', page: 'dashboard' },
-    { url: EARN_URL, label: '/earn', page: 'earn' }
-  ];
+  /* T03=B：侧栏不可用时统一回退到官网 /dashboard 与 /earn，用索引与实时卡片定位。 */
+  const pages = HSA_CORE.fallbackPages().map(p => ({
+    url: 'https://rewards.bing.com' + p,
+    label: p,
+    page: p.replace(/^\//, ''),
+    flyout: false
+  }));
   let clicked = 0, cardTotal = 0;
   const cfg = await getSettings();
   const includeDone = !!cfg.dontSkipCompletedCards;
@@ -3657,7 +3753,7 @@ async function humanClickTasks(token, stat) {
     + (includeDone ? '；不跳过已完成卡（点全部）' : '；只点主界面未完成的任务卡'));
   const seen = new Set();
   const normUrl = h => String(h || '').split('#')[0].trim().slice(0, 220);
-  const keyOf = c => String(c.idx || c.title || '').slice(0, 220) || normUrl(c.href);
+  const keyOf = c => HSA_CORE.taskCardKey(c);
   stat.usedTabIds = stat.usedTabIds || new Set();
   stat.humanEmpty = [];
   stat.humanSignedOut = false;
@@ -3665,6 +3761,7 @@ async function humanClickTasks(token, stat) {
   stat.officialVerified = 0;
   stat.officialUnconfirmed = 0;
   stat.officialAvailable = false;
+  stat.states = stat.states || HSA_CORE.newClickResult();
 
   for (const pg of pages) {
     if (!isCurrent(token)) break;
@@ -3816,8 +3913,13 @@ async function humanClickTasks(token, stat) {
 
         if (realMouse) stat.realMouse = (stat.realMouse || 0) + 1;
         else stat.degraded = (stat.degraded || 0) + 1;
-        stat.clicked++;
-        clicked++;
+        /* T06=D：已发出点击 / 已打开页面 / 官网已确认完成 三个状态互不冒充。 */
+        HSA_CORE.recordClick(stat.states, 'clickSent');
+        if (fresh.length) HSA_CORE.recordClick(stat.states, 'pageOpened', fresh.length);
+        HSA_CORE.recordTrigger(stat.states, realMouse ? 'cdp' : 'page-interaction',
+          realMouse ? 'CDP 可用，官网卡片真实鼠标路径' : 'CDP 不可用，页面真实交互');
+        stat.clicked = stat.states.clickSent;
+        clicked = stat.states.clickSent;
         console.info('[AutoTask] ✓ ' + pg.label + ' 点击 ' + (order + 1) + '/' + cards.length
           + '：' + (aim.title || aim.text || '').slice(0, 34) + '（+' + aim.points + ' · ' + aim.kind + '）'
           + ' · ' + method + ' @(' + Math.round(aim.x) + ',' + Math.round(aim.y) + ')'
@@ -3833,14 +3935,17 @@ async function humanClickTasks(token, stat) {
               String(t.title || '').replace(/\s+/g, '').slice(0, 6) === name.slice(0, 6));
             if (hit && (hit.complete || (hit.pointsMax > 0 && hit.pointsEarned >= hit.pointsMax))) {
               stat.officialVerified++;
+              HSA_CORE.recordClick(stat.states, 'officialConfirmed');
               console.info('[AutoTask]   ✓ 官方已确认计分：' + (aim.title || '').slice(0, 26));
             } else {
               stat.officialUnconfirmed++;
+              HSA_CORE.recordClick(stat.states, 'unconfirmed');
               console.warn('[AutoTask]   ⚠ 官方未确认计分：' + (aim.title || '').slice(0, 26)
                 + '（可能需要答题/进一步互动，或这张本身不给分）');
             }
           } else if (after && after.ok && hitByCount(lastOfficial, after)) {
             stat.officialVerified++;
+            HSA_CORE.recordClick(stat.states, 'officialConfirmed');
             console.info('[AutoTask]   ✓ 官方完成项 +1：' + (aim.title || '').slice(0, 26));
           }
           if (after && after.ok) lastOfficial = after;
@@ -3860,8 +3965,17 @@ async function humanClickTasks(token, stat) {
 
   stat.pages = stat.pages || [];
   stat.real = true;
-  stat.openedTabs = clicked;
-  stat.domClick = clicked;
+  stat.clicked = stat.states.clickSent;
+  stat.openedTabs = stat.states.pageOpened;
+  stat.domClick = stat.states.clickSent;
+  stat.officialConfirmed = stat.states.officialConfirmed;
+  stat.unconfirmed = stat.states.unconfirmed;
+  stat.manualLinks = stat.states.manualLinks;
+  stat.triggerMethods = stat.states.triggerMethods;
+  console.info('[AutoTask] 结果三态：已发出点击 ' + stat.states.clickSent
+    + ' / 已打开页面 ' + stat.states.pageOpened
+    + ' / 官网确认 ' + stat.states.officialConfirmed
+    + ' / 未确认 ' + stat.states.unconfirmed);
   for (const id of stat.usedTabIds) {
     try { await chrome.debugger.detach({ tabId: id }); } catch {}
     cdpAttached.delete(id);
@@ -3944,10 +4058,14 @@ async function syncStart(token, cap) {
   const items = sync.todayTasks.items || [];
   const searchItem = items.find(i => i.section === 'search');
   const searchPending = !searchItem || Number(searchItem.earned) < Number(searchItem.points);
-  const allDone = !sync.todayTasks.signedOut && !sync.todayTasks.approx
-    && items.length >= 3 && !searchPending
-    && Number(sync.todayTasks.percent) >= 100
-    && items.every(i => !!i.completed || Number(i.earned) >= Number(i.points));
+  /* T08=A：两版统一采用插件版严格完成条件（非估算 / 至少 3 项 / 搜索项完成 /
+     总进度 100% / 逐项完成）；估算、缺失配额、过期来源都只显示「待核实」。 */
+  const allDone = HSA_CORE.isAllDone(sync.todayTasks, {
+    estimated: !!sync.todayTasks.approx,
+    quotaMissing: !(todaySearch && Number.isFinite(todaySearch.max)),
+    stale: !!(sync.pointsSummary &&
+      Date.now() - Number(sync.pointsSummary.updatedAt || 0) > HSA_CORE.DEFAULTS.htmlCacheTtlMs)
+  });
 
   return {
     ok: true, startPoints, todaySearch,
@@ -3985,9 +4103,27 @@ async function presetSyncFinish(st, searches, start) {
   return { points: finalPoints, today: finalToday };
 }
 
+/* S01=B：与桌面 activityDetail 同结构的精简运行详情，写入状态行显示。 */
+async function hsaActivityPush(info) {
+  const o = info || {};
+  const now = Date.now();
+  const delayMs = Math.max(0, Math.round(Number(o.delayMs) || 0));
+  const payload = {
+    at: now, until: delayMs ? now + delayMs : 0,
+    state: o.state || 'running',
+    zh: Array.isArray(o.zh) ? o.zh.join(' · ') : String(o.zh || ''),
+    en: Array.isArray(o.en) ? o.en.join(' · ') : String(o.en || ''),
+    page: o.page || '', card: o.card || '', query: o.query || ''
+  };
+  try { await store({ activityDetail: payload }); } catch (err) {}
+}
+
 async function runAutoComplete(opts) {
   const o = opts || {};
   if (autoCompleteActive || flowActive) return { ok: false, reason: 'running' };
+  hsaActivityPush({ state: 'running',
+    zh: '正在同步积分状态并准备点击任务卡…',
+    en: 'Syncing points and preparing task cards…' }).catch(() => {});
   autoCompleteActive = true;
   const token = ++flowToken;
   try {
@@ -4035,8 +4171,10 @@ async function runAutoComplete(opts) {
       await store({ running: false, phase: 'completed', stopRequested: false,
                     lastActivity: Date.now(), presetSearches: 0 });
       console.info('[AutoTask] 积分与任务均已完成，且「不跳过已完成任务卡」未开启：零动作返回');
-      return { ok: false, reason: 'allDone', skipped: true,
-               clicked: 0, searches: 0, level, preset: true };
+      /* T09=D：无需运行是成功的幂等结果，不能与真正报错混淆。 */
+      hsaActivityPush({ state: 'allDone', zh: HSA_CORE.TEXT.allDone,
+        en: HSA_CORE.TEXT.allDoneEn }).catch(() => {});
+      return HSA_CORE.allDoneResult({ level, preset: true });
     }
     if (sync.allDone)
       console.info('[AutoTask] 积分与任务均已完成，但已开启「不跳过已完成任务卡」：仍发起点击任务卡片流程');
@@ -4059,8 +4197,13 @@ async function runAutoComplete(opts) {
       + (clickRes.skipped || 0) + ' 张，保留任务页 ' + (clickRes.openedTabs || 0)
       + ' 个，搜索 ' + searches + ' 次（配额 ' + sync.got + '/' + sync.max + '）'
       + (clickRes.signedOut ? '，[警告] 检测到登录页，请确认已登录 Rewards' : ''));
+    hsaActivityPush({ state: 'done', zh: '本轮自动完成已结束',
+      en: 'Auto-complete round finished' }).catch(() => {});
+    /* T05/T06：未确认卡片的手动链接与三态结果透传给界面。 */
     return { ok: true, clicked: clickRes.clicked, skippedCards: clickRes.skipped,
-             searches, level, preset: true };
+             searches, level, preset: true,
+             manualLinks: (clickRes.manualLinks || []).slice(0, 20),
+             states: clickRes.states || null };
   } finally {
     autoCompleteActive = false;
     const st = await load(['running']).catch(() => ({}));
@@ -4180,7 +4323,13 @@ function sameBusiness(a, b) {
 
 async function syncRewardsUnified(opts) {
   const o = opts || {};
-  const pages = await fetchBothPages();
+  /* D06：用户刷新 / 开始 / 收尾强制新数据；后台展示允许短期缓存。 */
+  const policy = HSA_CORE.syncCachePolicy(o.reason);
+  const fresh = !!o.fresh || policy.fresh;
+  hsaActivityPush({ state: 'syncing',
+    zh: '正在读取官网 /dashboard 与 /earn…', en: 'Reading /dashboard and /earn…' }).catch(() => {});
+  const pages = await fetchBothPages({ fresh: fresh, reason: o.reason });
+  const snap = await readVisibleRewardsSnapshot();
   const prev = await load(['pointsSummary', 'todayTasks', 'todaySearch', 'loginStatus']);
   const prevPs = prev.pointsSummary || {};
   const prevTt = prev.todayTasks || {};
@@ -4197,14 +4346,25 @@ async function syncRewardsUnified(opts) {
     || (pages.earn.ok && isRewardsShell(pages.earn.html))
     || pages.shellSignedOut
   ) && !(Number(trio.available) > 0);
-  const loginPageOnly = (!!pages.signedOut || shellSignedOut)
-    && !(Number(trio.available) > 0);
-  if (loginPageOnly) {
+  /* D04=B：以可解析积分余额 / 可见面板信号为主，页面文案单独出现不判登出。 */
+  const evidence = {
+    available: Number.isFinite(trio.available) ? trio.available : null,
+    panelSignedIn: !!(snap && !snap.signedOut && snap.rows && snap.rows.length),
+    panelSignedOut: snap ? !!snap.signedOut : undefined,
+    pageTextSignedOut: !!pages.signedOut || shellSignedOut,
+    shellSignedOut: shellSignedOut,
+    explicitLogout: false,
+    hasFreshData: !!pages.reachable
+  };
+  /* D05=D：确认登出 → 隐藏当前可用余额，历史 / 今日值标「上次记录」，不删记录。 */
+  if (HSA_CORE.isConfirmedLogout(evidence)) {
+    const out = HSA_CORE.logoutPresentation(prevPs);
+    await store({ pointsSummary: out.pointsSummary, loginStatus: 'out',
+                  loginCheckedAt: Date.now() });
     return {
       ok: false, balance: null, counter: null, signedOut: true, reachable: !!pages.reachable,
-      reason: shellSignedOut ? 'shellSignedOut' : 'signedOut',
-      pointsSummary: prevPs, todayTasks: prevTt,
-      todaySearch: prevSearch, loginStatus: prevLogin, items: [], changed: []
+      reason: 'signedOut', pointsSummary: out.pointsSummary, todayTasks: prevTt,
+      todaySearch: prevSearch, loginStatus: 'out', items: [], changed: ['pointsSummary', 'loginStatus']
     };
   }
   const keep = (v, key) => Number.isFinite(v) ? v
@@ -4220,6 +4380,12 @@ async function syncRewardsUnified(opts) {
     }
     await closeTab('rewardsTabId').catch(() => {});
   }
+  /* D02=D：总是允许新鲜页面快照补缺；官网本次已确认的卡片状态优先，旧快照不覆盖。 */
+  const merged = HSA_CORE.mergeSnapshotCards(cards, snap && snap.rows, {
+    now: Date.now(), snapshotAt: snap && snap.at,
+    snapshotUrl: snap && snap.url, snapshotSignedOut: snap && snap.signedOut
+  });
+  cards = merged.cards;
   let approx = false;
   if (!cards.length && pages.earn.ok) cards = rowsFromProgressTable(pages.earn.html);
   if (!cards.length) { cards = await fallbackTaskItems(); approx = true; }
@@ -4227,18 +4393,28 @@ async function syncRewardsUnified(opts) {
   const counter = pages.earn.ok ? parseSearchCounter(pages.earn.html) : null;
   const items = [searchItemFromCounter(counter, prevSearch),
                  ...cards.filter(i => i.section !== 'search')];
+  /* D03=B：两页失败但当前账号的新鲜可见页面有数据时允许降级同步，界面标注「页面数据」。 */
+  const degrade = HSA_CORE.degradedSync(snap, { pagesReachable: !!pages.reachable, now: Date.now() });
   const pointsSummary = {
     available: keep(trio.available, 'available'),
     today: keep(trio.today, 'today'),
     claimable: keep(trio.claimable, 'claimable'),
     signedOut: false,
     updatedAt: Date.now(),
-    sources: [pages.dash.ok && '/dashboard', pages.earn.ok && '/earn'].filter(Boolean)
+    collectedAt: pages.collectedAt || (snap && snap.at) || Date.now(),
+    dataSourceLabel: degrade.label,
+    dataSourceLabelEn: degrade.labelEn,
+    degraded: !!degrade.degraded,
+    sources: [pages.dash.ok && '/dashboard', pages.earn.ok && '/earn',
+      degrade.degraded && 'fresh-visible-page'].filter(Boolean)
   };
   const signedIn = Number.isFinite(pointsSummary.available) && !shellSignedOut;
   const hasRealTasks = cards.length > 0 && !approx;
-  const signedOut = !signedIn && !!pages.signedOut && !hasRealTasks;
-  const loginStatus = signedIn ? 'in' : (signedOut ? 'out' : (prevLogin || 'unknown'));
+  const loginStatus = HSA_CORE.loginStateFromEvidence(Object.assign({}, evidence, {
+    available: signedIn ? pointsSummary.available : evidence.available,
+    panelSignedIn: !!signedIn || evidence.panelSignedIn,
+    hasFreshData: degrade.ok
+  }));
   const todayTasks = summarizeTaskItems(items, { approx: approx, signedOut: false });
   const todaySearch = counter || prevSearch || null;
 
@@ -4253,16 +4429,18 @@ async function syncRewardsUnified(opts) {
     if (!sameBusiness(before, v)) patch[k] = v;
   }
   if (Object.keys(patch).length) await store(patch);
-  const readData = !!pages.reachable;
-  const outOnly = signedOut && !signedIn && !hasRealTasks;
+  const readData = degrade.ok;
+  const outOnly = loginStatus === 'out' && !signedIn && !hasRealTasks;
   const ok = readData && !outOnly && !pages.signedOut && !shellSignedOut;
   return {
     ok: ok, balance: pages.dash.ok ? parseBalance(pages.dash.html) : null,
-    counter: counter, signedOut: signedOut,
+    counter: counter, signedOut: loginStatus === 'out',
     reachable: readData,
+    degraded: !!degrade.degraded, dataSourceLabel: degrade.label,
+    snapshotApplied: !!merged.snapshotApplied, snapshotAdded: merged.added,
     reason: ok ? (o.reason || 'manual')
       : (shellSignedOut ? 'shellSignedOut'
-         : (pages.signedOut || signedOut ? 'signedOut' : 'unreachable')),
+         : (pages.signedOut || loginStatus === 'out' ? 'signedOut' : 'unreachable')),
     pointsSummary: pointsSummary,
     todayTasks: todayTasks, todaySearch: todaySearch,
     loginStatus: loginStatus, items: items, changed: Object.keys(patch)
@@ -4349,7 +4527,7 @@ function onPanelTabUpdated(tabId, info, tab) {
   if (!/^https:\/\/rewards\.bing\.com\//i.test(String(tab && tab.url || ''))) return;
   if (Date.now() - lastPanelSyncAt < 5000) return;
   lastPanelSyncAt = Date.now();
-  syncRewardsUnified({ fresh: true, reason: 'login-return' })
+  syncRewardsUnified({ reason: 'login-return' })
     .then(r => store({ syncNotice: { at: Date.now(), reason: 'login-return',
       ok: !!r.ok, changed: (r.changed || []).length } }))
     .catch(() => {});
@@ -4654,13 +4832,15 @@ async function runEmbeddedPanelTasksFlow(token, stat, holder) {
     + '，当前卡片 ' + infoRes.cardsNow + '（含目标链接 ' + (infoRes.withTarget || 0)
     + '，官方活动 ' + (infoRes.officialTasks || 0) + '），页高 ' + infoRes.scrollHeight + 'px）'
     + (includeDone ? '，不跳过已完成卡（点全部）' : '，只点主界面显示未完成的任务卡'));
-  console.info('[AutoTask] 侧栏 iframe 内不使用 CDP 真鼠标（扩展页无法 attach debugger，'
-    + '故无「正在调试」提示）；改用页面原生导航 + chrome.tabs.create 逐张校验。');
+  /* T01=D：按宿主能力优先真实交互路径；扩展内部 iframe 无法 attach debugger，
+     因此这里明确记录使用页面真实交互，不把 CDP 当作成功条件。 */
+  console.info('[AutoTask] 触发方式：' + HSA_CORE.triggerPlan(false).label
+    + '（扩展内部 iframe 不支持 CDP attach；实际方式逐卡记录）');
+  stat.states = stat.states || HSA_CORE.newClickResult();
+  HSA_CORE.recordTrigger(stat.states, 'page-interaction', 'embedded iframe 无 CDP 权限');
 
   const merged = [], seen = new Set();
-  const keyOf = c => String(c.idx || '').trim()
-    || String(c.title || '').trim()
-    || String(c.href || '').split('#')[0].trim();
+  const keyOf = c => HSA_CORE.taskCardKey(c);
   const add = list => {
     for (const c of (Array.isArray(list) ? list : [])) {
       const k = keyOf(c);
@@ -4742,7 +4922,8 @@ async function runEmbeddedPanelTasksFlow(token, stat, holder) {
     } catch { return new Set(); }
   };
   let clicked = 0, openedTabs = 0, aimFailed = 0, noTarget = 0;
-  let selfOpened = 0, backendOpened = 0;
+  let selfOpened = 0;
+  const follow = HSA_CORE.followupPolicy();
   for (let i = 0; i < merged.length && isCurrent(token); i++) {
     const c = merged[i];
     await taskClickSpacing(token);
@@ -4752,12 +4933,14 @@ async function runEmbeddedPanelTasksFlow(token, stat, holder) {
     const aim = await hsaRpc(port, 'aim', payload);
     if (!aim || !aim.ok) {
       aimFailed++;
+      HSA_CORE.recordClick(stat.states, 'failed');
       console.warn('[AutoTask] ✗ 侧栏内无法定位「' + (c.title || '').slice(0, 26) + '」');
       continue;
     }
     const before = await tabSnapshot();
     const res = await hsaRpc(port, 'click', payload);
     if (!res || !res.ok) {
+      HSA_CORE.recordClick(stat.states, 'failed');
       console.warn('[AutoTask] ✗ 侧栏内点击失败「' + (c.title || '').slice(0, 26) + '」：'
         + ((res && res.reason) || '无返回'));
       continue;
@@ -4767,48 +4950,69 @@ async function runEmbeddedPanelTasksFlow(token, stat, holder) {
     let created = 0;
     for (const id of after) if (!before.has(id)) created++;
     const url = String(res.targetUrl || res.href || c.targetUrl || c.href || '');
+    /* T05=D：点击没出现新任务页时先重新定位一次，仍无反馈绝不代开链接、
+       也不把「打开网页」冒充「官网确认完成」。 */
+    if (!created && follow.relocateRetries > 0) {
+      const reAim = await hsaRpc(port, 'aim', payload);
+      if (reAim && reAim.ok) {
+        const reClick = await hsaRpc(port, 'click', payload);
+        if (reClick && reClick.ok) await nap(1200, token);
+      }
+      const after2 = await tabSnapshot();
+      for (const id of after2) if (!before.has(id)) created++;
+    }
+    HSA_CORE.recordClick(stat.states, 'clickSent');
+    HSA_CORE.recordTrigger(stat.states, 'page-interaction', '侧栏 iframe 页面原生交互');
     if (created > 0) {
-      clicked++; openedTabs += created; selfOpened++;
+      HSA_CORE.recordClick(stat.states, 'pageOpened', created);
+      selfOpened++;
+      clicked = stat.states.clickSent;
+      openedTabs = stat.states.pageOpened;
       console.info('[AutoTask] ✓ 第 ' + (i + 1) + '/' + merged.length + ' 张「'
         + (res.title || '').slice(0, 30) + '」：页面自身真实打开 ' + created
         + ' 个任务页（+' + res.points + '）');
-    } else if (/^https?:\/\//i.test(url)) {
-      try {
-        await chrome.tabs.create({ url, active: false });
-        clicked++; openedTabs++; backendOpened++;
-        console.info('[AutoTask] ✓ 第 ' + (i + 1) + '/' + merged.length + ' 张「'
-          + (res.title || '').slice(0, 30) + '」：后台原生打开任务页 ' + url.slice(0, 90)
-          + '（+' + res.points + '）');
-      } catch (err) {
-        noTarget++;
-        console.warn('[AutoTask] ✗ 第 ' + (i + 1) + ' 张打开任务页失败：'
-          + String(err && err.message || err).slice(0, 90));
-      }
     } else {
+      HSA_CORE.recordClick(stat.states, 'unconfirmed');
       noTarget++;
+      if (follow.showManualLink && /^https?:\/\//i.test(url) &&
+          stat.states.manualLinks.length < 20) {
+        stat.states.manualLinks.push({ title: String(c.title || res.title || '未确认任务'), url: url });
+      }
       console.warn('[AutoTask] ✗ 第 ' + (i + 1) + '/' + merged.length + ' 张「'
-        + (c.title || '').slice(0, 26) + '」既未自行打开任务页、也解析不到目标链接，'
-        + '不计入完成数');
+        + (c.title || '').slice(0, 26) + '」重定位后仍无任务页反馈：标记为未确认'
+        + (follow.showManualLink ? '，已提供可手动打开的链接' : ''));
     }
-    broadcastPanelStatus('已打开 ' + openedTabs + ' 个任务页 / 处理 '
+    broadcastPanelStatus('已打开 ' + stat.states.pageOpened + ' 个任务页 / 处理 '
       + (i + 1) + '/' + merged.length + ' 张', 'running');
     await nap(400, token);
   }
 
+
   stat.pages = stat.pages || [];
-  stat.pages.push({ page: 'embedded-flyout', clicked,
+  stat.pages.push({ page: 'embedded-flyout', clicked: stat.states.clickSent,
     anchors: merged.length, doneSkipped: skippedTotal, aimFailed,
-    selfOpened, backendOpened, noTarget });
+    selfOpened, noTarget, unconfirmed: stat.states.unconfirmed });
   stat.real = true;
-  stat.openedTabs = openedTabs;
-  stat.domClick = clicked;
+  /* T06=D：三者互不冒充，界面分别显示「已发出点击 / 已打开页面 / 官网确认」。 */
+  stat.clicked = stat.states.clickSent;
+  stat.openedTabs = stat.states.pageOpened;
+  stat.domClick = stat.states.clickSent;
+  stat.officialConfirmed = stat.states.officialConfirmed;
+  stat.unconfirmed = stat.states.unconfirmed;
+  stat.manualLinks = stat.states.manualLinks;
+  stat.triggerMethods = stat.states.triggerMethods;
   stat.noTarget = noTarget;
   stat.aimFailed = (stat.aimFailed || 0) + aimFailed;
-  broadcastPanelStatus('完成：实际打开 ' + openedTabs + ' 个任务页（页面自身 '
-    + selfOpened + ' / 后台 ' + backendOpened + '），共 ' + merged.length
-    + ' 张' + (noTarget ? '，未找到目标 ' + noTarget + ' 张' : ''), 'done');
+  console.info('[AutoTask] 结果三态：已发出点击 ' + stat.states.clickSent
+    + ' / 已打开页面 ' + stat.states.pageOpened
+    + ' / 官网确认 ' + stat.states.officialConfirmed
+    + ' / 未确认 ' + stat.states.unconfirmed);
+  broadcastPanelStatus('完成：实际打开 ' + stat.states.pageOpened + ' 个任务页，共 '
+    + merged.length + ' 张，未确认 ' + stat.states.unconfirmed + ' 张', 'done');
 
-  return { ok: true, clicked, openedTabs, selfOpened, backendOpened, noTarget,
+
+  return { ok: true, clicked: stat.states.clickSent, openedTabs: stat.states.pageOpened,
+    selfOpened, noTarget, states: stat.states,
     mode: panel.mode, ready: true,
     segments, innerSegments, scrollers: scrollers.length };
 }

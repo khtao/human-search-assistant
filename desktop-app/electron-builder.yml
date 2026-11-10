@@ -19,6 +19,7 @@ files:
   - lib/sidebar-task-cards.js
   - lib/memory-governor.js
   - src/**/*
+  - shared/**/*
   - build/icon.png
   - package.json
   - '!src/**/*.md'

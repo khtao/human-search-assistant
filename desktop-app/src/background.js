@@ -1,3 +1,8 @@
+/* 共享核心：host.html 在本脚本之前加载 <script src="../shared/hsa-core.js">；
+   Node 静态校验环境则回退到 CommonJS 加载。两端调用同一份纯逻辑。 */
+const HSA_CORE = (typeof globalThis !== 'undefined' && globalThis.HSA_CORE) ||
+  (typeof require === 'function' ? require('../shared/hsa-core.js') : null);
+
 const DASHBOARD_URL = 'https://rewards.bing.com/dashboard';
 const EARN_URL = 'https://rewards.bing.com/earn';
 /** 两个页面都存在可点击任务，必须逐页独立扫描（不跨页去重）。 */
@@ -44,7 +49,7 @@ let desktopGuardBlocks = 0;
  *  · 任务卡片：每日活动(每日任务) → 日常任务；点击弹出的任务页保留不关闭
  *  · 搜索标签页运行期间保持焦点、结束关闭（后台节流会让搜索暂停）
  * ======================================================================== */
-const TASK_CLICK_INTERVAL_MS = 10000;   // 索引定位后留出短暂渲染间隔
+const TASK_CLICK_INTERVAL_MS = HSA_CORE.DEFAULTS.cardClickIntervalSec * 1000;
 const KEEP_TASK_TABS = true;            // 任务阶段打开的标签页一律不关闭
 const KEEP_SEARCH_TAB_FOCUSED = true;   // 每轮搜索前把搜索页拉回焦点，防后台节流暂停
 const FOCUS_WINDOW_TOO = true;          // 同时把浏览器窗口置为系统前台
@@ -1502,6 +1507,23 @@ function desktopPageMatches(url, path) {
   return !/\/earn(?:\/|[?#]|$)/i.test(u);
 }
 
+/* D01=A（桌面宿主适配）：window.fetch 已被 host.html 代理为主进程 net.fetch，
+   带同账号会话 Cookie，属于「最新官网原始网络数据」。解析不足时才读已渲染页面。 */
+async function desktopFetchOfficialHtml(path) {
+  try {
+    const url = 'https://rewards.bing.com' + path;
+    const res = await Promise.race([
+      fetch(url, { credentials: 'include', cache: 'no-store' }),
+      sleep(8000).then(() => null)
+    ]);
+    if (!res || !res.ok || typeof res.text !== 'function') return null;
+    const html = String(await res.text() || '').slice(0, HSA_CORE.DEFAULTS.htmlCacheMaxBytes);
+    if (html.length < 800 || isSignInPage(html)) return null;
+    return { ok: true, status: res.status || 200, url: res.url || url, html: html,
+             source: 'official-network', collectedAt: Date.now() };
+  } catch (err) { return null; }
+}
+
 async function desktopFetchFromSnapshot(path) {
   try {
     const got = await load([desktopSnapKey(path)]);
@@ -1589,8 +1611,10 @@ async function fetchRewardsPage(path, opts) {
     }), DIRECT_TIMEOUT + 8000);
   });
   const work = (async () => {
-    /* fresh=true：跳过 120 秒快照。开始/收尾同步必须读实时页面，
-       否则短搜索会以开始时的旧积分冒充「最终积分」。 */
+    /* D01=A：官网原始网络数据优先（解析不足时才读同账号已渲染页面）。
+       D06=D：后台展示可复用 120 秒内快照；刷新 / 开始 / 收尾跳过缓存。 */
+    const network = await desktopFetchOfficialHtml(path);
+    if (network) return network;
     if (!(opts && opts.fresh)) {
       const snap = await desktopFetchFromSnapshot(path);
       if (snap) return snap;
@@ -1703,7 +1727,7 @@ const DEFAULT_SETTINGS = {
   reminderTo: '23:00',
   reminderSeconds: 5,
   reduceMotion: false,
-  cardClickIntervalSec: 10,
+  cardClickIntervalSec: HSA_CORE.DEFAULTS.cardClickIntervalSec,
   /* v1.3.8-s2：设置项反转为「不跳过已完成任务卡」，默认关闭 = 默认跳过已完成卡 */
   notSkipCompletedCards: false
 };
@@ -2522,7 +2546,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     /* 面板刚渲染完 / 登录跳回时，主进程刚写入的可见快照就是最新页面，
        直接复用（fresh=false）；手动刷新、开始与收尾同步强制实时读两页。 */
     const reason = msg.reason || 'login-return';
-    const fresh = !/^(panel-loaded|login-return)$/.test(reason);
+    const fresh = HSA_CORE.syncCachePolicy(reason).fresh;
     desktopSyncRewards({ fresh: fresh, reason: reason })
       .then(r => sendResponse({ ok: !!r.ok, reason: r.reason }))
       .catch(err => sendResponse({ ok: false, reason: 'error',
@@ -4831,15 +4855,28 @@ async function waitForTaskPageReady(tabId, url, token) {
   return { ok: true, timeout: true, tab, url: tab && tab.url };
 }
 
-/** 统一调度：保证任意相邻两次「点击时刻」相隔 >= 5s，跨页、跨轮次都成立。 */
+/* T07=D：默认 10 秒；等待页面稳定后才允许下一次动作；范围仍为 1~60 秒。 */
+async function waitForTaskPageStable(token) {
+  const deadline = Date.now() + HSA_CORE.DEFAULTS.pageStableWaitMs;
+  while (Date.now() < deadline) {
+    try {
+      const list = await chrome.tabs.query({ active: true });
+      const tab = Array.isArray(list) ? list[0] : null;
+      if (!tab || tab.status === 'complete') return true;
+    } catch (err) {}
+    await nap(250, token);
+  }
+  return false;
+}
 async function taskClickSpacing(token) {
-  const cfg = await getSettings();
-  const seconds = Number(cfg.cardClickIntervalSec);
-  const interval = Number.isFinite(seconds)
-    ? Math.round(Math.min(60, Math.max(1, seconds)) * 1000) : TASK_CLICK_INTERVAL_MS;
+  let seconds;
+  try { const cfg = await getSettings(); seconds = Number(cfg.cardClickIntervalSec); }
+  catch (err) {}
+  const interval = HSA_CORE.clampIntervalSec(seconds) * 1000;
   const left = interval - (Date.now() - lastTaskClickAt);
   if (lastTaskClickAt && left > 0) await nap(left, token);
   if (token != null && !isCurrent(token)) throw STOP;
+  await waitForTaskPageStable(token);
   lastTaskClickAt = Date.now();
 }
 
@@ -5788,9 +5825,14 @@ async function syncStart(token, cap) {
   });
 
   const items = Array.isArray(sync.todayTasks.items) ? sync.todayTasks.items : [];
-  /* 完成判定与界面 100% 使用同一精确总分口径；不再依赖至少 3 项、
-     某一条搜索任务名称或逐项 completed 标志，避免 UI 已满仍触发卡片点击。 */
-  const allDone = isTaskSummaryComplete(sync.todayTasks);
+  /* T08=A：两版统一采用插件版严格完成条件；估算 / 缺配额 / 过期来源只显示待核实，
+     不作自动跳过依据。 */
+  const allDone = HSA_CORE.isAllDone(sync.todayTasks, {
+    estimated: !!sync.todayTasks.approx,
+    quotaMissing: !(todaySearch && Number.isFinite(todaySearch.max)),
+    stale: !!(sync.pointsSummary &&
+      Date.now() - Number(sync.pointsSummary.updatedAt || 0) > HSA_CORE.DEFAULTS.htmlCacheTtlMs)
+  });
 
   return {
     ok: true, pages, startPoints, todaySearch,
@@ -5886,8 +5928,8 @@ async function runAutoComplete(opts) {
       console.info('[AutoTask] 同步后积分与任务均已全部完成，零动作：不重载页面、不点卡片、不搜索');
       await store({ running: false, phase: 'completed', stopRequested: false,
                     lastActivity: Date.now() });
-      return { ok: true, skipped: true, reason: 'allDone', source: 'start-sync',
-               clicked: 0, searches: 0 };
+      /* T09=D：ok:true + skipped:true + reason:allDone，界面显示「已完成，无需动作」。 */
+      return HSA_CORE.allDoneResult({ source: 'start-sync' });
     }
     if (sync.allDone && notSkipCompletedCards) {
       console.info('[AutoTask] 积分与任务已完成，但「不跳过已完成任务卡」已开启：仍发起点击流程');
@@ -5937,7 +5979,9 @@ async function runAutoComplete(opts) {
       + '，开始时锁定搜索次数 ' + searches + '（配额 ' + sync.got + '/' + sync.max
       + '，中间不同步积分）');
     return { ok: true, clicked: clickRes.clicked, skippedCards: clickRes.skipped,
-             searches, level, preset: true };
+             searches, level, preset: true,
+             states: clickRes.states || null,
+             manualLinks: (clickRes.manualLinks || []).slice(0, 20) };
   } finally {
     autoCompleteActive = false;
   }
@@ -6329,18 +6373,17 @@ function desktopSame(a, b) {
 /** 唯一同步入口：一次抓取、一次原子写回，刷新期间 UI 完全不动。 */
 async function desktopSyncRewards(opts) {
   const o = opts || {};
-  const pages = o.pages || await fetchBothPages(o.fresh ? { fresh: true } : undefined);
+  /* D06=D：刷新 / 开始 / 收尾强制新数据；后台展示允许短期缓存并显示采集时间。 */
+  const policy = HSA_CORE.syncCachePolicy(o.reason);
+  const fresh = !!o.fresh || policy.fresh;
+  const pages = o.pages || await fetchBothPages(fresh
+    ? { fresh: true, reason: o.reason } : { reason: o.reason });
   const prev = await load(['pointsSummary', 'todayTasks', 'todaySearch', 'loginStatus', 'taskClickIndex']);
   const prevPs = prev.pointsSummary || {};
   const prevTt = prev.todayTasks || {};
   const prevSearch = prev.todaySearch || null;
   const prevLogin = prev.loginStatus || null;
 
-  /* v1.3.1：可见面板快照与两页 HTML 解析结果合并。
-     官方解析优先（mergeTrio 的 a 参数），快照补纯中文 DOM / 自定义卡片的缺；
-     任务卡同理按「名称|说明|积分|分组」去重补齐，日常任务不再丢失。
-     v1.3.2：两页抓取失败（运行期门控 / 导航抖动）也继续用快照合并，
-     不再因为 !pages.reachable 直接早退把已解析的 20,192 丢掉。 */
   const snaps = await desktopVisibleSnapshots();
   const official = mergeTrio(
     pages.dash.ok ? parsePointsTrio(pages.dash.html) : null,
@@ -6349,41 +6392,43 @@ async function desktopSyncRewards(opts) {
   const trio = mergeTrio(official, desktopSnapshotTrio(snaps));
   const snapSignedOut = snaps.length > 0 && snaps.every(s => !!s.signedOut);
   const snapSignedIn = snaps.some(s => !!s.signedIn && !s.signedOut);
-  /* v1.3.3：两页 HTML 与可见快照都明确是登录页、本次又没解析出官方可用积分时，
-     一个业务键都不写 —— UI 完全保持不动（不把 20,192 清成 null）。
-     真登出由主进程 Cookie 删除信号 markSignedOut() 单独处理。 */
-  const loginPageOnly = !!pages.signedOut && snapSignedOut && !snapSignedIn &&
-                        !Number.isFinite(trio.available);
-  if (loginPageOnly) {
+  const snapMeta = {
+    at: Math.max(0, ...snaps.map(s => Number(s.at) || 0)),
+    url: snaps.length ? String(snaps[0].url || '') : '',
+    signedOut: snapSignedOut
+  };
+  /* D04=B：三态登录判断，以可解析余额 / 可见面板 / 明确登出信号为主，
+     不把临时加载页文案当成确凿登出。 */
+  const evidence = {
+    available: Number.isFinite(trio.available) ? trio.available : null,
+    panelSignedIn: snapSignedIn,
+    panelSignedOut: snaps.length ? snapSignedOut : undefined,
+    pageTextSignedOut: !!pages.signedOut || snapSignedOut,
+    explicitLogout: !!pages.signedOut && snapSignedOut && !snapSignedIn,
+    hasFreshData: !!pages.reachable
+  };
+  /* D05=D：确认登出 → 隐藏当前可用余额，历史 / 今日值标「上次记录」，不删记录。 */
+  if (evidence.explicitLogout && !Number.isFinite(trio.available)) {
+    const out = HSA_CORE.logoutPresentation(prevPs);
+    await store({ pointsSummary: out.pointsSummary, loginStatus: 'out',
+                  loginCheckedAt: Date.now() });
     return {
       ok: false, pages: pages, signedOut: true, reachable: !!pages.reachable,
-      reason: 'signedOut', pointsSummary: prevPs, todayTasks: prevTt,
-      todaySearch: prevSearch, loginStatus: prevLogin, taskClickIndex: prev.taskClickIndex || null, items: [], changed: []
+      reason: 'signedOut', pointsSummary: out.pointsSummary, todayTasks: prevTt,
+      todaySearch: prevSearch, loginStatus: 'out', taskClickIndex: prev.taskClickIndex || null,
+      items: [], changed: ['pointsSummary', 'loginStatus']
     };
   }
-  /* v1.3.3：值缺失时一律沿用上一次有效值，绝不把 UI 先清空成 —。
-     登录页场景已由上面 loginPageOnly 早退（一个业务键都不写），这里不再
-     保留任何把 available 置 null 的例外：真登出只由主进程 Cookie 删除信号
-     markSignedOut() 处理，页面 DOM 猜测不参与登录态判定。 */
   const keep = (v, key) => Number.isFinite(v) ? v
     : (Number.isFinite(prevPs[key]) ? prevPs[key] : null);
 
   let cards = desktopTaskItems(pages);
-  const seenCards = new Set(cards.map(i =>
-    [i.name, i.description, i.points, i.section].join('|')));
-  /* 名称归一化集合：官方两页 HTML 已经解析出的卡，快照不得再补一份
-     （可能带着几分钟前的「未完成」状态，把已完成覆盖回去）。 */
-  const seenNames = new Set(cards.map(i =>
-    String(i.name || '').replace(/\s+/g, '').toLowerCase()));
-  for (const it of desktopSnapshotItems(snaps)) {
-    const nk = String(it.name || '').replace(/\s+/g, '').toLowerCase();
-    if (nk && seenNames.has(nk)) continue;
-    const key = [it.name, it.description, it.points, it.section].join('|');
-    if (seenCards.has(key)) continue;
-    seenCards.add(key);
-    if (nk) seenNames.add(nk);
-    cards.push(it);
-  }
+  /* D02=D：新鲜页面快照补缺，官网本次已确认的卡片状态优先，旧快照不覆盖。 */
+  const merged = HSA_CORE.mergeSnapshotCards(cards, desktopSnapshotItems(snaps), {
+    now: Date.now(), snapshotAt: snapMeta.at, snapshotUrl: snapMeta.url,
+    snapshotSignedOut: snapSignedOut
+  });
+  cards = merged.cards;
   let approx = false;
   if (!cards.length && pages.earn.ok) cards = rowsFromProgressTable(pages.earn.html);
   if (!cards.length) { cards = await fallbackTaskItems(); approx = true; }
@@ -6391,31 +6436,35 @@ async function desktopSyncRewards(opts) {
   const counter = pages.earn.ok ? parseSearchCounter(pages.earn.html) : null;
   const items = [desktopSearchItem(counter, prevSearch),
                  ...cards.filter(i => i.section !== 'search')];
-  /* 登录状态直接绑定可用积分：能解析出 available 就是已登录。
-     outerHTML 的 JS bundle 登录文案、/earn 单页登录页都不再参与判定。 */
+  /* D03=B：两页失败但当前账号的新鲜可见页面有数据时允许降级同步，标注「页面数据」。 */
+  const degrade = HSA_CORE.degradedSync(snapMeta, {
+    pagesReachable: !!pages.reachable, now: Date.now()
+  });
   const pointsSummary = {
     available: keep(trio.available, 'available'),
     today: keep(trio.today, 'today'),
     claimable: keep(trio.claimable, 'claimable'),
     signedOut: false,
     updatedAt: Date.now(),
+    collectedAt: Math.max(Number(pages.dash.collectedAt) || 0,
+      Number(pages.earn.collectedAt) || 0, snapMeta.at) || Date.now(),
+    dataSourceLabel: degrade.label,
+    dataSourceLabelEn: degrade.labelEn,
+    degraded: !!degrade.degraded,
     sources: [pages.dash.ok && '/dashboard', pages.earn.ok && '/earn',
-      snaps.length && 'visible-panel'].filter(Boolean)
+      snaps.length && 'visible-panel', degrade.degraded && 'fresh-page-snapshot'].filter(Boolean)
   };
   const signedIn = Number.isFinite(pointsSummary.available);
-  /* fallbackTaskItems() 生成的估算卡不算「有真实任务」，
-     不能把确凿的登录页信号挡回去（否则真登录页仍判 in）。 */
   const hasRealTasks = cards.length > 0 && !approx;
-  const signedOut = !signedIn && !snapSignedIn &&
-    (snapSignedOut || (!!pages.signedOut && !hasRealTasks));
-  const loginStatus = signedIn ? 'in' : (signedOut ? 'out' : (prevLogin || 'unknown'));
+  const loginStatus = HSA_CORE.loginStateFromEvidence(Object.assign({}, evidence, {
+    available: signedIn ? pointsSummary.available : evidence.available,
+    panelSignedIn: signedIn || snapSignedIn,
+    hasFreshData: degrade.ok
+  }));
   const todayTasks = summarizeTaskItems(items, { approx: approx, signedOut: false });
   const todaySearch = counter || prevSearch || null;
-  /* v1.3.7：直接用本次同步的两页 HTML 建立点击索引；点击时不再重新扫描整页。 */
   const taskClickIndex = buildTaskClickIndex(pages, cards);
 
-  /* 只写变化的值：相同积分/任务/登录态/定位索引一律不写，storage.onChanged 不触发重绘。
-     所有变化同批写入，一次原子 store → UI 最多重绘一次。 */
   const candidate = {
     pointsSummary: pointsSummary, todayTasks: todayTasks,
     todaySearch: todaySearch, loginStatus: loginStatus,
@@ -6428,17 +6477,16 @@ async function desktopSyncRewards(opts) {
     if (k === 'taskClickIndex' ? (!before || before.updatedAt !== v.updatedAt) : !desktopSame(before, v)) patch[k] = v;
   }
   if (Object.keys(patch).length) await store(patch);
-  /* 本次完全没读到官网数据（两页抓取失败且无可见快照）时不算同步成功：
-     不能凭上一次的缓存积分去跑一轮任务，必须零动作返回。 */
-  const readData = !!pages.reachable || snaps.length > 0;
-  const outOnly = signedOut && !signedIn && !hasRealTasks;
-  /* 两页 HTML 都明确是登录页 → 零动作返回，但一个业务键都不写（UI 保持不动） */
+  const readData = degrade.ok;
+  const outOnly = loginStatus === 'out' && !signedIn && !hasRealTasks;
   const ok = readData && !outOnly && !pages.signedOut;
   return {
-    ok: ok, pages: pages, signedOut: signedOut,
+    ok: ok, pages: pages, signedOut: loginStatus === 'out',
     reachable: readData,
+    degraded: !!degrade.degraded, dataSourceLabel: degrade.label,
+    snapshotApplied: !!merged.snapshotApplied, snapshotAdded: merged.added,
     reason: ok ? (o.reason || 'manual')
-      : (pages.signedOut || signedOut ? 'signedOut' : 'unreachable'),
+      : (pages.signedOut || loginStatus === 'out' ? 'signedOut' : 'unreachable'),
     pointsSummary: pointsSummary,
     todayTasks: todayTasks, todaySearch: todaySearch,
     loginStatus: loginStatus, taskClickIndex: taskClickIndex,
@@ -6468,13 +6516,15 @@ refreshToday = async function () {
 /* ==========================================================================
  * 桌面版任务点击：专用任务侧栏保持扫描页不变，点击弹出的任务页落到结果视图，
  * 跨 /dashboard 与 /earn 两页、按稳定 key 去重逐张点击。
- * 统一走主进程 CDP 真鼠标输入；CDP 不可用就明确记失败，不回退 DOM 合成事件。
+ * T01=D：按宿主能力优先 CDP 真鼠标，不可用时降级页面真实交互，并逐卡记录触发方式；
+ * T06=D：已发出点击 / 已打开页面 / 官网已确认完成 三态独立统计，互不冒充。
  * ======================================================================== */
 completePendingTaskCards = async function (level, token) {
   const stat = {
     clicked: 0, skipped: 0, real: false, realMouse: 0,
     openedTabs: 0, pages: [], signedOut: false,
-    fallbackOpened: 0, domClick: 0, degraded: 0, clickFailed: 0
+    fallbackOpened: 0, domClick: 0, degraded: 0, clickFailed: 0,
+    states: HSA_CORE.newClickResult()
   };
   const panel = (typeof chrome !== 'undefined' && chrome.taskPanel &&
                  typeof chrome.taskPanel.clickAll === 'function') ? chrome.taskPanel
@@ -6540,12 +6590,32 @@ completePendingTaskCards = async function (level, token) {
   }
   /* 只有主进程实际完成 CDP mousePressed + mouseReleased 才计入 realMouse。 */
   stat.realMouse = Number(r.clicked) || stat.clicked;
+  /* T06=D：主进程已按三态返回结果；这里只做汇总，不把「打开页面」计成完成。 */
+  const st = r.states || {};
+  stat.states = HSA_CORE.newClickResult();
+  stat.states.clickSent = Number(st.clickSent != null ? st.clickSent : r.clicked) || stat.clicked;
+  stat.states.pageOpened = Number(st.pageOpened != null ? st.pageOpened : r.opened) || 0;
+  stat.states.officialConfirmed = Number(st.officialConfirmed) || 0;
+  stat.states.unconfirmed = Number(st.unconfirmed != null ? st.unconfirmed : r.clickUnconfirmed) || 0;
+  stat.states.failed = Number(st.failed != null ? st.failed : r.failed) || 0;
+  stat.states.manualLinks = Array.isArray(r.manualLinks) ? r.manualLinks.slice(0, 20) : [];
+  stat.states.triggerMethods = Array.isArray(r.triggerMethods) ? r.triggerMethods.slice(0, 64) : [];
+  stat.clickSent = stat.states.clickSent;
+  stat.pageOpened = stat.states.pageOpened;
+  stat.officialConfirmed = stat.states.officialConfirmed;
+  stat.unconfirmed = stat.states.unconfirmed;
+  stat.manualLinks = stat.states.manualLinks;
+  stat.triggerMethods = stat.states.triggerMethods;
   stat.clickUnconfirmed = Number(r.clickUnconfirmed) || 0;
   stat.real = stat.realMouse > 0;
   stat.skipped += Number(r.skipped) || 0;
   stat.openedTabs = Number(r.opened) || 0;
   stat.domClick = 0;
-  stat.degraded = 0;
+  stat.degraded = Number(st.pageInteractionClicks) || 0;
+  console.info('[AutoTask] 结果三态：已发出点击 ' + stat.states.clickSent
+    + ' / 已打开页面 ' + stat.states.pageOpened
+    + ' / 官网确认 ' + stat.states.officialConfirmed
+    + ' / 未确认 ' + stat.states.unconfirmed);
   return stat;
 };
 

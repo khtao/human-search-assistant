@@ -1,0 +1,50 @@
+/* ============================================================================
+ * Human Search Assistant · 共享 UI 样式（单一真源）
+ * 两端 popup.html 都在 popup.css 之后引入本文件；本文件覆盖统一后的表现：
+ *   U02=A 无蓝色渐变底板 / 阴影
+ *   U07=B 积分日历颜色图例
+ *   U08=D 短提示单行、长提示换行且全文可读
+ * 禁止直接修改 edge-extension/shared 与 desktop-app/shared 下的副本。
+ * ========================================================================== */
+
+/* U02 · 图标自身已有设计，不再叠加蓝色底板和阴影 */
+.brand-icon {
+  width: 32px; height: 32px;
+  border-radius: 9px;
+  background: transparent;
+  box-shadow: none;
+  display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0;
+}
+.brand-img { width: 32px; height: 32px; display: block; border-radius: 9px; }
+
+/* U07 · 首次打开日历即可分辨颜色含义 */
+.cal-legend {
+  display: flex; justify-content: center; align-items: center; gap: 17px;
+  margin: 8px 0 2px; font-size: 10px; color: var(--fg-tertiary, #8a94a6);
+}
+.cal-legend > span { display: inline-flex; align-items: center; gap: 5px; }
+.cal-legend-dot { width: 9px; height: 9px; border-radius: 3px; display: inline-block; }
+.cal-legend-dot.earned { background: var(--cal-has-fg, #2f7de1); }
+.cal-legend-dot.empty { background: var(--cal-gray-fg, #aab2c0); opacity: .55; }
+
+/* U08 · 长提示自动换行；最大宽度 + 可视高度 + 可滚动，保证全文可读 */
+.hover-tip {
+  position: fixed; z-index: 2147483647;
+  max-width: min(320px, 92vw); width: max-content;
+  max-height: min(40vh, 240px); overflow-y: auto;
+  padding: 8px 10px; border-radius: 10px;
+  background: var(--surface-raised, #fff); color: var(--fg, #1f2937);
+  border: 1px solid var(--border, #e5e7eb);
+  box-shadow: 0 8px 24px rgba(16, 24, 40, .14);
+  font-size: 11px; font-weight: 500; line-height: 1.55;
+  letter-spacing: 0; text-transform: none;
+  white-space: normal; overflow-wrap: anywhere;
+  pointer-events: none; animation: tipIn .14s ease-out;
+}
+/* 短文案保持单行，不因换行规则变臃肿 */
+.hover-tip[data-short="1"] {
+  white-space: nowrap; max-height: none; overflow: visible;
+}
+.hover-tip[hidden] { display: none; }
+@keyframes tipIn { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }

@@ -12,7 +12,7 @@
     "doctor": "node scripts/check-electron.js --verbose",
     "setup": "node scripts/npm-mirror.js install && npm run doctor && npm start",
     "ci": "node scripts/npm-mirror.js ci",
-    "verify": "node scripts/verify-packaged-lib.js && node scripts/verify-memory.js && node scripts/verify-sidebar-task-click.js && node scripts/verify-main.js && node scripts/verify-sync.js && node scripts/verify-install.js && node scripts/verify-deps.js && node scripts/verify-launch.js",
+    "verify": "node ../scripts/sync-shared.js --check && node ../scripts/verify-decisions.js && node scripts/verify-packaged-lib.js && node scripts/verify-memory.js && node scripts/verify-sidebar-task-click.js && node scripts/verify-main.js && node scripts/verify-sync.js && node scripts/verify-install.js && node scripts/verify-deps.js && node scripts/verify-launch.js",
     "verify:desktop": "node scripts/verify-packaged-lib.js && node scripts/verify-memory.js && node scripts/verify-sidebar-task-click.js && node scripts/verify-main.js && node scripts/verify-sync.js && node scripts/verify-install.js && node scripts/verify-deps.js && node scripts/verify-launch.js",
     "verify:memory": "node scripts/verify-memory.js",
     "verify:sidebar": "node scripts/verify-sidebar-task-click.js",
@@ -36,7 +36,10 @@
     "dist:appimage": "electron-builder --config electron-builder.yml --linux AppImage --x64",
     "dist:win": "node scripts/build-win-safe.js",
     "pack:linux": "electron-builder --config electron-builder.yml --linux --x64 --dir",
-    "pack:win": "node scripts/build-win-safe.js --dir"
+    "pack:win": "node scripts/build-win-safe.js --dir",
+    "sync:shared": "node ../scripts/sync-shared.js",
+    "verify:shared": "node ../scripts/sync-shared.js --check && node ../scripts/verify-decisions.js",
+    "test:shared": "node --test ../tests/shared.test.js"
   },
   "devDependencies": {
     "electron": "45.2.3",

@@ -25,7 +25,9 @@
   </script>
   <title data-i18n="app.title">拟人搜索助手</title>
   <link rel="stylesheet" href="popup.css">
+  <link rel="stylesheet" href="../shared/hsa-shared.css">
   <script src="theme.js"></script>
+  <script src="../shared/hsa-core.js"></script>
 </head>
 <body>
   <div class="app" id="main">
@@ -156,7 +158,7 @@
           <span class="set-label" data-i18n="settings.language">语言 / Language</span>
           <div class="segmented lang-segmented" id="set-lang" role="radiogroup" aria-label="Language">
             <button type="button" role="radio" data-value="zh" data-i18n="lang.zh" aria-checked="false">中文</button>
-            <button type="button" role="radio" data-value="en" data-i18n="lang.en" aria-checked="false">英文</button>
+            <button type="button" role="radio" data-value="en" data-i18n="lang.en" aria-checked="false">English</button>
             <button type="button" role="radio" data-value="system" data-i18n="lang.system" aria-checked="true">跟随系统</button>
           </div>
         </div>
@@ -175,32 +177,6 @@
       </div>
 
 
-      <!-- v1.3.8 · 积分日历：支付宝收益日历风格，格子只显示积分，说明走悬停提示 -->
-      <div class="set-group" id="calendar-group" style="--g:1">
-        <h3 class="set-title" data-i18n="calendar.title">积分赚取日历</h3>
-        <div class="cal-head">
-          <button id="cal-prev" class="cal-nav" type="button" aria-label="上一周期" title="上一周期"
-                  data-i18n-aria="calendar.prev" data-i18n-title="calendar.prev" data-tip-role="hint">‹</button>
-          <span id="cal-range" class="cal-range">—</span>
-          <button id="cal-next" class="cal-nav" type="button" aria-label="下一周期" title="下一周期"
-                  data-i18n-aria="calendar.next" data-i18n-title="calendar.next" data-tip-role="hint">›</button>
-        </div>
-        <div class="cal-hero">
-          <div class="cal-hero-value"><span id="cal-total" class="cal-total">—</span><span class="cal-total-unit" data-i18n="calendar.unit">分</span></div>
-          <span id="cal-hero-label" class="cal-hero-label">本月累计积分</span>
-        </div>
-        <div class="segmented cal-segmented" id="cal-mode" role="radiogroup" aria-label="Calendar range">
-          <button type="button" role="radio" data-value="day" data-i18n="calendar.day" aria-checked="true">日</button>
-          <button type="button" role="radio" data-value="week" data-i18n="calendar.week" aria-checked="false">周</button>
-          <button type="button" role="radio" data-value="month" data-i18n="calendar.month" aria-checked="false">月</button>
-        </div>
-        <div id="cal-weekdays" class="cal-weekdays" aria-hidden="true"></div>
-        <div id="cal-grid" class="cal-grid" role="grid" aria-label="积分日历"
-             data-i18n-title="calendar.hoverTip" data-tip-role="hint"
-             title="日视图显示每日积分，周/月视图显示汇总 · 淡蓝为有积分、灰色为无积分、未来留空。悬停查看详情"></div>
-        <div class="cal-legend" aria-hidden="true"><span><i class="cal-legend-dot earned"></i><span data-i18n="calendar.legendHas">已获得</span></span><span><i class="cal-legend-dot empty"></i><span data-i18n="calendar.legendNone">无积分</span></span></div>
-        <p id="cal-summary" class="cal-summary"></p>
-      </div>
       <!-- 原 Daily reminders → 自动完成任务设置 -->
       <div class="set-group" id="auto-group" style="--g:3">
         <h3 class="set-title" data-i18n="auto.title">自动完成任务</h3>
@@ -216,6 +192,7 @@
           <span class="set-label"><span data-i18n="auto.enable">定时自动运行</span></span>
           <input type="checkbox" id="set-auto" class="switch">
         </label>
+        <p id="auto-disabled-hint" class="auto-disabled-hint" hidden></p>
         <div id="auto-opts" class="auto-opts">
           <div class="set-row column" data-i18n-title="auto.countHint" data-tip-role="hint" title="按今日 Bing 搜索剩余分数自动决定，不超过此值">
             <span class="set-label"><span data-i18n="auto.count">搜索次数上限</span></span>
@@ -248,6 +225,32 @@
       </div>
 
 
+      <!-- v1.3.8 · 积分日历：支付宝收益日历风格，格子只显示积分，说明走悬停提示 -->
+      <div class="set-group" id="calendar-group" style="--g:1">
+        <h3 class="set-title" data-i18n="calendar.title">积分赚取日历</h3>
+        <div class="cal-head">
+          <button id="cal-prev" class="cal-nav" type="button" aria-label="上一周期" title="上一周期"
+                  data-i18n-aria="calendar.prev" data-i18n-title="calendar.prev" data-tip-role="hint">‹</button>
+          <span id="cal-range" class="cal-range">—</span>
+          <button id="cal-next" class="cal-nav" type="button" aria-label="下一周期" title="下一周期"
+                  data-i18n-aria="calendar.next" data-i18n-title="calendar.next" data-tip-role="hint">›</button>
+        </div>
+        <div class="cal-hero">
+          <div class="cal-hero-value"><span id="cal-total" class="cal-total">—</span><span class="cal-total-unit" data-i18n="calendar.unit">分</span></div>
+          <span id="cal-hero-label" class="cal-hero-label">本月累计积分</span>
+        </div>
+        <div class="segmented cal-segmented" id="cal-mode" role="radiogroup" aria-label="Calendar range">
+          <button type="button" role="radio" data-value="day" data-i18n="calendar.day" aria-checked="true">日</button>
+          <button type="button" role="radio" data-value="week" data-i18n="calendar.week" aria-checked="false">周</button>
+          <button type="button" role="radio" data-value="month" data-i18n="calendar.month" aria-checked="false">月</button>
+        </div>
+        <div id="cal-weekdays" class="cal-weekdays" aria-hidden="true"></div>
+        <div id="cal-grid" class="cal-grid" role="grid" aria-label="积分日历"
+             data-i18n-title="calendar.hoverTip" data-tip-role="hint"
+             title="日视图显示每日积分，周/月视图显示汇总 · 淡蓝为有积分、灰色为无积分、未来留空。悬停查看详情"></div>
+        <div class="cal-legend" aria-hidden="true"><span><i class="cal-legend-dot earned"></i><span data-i18n="calendar.legendHas">已获得</span></span><span><i class="cal-legend-dot empty"></i><span data-i18n="calendar.legendNone">无积分</span></span></div>
+        <p id="cal-summary" class="cal-summary"></p>
+      </div>
       <!-- v1.3.8 · 桌面版专有功能：仅桌面版显示，浏览器插件不含此组 -->
       <div class="set-group" id="desktop-group" style="--g:4">
         <h3 class="set-title" data-i18n="desktop.title">桌面版</h3>
@@ -266,39 +269,16 @@
   </section>
 
   <script src="popup.js"></script>
+  <script src="../shared/hsa-recovery.js"></script>
   <script>
-  /* v1.0.4 独立兜底：这一段不依赖 popup.js 的 DOMContentLoaded 链路。
-     若 popup.js 因任何原因初始化失败 / 定时器被节流，主进程 1 秒 IPC 心跳
-     仍会驱动这里把「正在启动…」「正在读取今日任务…」强制复位。 */
+  /* S02=D：启动超时检查一次 + 任务状态变化复检 + 确定卡住才限时重试；
+     不再依赖主进程每秒 onTick 心跳做常驻轮询，降低空闲内存与定时器占用。 */
   (function () {
-    if (!window.chrome || !chrome.onTick || !chrome.onTick.addListener) return;
-    var boot = Date.now();
-    var fixed = false;
-    var zh = (document.documentElement.lang || '').indexOf('zh') === 0;
-    chrome.onTick.addListener(function () {
-      if (Date.now() - boot < 3500) return;
-      try {
-        var b = document.getElementById('btn-action');
-        if (!b) return;
-        chrome.storage.local.get(['running', 'todayTasks']).then(function (s) {
-          if (s && s.running) { fixed = false; return; }
-          if (!fixed && b.dataset.mode === 'stop') {
-            b.dataset.mode = 'start';
-            b.disabled = false;
-            b.classList.remove('is-stop');
-            var l = document.getElementById('btn-action-label');
-            if (l) l.textContent = zh ? '自动完成任务' : 'Auto-complete Tasks';
-            var st = document.getElementById('status');
-            if (st) st.className = 'status stopped';
-            fixed = true;
-          }
-          var e = document.getElementById('today-tasks-empty');
-          if (e && /正在读取|Loading/.test(e.textContent) && !(s && s.todayTasks && s.todayTasks.updatedAt)) {
-            e.textContent = zh ? '暂时读不到任务数据，点「刷新」重试' : 'Could not load tasks. Tap Refresh to retry.';
-          }
-        }).catch(function () {});
-      } catch (err) {}
-    });
+    try {
+      if (globalThis.HSA_RECOVERY && typeof globalThis.HSA_RECOVERY.install === 'function') {
+        globalThis.HSA_RECOVERY.install();
+      }
+    } catch (err) {}
   })();
   </script>
 </body>

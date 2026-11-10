@@ -1,0 +1,32 @@
+{
+  "source": "human-search-assistant_插件版与桌面版差异选择题.md",
+  "sourceCommit": "415a8fa6b1efe5bb84dafff8094bced97888f86f",
+  "decidedAt": "2026-11-10",
+  "legend": {
+    "A": "采用插件版表现",
+    "B": "采用桌面版表现",
+    "C": "保留当前差异",
+    "D": "采用推荐方法"
+  },
+  "choices": {
+    "T01": "D", "T02": "A", "T03": "B", "T04": "A", "T05": "D", "T06": "D",
+    "T07": "D", "T08": "A", "T09": "D",
+    "D01": "A", "D02": "D", "D03": "B", "D04": "B", "D05": "D", "D06": "D",
+    "S01": "B", "S02": "D",
+    "U01": "C", "U02": "A", "U03": "B", "U04": "A", "U05": "A", "U06": "B",
+    "U07": "B", "U08": "D", "U09": "A", "U10": "B"
+  },
+  "retainedDifferences": [
+    {
+      "id": "U01",
+      "choice": "C",
+      "reason": "按决策文档保留：插件徽标仅显示状态，桌面徽标保留单击/双击操作；不强行统一宿主交互。"
+    }
+  ],
+  "sharedRuntime": [
+    "hsa-core.js",
+    "hsa-recovery.js",
+    "hsa-shared.css",
+    "decisions.json"
+  ]
+}
