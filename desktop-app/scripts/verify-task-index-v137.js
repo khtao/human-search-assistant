@@ -87,27 +87,27 @@ for (const [label, source] of [['浏览器插件', EXT_BG], ['桌面版', DESK_B
   ck(source.includes("k === 'taskClickIndex' ? (!before || before.updatedAt !== v.updatedAt)"), label + '每次成功同步都会刷新索引时间戳');
 }
 
-// Browser extension consumes the index; no full-card scan in the new override.
+// Browser extension consumes the index and supplements it with DOM inspection.
 const extOverride = block(EXT_BG, 'const humanClickTasksV136Original = humanClickTasks;', '\nchrome.tabs.onRemoved.addListener');
 ck(extOverride.includes("load(['taskClickIndex'])"), '浏览器插件点击流程读取同步索引');
-ck(extOverride.includes("'human.aimIndexed'"), '浏览器插件按索引字段快速定位目标卡片');
-ck(extOverride.includes("['human.scroll', {}]"), '浏览器插件只在索引未命中时进行有限懒加载滚动');
-ck(!extOverride.includes('collectFlyoutCardsFull') && !extOverride.includes("'human.scan'"), '浏览器插件点击流程不再重新全页扫描卡片');
+ck(EXT_BG.includes("const act = live ? 'human.aim' : 'human.aimIndexed'"), '浏览器插件根据索引与实时 DOM 使用对应定位方式');
+ck(EXT_BG.includes("['human.scrollTo',{y}]") && EXT_BG.includes("['human.scrollInner',{idx:sc.idx,y}]"), '浏览器插件找不到目标时从头分段滚动外层及内层列表');
+ck(extOverride.includes('collectFlyoutCardsFull') && extOverride.includes('hsaMergeLiveTaskCards'), '浏览器插件合并同步索引及真实 DOM 动态卡片');
 ck(extOverride.includes('cdpClickAt(tabId, aim.x, aim.y)'), '浏览器插件最终仍使用 CDP 鼠标输入点击');
-ck(extOverride.includes('task-click-index-stale'), '浏览器插件拒绝使用过期索引');
+ck(extOverride.includes('indexFresh') && extOverride.includes('index.items'), '浏览器插件忽略过期索引并通过实时 DOM 校验任务卡');
 
 // Desktop passes the stored index through preload IPC and resolves it in the main process.
 ck(PRELOAD.includes("clickAll: (index, options) => invoke('chrome:task:clickAll', index, options || {})"), '桌面 preload 将任务定位索引传入主进程');
 ck(EXT_POPUP.includes("Object.keys(changes).every(key => key === 'taskClickIndex')"), '浏览器插件忽略仅索引变化，避免无意义 UI 重绘');
 ck(DESK_POPUP.includes("Object.keys(changes).every(key => key === 'taskClickIndex')"), '桌面弹窗忽略仅索引变化，避免无意义 UI 重绘');
 ck(MAIN.includes("if (k === 'taskClickIndex') continue"), 'Electron 主进程不把定位索引变化广播成 UI 数据事件');
-ck(DESK_BG.includes('panel.clickAll(clickIndex, { skipCompletedCards: skipCompletedCards })'), '桌面后台将同步索引交给任务侧栏');
+ck(DESK_BG.includes('panel.clickAll(clickIndex, { skipCompletedCards: skipCompletedCards, cardClickIntervalSec: clickSettings.cardClickIntervalSec })'), '桌面后台将同步索引交给任务侧栏');
 const mainAim = block(MAIN, 'function taskAimIndexedSrc(entry) {', '\n/* CDP 原生输入事件');
 ck(mainAim.includes('loc.dataBiId') && mainAim.includes('loc.ariaLabel') && mainAim.includes('expectedHref'), '桌面版优先按 href、data-bi-id、aria-label 定位');
 ck(mainAim.includes('elementFromPoint') && mainAim.includes('getBoundingClientRect'), '桌面版定位后重新计算实时坐标并检查遮挡');
 const mainHandler = block(MAIN, "ipcMain.handle('chrome:task:clickAll', async (_event, clickIndex, options) => {", "\nipcMain.handle('chrome:panel:hide'");
 ck(mainHandler.includes('clickIndex.schemaVersion === 1') && mainHandler.includes('index.items'), '桌面主进程接收并校验索引版本');
-ck(mainHandler.includes('taskAimIndexedSrc(entry)') && !mainHandler.includes('TASK_SCAN_SRC'), '桌面点击不再先执行全页任务扫描');
+ck(mainHandler.includes('locateIndexedCardAcrossScroll') && mainHandler.includes('discoverLiveScoredCards'), '桌面版逐段定位并补充实时 DOM 卡片');
 ck(mainHandler.includes('dispatchTaskMouseClick(dbg, aim.x, aim.y)'), '桌面版通过 CDP 鼠标事件完成点击');
 ck(mainHandler.includes('taskResultLoadPromise') && mainHandler.includes('loadTaskPage(tv, pageDef.url)'), '桌面版确认任务页响应后恢复原任务页');
 

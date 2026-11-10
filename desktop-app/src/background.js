@@ -37,22 +37,22 @@ let desktopGuardBlocks = 0;
  *  · dashboard 用 <a target="_blank"> + 文本 "+10"；earn 用徽章 <p>5</p>
  *  · 统一改为以 a[href] 为入口，双通道取积分，定位/点击都落在 <a> 本身
  * ==========================================================================
- * v1.9 · 双页面独立点击 / 同名卡片可区分 / 页面就绪等待 / 统一 5s 调度
+ * v1.9 · 双页面独立点击 / 同名卡片可区分 / 页面就绪等待 / 可配置间隔（默认 10s）
  *  · dashboard 与 earn 两页都存在可点击任务，逐页独立扫描、各自去重，
  *    一页点过不会让另一页的同名任务被跳过
  *  · 同名同分卡片（如「你是否知道答案？」×2）用页面内序号 idx 定位，逐张点击
  *  · 导航后等页面真正加载完成并识别登录页，避免扫到上一页 / 空 DOM 就提前退出
- *  · 相邻两次点击统一按「点击时刻 + 5s」调度，跨页、跨轮次都成立
+ *  · 相邻两次点击按配置的点击时刻调度（默认 10s），跨页、跨轮次都成立
  *  · 任务卡片：每日活动(每日任务) → 日常任务；点击弹出的任务页保留不关闭
  *  · 搜索标签页运行期间保持焦点、结束关闭（后台节流会让搜索暂停）
  * ======================================================================== */
-const TASK_CLICK_INTERVAL_MS = 350;   // 索引定位后留出短暂渲染间隔
+const TASK_CLICK_INTERVAL_MS = 10000;   // 索引定位后留出短暂渲染间隔
 const KEEP_TASK_TABS = true;            // 任务阶段打开的标签页一律不关闭
 const KEEP_SEARCH_TAB_FOCUSED = true;   // 每轮搜索前把搜索页拉回焦点，防后台节流暂停
 const FOCUS_WINDOW_TOO = true;          // 同时把浏览器窗口置为系统前台
 const RESTORE_FOCUS_ON_FINISH = true;   // 搜索结束后把焦点还给用户原来的标签页
 const TASK_TAB_KEYS = new Set(['rewardsTabId', 'taskClickTabId', 'sidebarTabId', 'taskListTabId', 'humanTabId']);
-let lastTaskClickAt = 0;                // 上一次「点击时刻」，用于统一 5s 间隔调度
+let lastTaskClickAt = 0;                // 上一次「点击时刻」，用于可配置间隔调度
 
 /* ==========================================================================
  * v2.1 · 从 Bing 搜索/首页右侧的 Microsoft Rewards 侧栏点任务卡
@@ -1712,6 +1712,7 @@ const DEFAULT_SETTINGS = {
   reminderTo: '23:00',
   reminderSeconds: 5,
   reduceMotion: false,
+  cardClickIntervalSec: 10,
   skipCompletedCards: false
 };
 
@@ -4869,8 +4870,13 @@ async function waitForTaskPageReady(tabId, url, token) {
 
 /** 统一调度：保证任意相邻两次「点击时刻」相隔 >= 5s，跨页、跨轮次都成立。 */
 async function taskClickSpacing(token) {
-  const left = TASK_CLICK_INTERVAL_MS - (Date.now() - lastTaskClickAt);
-  if (left > 0) await nap(left, token);
+  const cfg = await getSettings();
+  const seconds = Number(cfg.cardClickIntervalSec);
+  const interval = Number.isFinite(seconds)
+    ? Math.round(Math.min(60, Math.max(1, seconds)) * 1000) : TASK_CLICK_INTERVAL_MS;
+  const left = interval - (Date.now() - lastTaskClickAt);
+  if (lastTaskClickAt && left > 0) await nap(left, token);
+  if (token != null && !isCurrent(token)) throw STOP;
   lastTaskClickAt = Date.now();
 }
 
@@ -5982,7 +5988,7 @@ async function presetSyncFinish(st, searches, start) {
 /**
  * 一次完整的自动完成任务（v1.3.0 流程）：
  *   ① 开始时同步一次积分与任务列表，并按官方搜索配额预先锁定搜索次数
- *   ② 仍有待完成任务 → 先逐个点击未完成任务卡片（每日活动 → 日常任务，5s 间隔）
+ *   ② 仍有待完成任务 → 先逐个点击未完成任务卡片（每日活动 → 日常任务，5s 间隔)
  *   ③ 再按锁定次数跑拟人搜索；搜索中间不读积分、不刷任务列表
  *   ④ 结束后同步一次，把最终结果显示到界面
  * 定时触发与首页按钮都走这里；与正式运行互斥，点「停止」可中断。
@@ -6648,8 +6654,10 @@ completePendingTaskCards = async function (level, token) {
   let r = null;
   try {
     r = await Promise.race([
-      panel.clickAll(clickIndex, { skipCompletedCards: skipCompletedCards }),
-      sleep(180000).then(() => ({ ok: false, reason: 'timeout' }))
+      panel.clickAll(clickIndex, { skipCompletedCards: skipCompletedCards, cardClickIntervalSec: clickSettings.cardClickIntervalSec }),
+      sleep(Math.max(180000, (clickIndex.items.length + 10) *
+        Math.min(60, Math.max(1, Number(clickSettings.cardClickIntervalSec) || 10)) * 1000 + 120000))
+        .then(() => ({ ok: false, reason: 'timeout' }))
     ]);
   } catch (err) {
     stat.clickFailed = 1;

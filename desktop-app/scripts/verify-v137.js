@@ -118,7 +118,7 @@ const desktopClick = block(MAIN, "ipcMain.handle('chrome:task:clickAll'", "\nipc
 ck(desktopClick.includes('options && options.skipCompletedCards'), '桌面主进程读取 skipCompletedCards 点击选项');
 ck(desktopClick.includes('!skipCompletedCards || !x.completed'), '桌面点击筛选规则与插件版一致');
 ck(PRELOAD.includes("clickAll: (index, options) => invoke('chrome:task:clickAll', index, options || {})"), 'preload 将点击设置透传到主进程');
-ck(DESK_BG.includes('panel.clickAll(clickIndex, { skipCompletedCards: skipCompletedCards })'), '桌面后台向 CDP 点击器传入设置');
+ck(DESK_BG.includes('panel.clickAll(clickIndex, { skipCompletedCards: skipCompletedCards, cardClickIntervalSec: clickSettings.cardClickIntervalSec })'), '桌面后台向 CDP 点击器传入设置');
 const extClick = block(EXT_BG, 'const humanClickTasksV136Original = humanClickTasks;', '\nchrome.tabs.onRemoved.addListener');
 ck(extClick.includes('const includeDone = !cfg.skipCompletedCards'), '插件点击器按同一设置决定是否包含已完成卡片');
 

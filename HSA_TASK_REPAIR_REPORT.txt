@@ -1,0 +1,13 @@
+Repair applied to: /mnt/data/hsa_build_staging/human-search-assistant-main
+Backups: /mnt/data/hsa_build_staging/human-search-assistant-main/.hsa-task-repair-backup-2026-11-09T16-45-15-388Z
+- Extension: prefer offer/BI/test IDs before text for per-card identity
+- Extension: strict unique match by ID/href/title+points; no stale ordinal fallback
+- Extension: avoid merging same-title tasks when DOM offer/href IDs differ
+- Extension: dynamic scroll-height plus bottom scan for lazy-loaded tasks
+- Extension: re-visit outer/inner scroll ranges when card disappears after hydration
+- Extension: distinguish real card identities across pages; precise re-aim before CDP click
+- Desktop: strong identifier or title+exact points required, reject unrelated containers
+- Desktop: discover live scored cards missed by HTML sync index, de-duplicate by stable locator
+- Desktop: scan full outer and inner scroll ranges for indexed tasks, reset to top per task
+- Windows: move signingHashAlgorithms beneath win.signtoolOptions for electron-builder 26
+Electron background index/parser not modified. Runtime behavior requires live Microsoft Rewards DOM testing.

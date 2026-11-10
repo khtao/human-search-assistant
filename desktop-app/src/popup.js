@@ -55,6 +55,7 @@ document.addEventListener('DOMContentLoaded', () => {
     pace: 'normal',
     autoStop: true,
     reduceMotion: false,
+    cardClickIntervalSec: 10,
     skipCompletedCards: false
   };
   const AUTO_DEFAULTS = { enabled: false, times: [], count: 30, level: 3 };
@@ -131,6 +132,7 @@ document.addEventListener('DOMContentLoaded', () => {
       'pace.normal': '标准', 'pace.relaxed': '舒缓',
       'settings.autostop': '到达每日上限即停止', 'settings.autostopHint': 'Bing 搜索计满后提前结束',
       'settings.automation': '自动化',
+      'settings.seconds': '秒', 'auto.cardInterval': '卡片点击间隔', 'auto.cardIntervalHint': '相邻两张卡片的 CDP 鼠标点击至少间隔设定秒数（1–60 秒）',
       'auto.skipCompleted': '跳过已完成任务卡', 'auto.skipCompletedHint': '默认不跳过：点击所有包含积分的卡片',
       'auto.title': '自动完成任务', 'auto.enable': '定时自动运行',
       'auto.enableHint': '到点自动点击积分任务卡片，并按剩余分数搜索；关闭总开关时仍可配置时间点',
@@ -167,7 +169,9 @@ document.addEventListener('DOMContentLoaded', () => {
       'calendar.totalLabel': '本月累计积分', 'calendar.yearLabel': '本年累计积分',
       'calendar.summary': '日均 {avg} · 最高 {max} · {n} 天有积分',
       'calendar.empty': '暂无历史数据，同步后自动记录',
-      'calendar.hoverTip': '按日历排布 · 格子只显示积分，不显示日期 · 淡蓝为有积分、灰色为无积分、未来留空。悬停方格查看当日详情',
+      'calendar.earnedDays': '{n} 天有积分', 'calendar.legendHas': '已获得', 'calendar.legendNone': '无积分',
+      'calendar.navEmpty': '该周期暂无积分（仍可查看）',
+      'calendar.hoverTip': '日视图显示每日积分，周/月视图显示汇总 · 淡蓝为有积分、灰色为无积分、未来留空。悬停查看详情',
       'calendar.cellTip': '{date} · 积分 {points} 分',
       'calendar.noPointsTip': '{date} · 无积分记录',
       'desktop.title': '桌面版', 'desktop.autoLaunch': '开机自动启动',
@@ -246,6 +250,7 @@ document.addEventListener('DOMContentLoaded', () => {
       'pace.normal': 'Normal', 'pace.relaxed': 'Relaxed',
       'settings.autostop': 'Stop at daily limit', 'settings.autostopHint': 'End early once Bing search is maxed',
       'settings.automation': 'Automation',
+      'settings.seconds': 'sec', 'auto.cardInterval': 'Card click interval', 'auto.cardIntervalHint': 'Minimum time between CDP mouse clicks on cards (1–60 seconds)',
       'auto.skipCompleted': 'Skip completed task cards', 'auto.skipCompletedHint': 'Off by default: click all cards with points',
       'auto.title': 'Auto-complete tasks', 'auto.enable': 'Scheduled runs',
       'auto.enableHint': 'Click scored cards and search at the set times; times stay editable when the switch is off',
@@ -282,7 +287,9 @@ document.addEventListener('DOMContentLoaded', () => {
       'calendar.totalLabel': 'Points this month', 'calendar.yearLabel': 'Points this year',
       'calendar.summary': 'Avg {avg} · Best {max} · {n} days with points',
       'calendar.empty': 'No history yet — recorded after the next sync',
-      'calendar.hoverTip': 'Calendar layout · points only, no dates · light blue = earned, grey = none, future = blank. Hover a cell for details',
+      'calendar.earnedDays': '{n} days earned', 'calendar.legendHas': 'Earned', 'calendar.legendNone': 'No points',
+      'calendar.navEmpty': 'No points in this period (still viewable)',
+      'calendar.hoverTip': 'Daily points with weekly/monthly summaries · blue = earned, grey = none, future = blank. Hover for details',
       'calendar.cellTip': '{date} · {points} pts',
       'calendar.noPointsTip': '{date} · no points recorded',
       'desktop.title': 'Desktop', 'desktop.autoLaunch': 'Launch at login',
@@ -1240,6 +1247,8 @@ document.addEventListener('DOMContentLoaded', () => {
     setSegment('set-lang', langMode);
     $('set-reduce').checked = !!settings.reduceMotion;
     $('set-skip-completed').checked = !!settings.skipCompletedCards;
+    $('set-card-interval').value = Number.isFinite(Number(settings.cardClickIntervalSec))
+      ? Math.max(1, Math.min(60, Math.round(Number(settings.cardClickIntervalSec)))) : 10;
     /* 搜索次数 / 节奏 / 每日上限使用自动任务设置；桌面和插件 UI 保持一致。 */
     syncAutoUI();
     renderPointsCalendar();
@@ -1257,6 +1266,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
   $('set-skip-completed').addEventListener('change', e =>
     saveSettings({ skipCompletedCards: e.target.checked }));
+  $('set-card-interval').addEventListener('change', e => {
+    const n = Number(e.target.value);
+    const interval = Number.isFinite(n) ? Math.max(1, Math.min(60, Math.round(n))) : 10;
+    saveSettings({ cardClickIntervalSec: interval });
+  });
 
   /* 自动完成任务设置 */
   $('set-auto').addEventListener('change', e => saveAutoTasks({ enabled: e.target.checked }));
@@ -1397,6 +1411,7 @@ document.addEventListener('DOMContentLoaded', () => {
    * ---------------------------------------------------------------- */
   let calMode = 'day';
   let calCursor = new Date();
+  let calRenderId = 0;
   const pad2 = n => String(n).padStart(2, '0');
   const dkey = d => d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate());
   const addDays = (d, n) => {
@@ -1433,18 +1448,48 @@ document.addEventListener('DOMContentLoaded', () => {
   }
   function dayClass(k, value, todayK) {
     if (k > todayK) return 'cal-day cal-blank';
-    return 'cal-day ' + (value != null ? 'cal-has' : 'cal-past-empty')
+    return 'cal-day ' + (value > 0 ? 'cal-has' : 'cal-past-empty')
       + (k === todayK ? ' cal-today' : '');
   }
-  function periodCell(value, cls, tag, tip) {
-    return calCell(value, cls, tip, tag);
+  // Week: spacious horizontal cards with a 7-day activity strip. Month:
+  // twelve balanced summary cards. Both are real DOM, not canvas snapshots.
+  function periodCell(value, cls, tag, tip, detail) {
+    const cell = document.createElement('div');
+    cell.className = 'cal-cell ' + cls;
+    cell.setAttribute('role', 'gridcell');
+    if (tip) { cell.dataset.tip = tip; cell.dataset.tipRole = 'cell'; }
+    const heading = document.createElement('span');
+    heading.className = 'cal-period-name';
+    heading.textContent = tag;
+    const points = document.createElement('strong');
+    points.className = 'cal-period-points';
+    points.textContent = value != null && value > 0 ? ptsText(value) : '—';
+    const days = document.createElement('span');
+    days.className = 'cal-period-days';
+    days.textContent = detail && detail.subtext || '';
+    cell.append(heading, points, days);
+    if (detail && Array.isArray(detail.daily)) {
+      const strip = document.createElement('div');
+      strip.className = 'cal-week-strip';
+      for (const d of detail.daily) {
+        const bar = document.createElement('span');
+        bar.className = 'cal-week-dot' + (d.future ? ' is-future' : d.value > 0 ? ' is-earned' : '');
+        bar.title = d.label + ' · ' + (d.value > 0 ? ptsText(d.value) : '0');
+        bar.setAttribute('aria-label', bar.title);
+        strip.appendChild(bar);
+      }
+      cell.appendChild(strip);
+    }
+    return cell;
   }
 
   async function renderPointsCalendar() {
+    const renderId = ++calRenderId;
     const grid = $('cal-grid');
     if (!grid) return;
     let s = {};
     try { s = await chrome.storage.local.get(['pointsHistory', 'pointsSummary']); } catch {}
+    if (renderId !== calRenderId) return;
     const hist = Object.assign({}, (s && s.pointsHistory) || {});
     const ps = (s && s.pointsSummary) || {};
     const now = new Date();
@@ -1471,7 +1516,10 @@ document.addEventListener('DOMContentLoaded', () => {
     grid.className = 'cal-grid cal-' + calMode;
     grid.textContent = '';
     const y = calCursor.getFullYear(), m = calCursor.getMonth();
+    // Period values determine which cards are highlighted; daily values determine
+    // the true day-average, day-maximum, and number of earning days in every view.
     const vals = [];
+    const earningDays = [];
     if (calMode === 'day') {
       if (range) range.textContent = y + ' / ' + pad2(m + 1);
       const start = mondayOf(new Date(y, m, 1));
@@ -1481,11 +1529,11 @@ document.addEventListener('DOMContentLoaded', () => {
         const k = dkey(d);
         const v = inMonth ? histValue(hist, k) : null;
         const blank = !inMonth || k > todayK;
-        if (inMonth && v != null && k <= todayK) vals.push(v);
-        const tip = blank ? '' : (v != null
+        if (inMonth && v > 0 && k <= todayK) { vals.push(v); earningDays.push(v); }
+        const tip = blank ? '' : (v > 0
           ? t('calendar.cellTip', { date: calDateLabel(d), points: ptsText(v) })
           : t('calendar.noPointsTip', { date: calDateLabel(d) }));
-        grid.appendChild(calCell(blank ? null : v,
+        grid.appendChild(calCell(blank ? null : (v > 0 ? v : null),
           blank ? 'cal-day cal-blank' : dayClass(k, v, todayK), tip));
       }
     } else if (calMode === 'week') {
@@ -1494,25 +1542,29 @@ document.addEventListener('DOMContentLoaded', () => {
       const start = mondayOf(first);
       const daysInMonth = new Date(y, m + 1, 0).getDate();
       const weeks = Math.ceil((((first.getDay() + 6) % 7) + daysInMonth) / 7);
-      const cells = Math.ceil(weeks / 7) * 7;
-      for (let w = 0; w < cells; w++) {
-        if (w >= weeks) { grid.appendChild(calCell(null, 'cal-week cal-blank')); continue; }
+      for (let w = 0; w < weeks; w++) {
         let total = 0, hit = 0;
         const weekStart = addDays(start, w * 7);
+        const weekEnd = addDays(weekStart, 6);
+        const daily = [];
         for (let i = 0; i < 7; i++) {
-          const d = addDays(weekStart, i);
-          const v = d.getMonth() === m && dkey(d) <= todayK ? histValue(hist, dkey(d)) : null;
-          if (v != null) { total += v; hit++; }
+          const d = addDays(weekStart, i), k = dkey(d);
+          const within = d.getMonth() === m && k <= todayK;
+          const v = within ? histValue(hist, k) : null;
+          if (v > 0) { total += v; hit++; earningDays.push(v); }
+          daily.push({value:v || 0, label:calDateLabel(d), future: !within});
         }
         if (hit) vals.push(total);
-        const tag = t('calendar.weekLabel', { n: w + 1 });
+        const tag = t('calendar.weekLabel', {n:w + 1}) + '  ·  '
+          + pad2(weekStart.getMonth() + 1) + '/' + pad2(weekStart.getDate())
+          + ' – ' + pad2(weekEnd.getMonth() + 1) + '/' + pad2(weekEnd.getDate());
         const future = dkey(weekStart) > todayK;
-        const cls = future ? 'cal-week cal-blank'
-          : 'cal-week ' + (hit ? 'cal-has' : 'cal-past-empty');
+        const cls = 'cal-week ' + (future ? 'cal-blank' : hit ? 'cal-has' : 'cal-past-empty');
         const tip = future ? '' : (hit
-          ? t('calendar.cellTip', { date: tag, points: ptsText(total) })
-          : t('calendar.noPointsTip', { date: tag }));
-        grid.appendChild(periodCell(future || !hit ? null : total, cls, tag, tip));
+          ? t('calendar.cellTip', {date:tag, points:ptsText(total)})
+          : t('calendar.noPointsTip', {date:tag}));
+        const details = {daily:daily, subtext:t('calendar.earnedDays', {n:hit})};
+        grid.appendChild(periodCell(future ? null : total, cls, tag, tip, details));
       }
     } else {
       if (range) range.textContent = String(y);
@@ -1523,30 +1575,50 @@ document.addEventListener('DOMContentLoaded', () => {
         for (const k of Object.keys(hist)) {
           if (k.slice(0, 7) !== prefix || k > todayK) continue;
           const v = histValue(hist, k);
-          if (v != null) { total += v; hit++; }
+          if (v > 0) { total += v; hit++; earningDays.push(v); }
         }
         if (hit) vals.push(total);
-        const tag = t('calendar.monthLabel', { n: mm + 1 });
-        const cls = future ? 'cal-month cal-blank'
-          : 'cal-month ' + (hit ? 'cal-has' : 'cal-past-empty');
+        const tag = t('calendar.monthLabel', {n:mm + 1});
+        const cls = 'cal-month ' + (future ? 'cal-blank' : hit ? 'cal-has' : 'cal-past-empty');
         const tip = future ? '' : (hit
-          ? t('calendar.cellTip', { date: tag, points: ptsText(total) })
-          : t('calendar.noPointsTip', { date: tag }));
-        grid.appendChild(periodCell(future || !hit ? null : total, cls, tag, tip));
+          ? t('calendar.cellTip', {date:tag, points:ptsText(total)})
+          : t('calendar.noPointsTip', {date:tag}));
+        grid.appendChild(periodCell(future ? null : total, cls, tag, tip,
+          {subtext:future ? '' : t('calendar.earnedDays', {n:hit})}));
       }
     }
     const total = vals.reduce((a, b) => a + b, 0);
-    const avg = vals.length ? Math.round(total / vals.length) : 0;
-    const max = vals.length ? Math.max.apply(null, vals) : 0;
+    // A week/month contains multiple earning days: report actual daily
+    // averages and daily peaks instead of averaging whole period totals.
+    const avg = earningDays.length ? Math.round(total / earningDays.length) : 0;
+    const max = earningDays.length ? Math.max.apply(null, earningDays) : 0;
     if (heroTotal) heroTotal.textContent = ptsText(total);
     if (heroLabel) heroLabel.textContent = t(calMode === 'month'
       ? 'calendar.yearLabel' : 'calendar.totalLabel');
     if (sum) {
       sum.textContent = t('calendar.summary', {
-        total: ptsText(total), avg: ptsText(avg), max: ptsText(max), n: vals.length
-      }) + (vals.length ? '' : ' · ' + t('calendar.empty'));
+        total: ptsText(total), avg: ptsText(avg), max: ptsText(max), n: earningDays.length
+      }) + (earningDays.length ? '' : ' · ' + t('calendar.empty'));
     }
     setSegment('cal-mode', calMode);
+    // Do not imply available history outside the recorded range. The arrows
+    // stay operable for navigating gaps, but both become grey on empty pages.
+    const hasPointsIn = step => {
+      const base = calMode === 'month'
+        ? new Date(y + step, 0, 1) : new Date(y, m + step, 1);
+      const prefix = calMode === 'month'
+        ? String(base.getFullYear()) : base.getFullYear() + '-' + pad2(base.getMonth() + 1);
+      return Object.keys(hist).some(k => k.startsWith(prefix)
+        && k > '0000-00-00' && k <= todayK && histValue(hist, k) > 0);
+    };
+    for (const [id, step] of [['cal-prev', -1], ['cal-next', 1]]) {
+      const btn = $(id);
+      if (!btn) continue;
+      const empty = vals.length === 0 || !hasPointsIn(step);
+      btn.classList.toggle('cal-nav-empty', empty);
+      btn.setAttribute('data-empty', String(empty));
+      btn.setAttribute('aria-description', empty ? t('calendar.navEmpty') : '');
+    }
   }
 
   function moveCalendar(step) {

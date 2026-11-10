@@ -1735,7 +1735,7 @@ a.tt-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px;
   margin-bottom: 6px; color: var(--fg-tertiary); font-size: 10px; text-align: center;
 }
 .cal-weekdays:empty { display: none; }
-.cal-grid { display: grid; gap: 6px; }
+.cal-grid { display: grid; gap: 6px; min-width: 0; width: 100%; }
 .cal-grid.cal-day { grid-template-columns: repeat(7, 1fr); }
 .cal-grid.cal-week { grid-template-columns: repeat(7, 1fr); }
 .cal-grid.cal-month { grid-template-columns: repeat(4, 1fr); }
@@ -1779,3 +1779,49 @@ a.tt-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px;
   max-width: 100%; text-transform: none; letter-spacing: 0;
   font-size: 11px; font-weight: 600; text-overflow: ellipsis;
 }
+
+/* v1.3.8-R3 · 周/月积分日历：真实视图，兼顾窄弹窗与桌面侧栏 */
+.set-inline-number { display:inline-flex; align-items:center; gap:6px; flex-shrink:0; }
+#set-card-interval { width:66px; min-width:0; box-sizing:border-box; padding:7px 8px;
+  border:1px solid var(--border); border-radius:9px; text-align:center;
+  background:var(--surface-raised); color:var(--fg); font:inherit; font-variant-numeric:tabular-nums; }
+#set-card-interval:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+.set-unit { font-size:12px; color:var(--fg-secondary); }
+.cal-nav { border:1px solid var(--border); background:var(--surface-raised); width:30px; height:30px; flex-basis:30px; }
+.cal-nav.cal-nav-empty { background:var(--cal-gray-bg); color:var(--cal-gray-fg); border-color:transparent; }
+.cal-nav.cal-nav-empty:hover { background:var(--cal-gray-bg); color:var(--cal-gray-fg); }
+.cal-grid.cal-week { grid-template-columns:1fr; gap:8px; }
+.cal-grid.cal-month { grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; }
+.cal-grid.cal-week .cal-cell { aspect-ratio:auto; min-height:76px; width:100%;
+  display:grid; grid-template-columns:1fr auto; grid-template-rows:auto auto;
+  text-align:left; align-items:center; padding:11px 13px; column-gap:10px; row-gap:8px;
+  border-radius:13px; }
+.cal-grid.cal-week .cal-period-name { grid-column:1; grid-row:1; font-size:12px;
+  font-weight:650; color:var(--fg-secondary); letter-spacing:0; }
+.cal-grid.cal-week .cal-period-points { grid-column:2; grid-row:1; font-size:20px;
+  font-variant-numeric:tabular-nums; letter-spacing:-.03em; }
+.cal-grid.cal-week .cal-period-days { grid-column:1; grid-row:2; font-size:10px;
+  font-weight:500; color:var(--fg-tertiary); }
+.cal-week-strip { grid-column:2; grid-row:2; display:flex; gap:4px; align-items:center; }
+.cal-week-dot { display:block; width:11px; height:7px; border-radius:4px;
+  background:rgba(150,157,168,.23); }
+.cal-week-dot.is-earned { background:var(--cal-has-fg); }
+.cal-week-dot.is-future { background:transparent; outline:1px solid rgba(150,157,168,.18); }
+.cal-grid.cal-month .cal-cell { aspect-ratio:auto; min-height:80px; padding:9px 5px;
+  border-radius:13px; display:flex; flex-direction:column; gap:5px; }
+.cal-grid.cal-month .cal-period-name { font-size:11px; font-weight:650; color:var(--fg-secondary); }
+.cal-grid.cal-month .cal-period-points { font-size:19px; font-weight:750;
+  letter-spacing:-.03em; font-variant-numeric:tabular-nums; }
+.cal-grid.cal-month .cal-period-days { font-size:9px; color:var(--fg-tertiary); font-weight:500; }
+.cal-grid.cal-week .cal-blank, .cal-grid.cal-month .cal-blank { visibility:visible;
+  background:var(--cal-gray-bg); color:var(--cal-gray-fg); opacity:.45; }
+.cal-grid.cal-week .cal-past-empty, .cal-grid.cal-month .cal-past-empty {
+  background:var(--cal-gray-bg); color:var(--cal-gray-fg); }
+.cal-grid.cal-week .cal-past-empty .cal-period-points,
+.cal-grid.cal-month .cal-past-empty .cal-period-points { color:var(--cal-gray-fg); }
+.cal-legend { display:flex; justify-content:center; align-items:center; gap:17px;
+  margin-top:12px; font-size:10px; color:var(--fg-tertiary); }
+.cal-legend > span { display:inline-flex; align-items:center; gap:5px; }
+.cal-legend-dot { width:9px; height:9px; border-radius:3px; display:inline-block; }
+.cal-legend-dot.earned { background:var(--cal-has-fg); }
+.cal-legend-dot.empty { background:var(--cal-gray-fg); opacity:.55; }

@@ -36,8 +36,8 @@ ck(lock.packages['node_modules/electron'].integrity && lock.packages['node_modul
 group('2. Ubuntu DEB 构建入口');
 ck(pkg.scripts['build:linux'] === 'sh scripts/build-linux.sh', 'build:linux 调用统一 Linux 构建脚本');
 ck(pkg.scripts['dist:deb'] === 'electron-builder --config electron-builder.yml --linux deb --x64', 'dist:deb 显式使用 Linux 专用配置并只生成 x64 DEB');
-ck(pkg.scripts['dist:win'] === 'electron-builder --config electron-builder.win.yml --win --x64', 'dist:win 显式使用 Windows 专用配置');
-ck(pkg.scripts['pack:win'] === 'electron-builder --config electron-builder.win.yml --win --x64 --dir', 'pack:win 显式使用 Windows 专用配置');
+ck(pkg.scripts['dist:win'] === 'node scripts/build-win-safe.js' && /--config.*electron-builder\.win\.yml/.test(read('scripts/build-win-safe.js')), 'dist:win 使用 Windows 安全构建入口及专用配置');
+ck(pkg.scripts['pack:win'] === 'node scripts/build-win-safe.js --dir' && /--dir/.test(read('scripts/build-win-safe.js')), 'pack:win 使用相同安全构建入口');
 ck(/npm run dist:deb/.test(build) && /dpkg-deb --info/.test(build), '构建脚本生成并校验 DEB');
 ck(/target:\s*\n\s*- target: deb/.test(builder), 'Linux 专用配置默认目标为 deb');
 ck(!/^win:/m.test(builder) && !/^nsis:/m.test(builder) && !/^portable:/m.test(builder), 'Linux 配置不包含 Windows 专用键，避免 Linux schema 冲突');

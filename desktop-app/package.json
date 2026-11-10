@@ -8,14 +8,14 @@
   "private": true,
   "scripts": {
     "start": "node scripts/launch.js",
-    "verify": "node scripts/verify-v120.js && node scripts/verify-github-align.js && node scripts/verify-v130-flow.js && node scripts/verify-v131.js && node scripts/verify-main.js && node scripts/verify-sync.js && node scripts/verify-install.js && node scripts/verify-deps.js && node scripts/verify-launch.js && node scripts/verify-task-click-v135.js && node scripts/verify-task-index-v137.js && node scripts/verify-v137.js && node scripts/verify-v138.js",
+    "verify": "node scripts/verify-v120.js && node scripts/verify-github-align.js && node scripts/verify-v130-flow.js && node scripts/verify-v131.js && node scripts/verify-main.js && node scripts/verify-sync.js && node scripts/verify-install.js && node scripts/verify-deps.js && node scripts/verify-launch.js && node scripts/verify-task-click-v135.js && node scripts/verify-task-index-v137.js && node scripts/verify-v137.js && node scripts/verify-v138.js && node scripts/verify-task-repair.js && node scripts/verify-r2.js && node scripts/verify-r3.js && node scripts/verify-r4.js && node scripts/verify-r41.js && node scripts/verify-ui-parity.js",
     "verify:render": "python3 scripts/verify-render.py",
     "fix:electron": "node scripts/fix-electron.js",
     "build:linux": "sh scripts/build-linux.sh",
     "dist": "electron-builder",
-    "dist:win": "electron-builder --config electron-builder.win.yml --win --x64",
+    "dist:win": "node scripts/build-win-safe.js",
     "dist:linux": "electron-builder --config electron-builder.yml --linux deb --x64",
-    "pack:win": "electron-builder --config electron-builder.win.yml --win --x64 --dir",
+    "pack:win": "node scripts/build-win-safe.js --dir",
     "pack:linux": "electron-builder --config electron-builder.yml --linux --x64 --dir",
     "verify:sync": "node scripts/verify-sync.js",
     "prestart": "node scripts/check-electron.js",
@@ -43,7 +43,14 @@
     "verify:browser": "node scripts/verify-v132.js && node scripts/verify-v133.js && node scripts/verify-debug.js && node scripts/verify-real-html.js",
     "verify:task-click": "node scripts/verify-task-click-v135.js",
     "verify:v137": "node scripts/verify-v137.js",
-    "verify:task-index": "node scripts/verify-task-index-v137.js"
+    "verify:task-index": "node scripts/verify-task-index-v137.js",
+    "verify:repair": "node scripts/verify-task-repair.js",
+    "verify:r2": "node scripts/verify-r2.js",
+    "verify:r3": "node scripts/verify-r3.js",
+    "verify:r3:browser": "python scripts/verify-r3-browser.py",
+    "verify:r4": "node scripts/verify-r4.js",
+    "verify:r41": "node scripts/verify-r41.js",
+    "verify:ui": "node scripts/verify-ui-parity.js"
   },
   "devDependencies": {
     "electron": "45.2.3",
