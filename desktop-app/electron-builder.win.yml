@@ -3,6 +3,11 @@ productName: 拟人搜索助手
 copyright: Local personal tool · 非 Microsoft 官方产品
 
 # Windows 专用配置。与 Linux 配置分离，避免跨平台配置互相触发 schema 校验。
+# Build from the locally installed electron@45.2.3 runtime.
+# Prevents a second Electron download (which can fail with ECONNRESET).
+# Run `npm run doctor` first and ensure node_modules/electron/dist/electron.exe exists.
+electronDist: node_modules/electron/dist
+
 directories:
   buildResources: build
   output: dist
@@ -15,6 +20,7 @@ files:
   - lib/debug-capture.js
   - src/**/*
   - build/icon.ico
+  - build/icon.png
   - package.json
   - '!src/**/*.md'
   - '!**/*.md'
@@ -26,6 +32,13 @@ files:
   - '!README*'
   - '!package-lock.json'
 
+# Keep real disk copies of tray icons outside app.asar (Windows notification area).
+extraResources:
+  - from: build/icon.ico
+    to: tray-icons/icon.ico
+  - from: build/icon.png
+    to: tray-icons/icon.png
+
 win:
   icon: build/icon.ico
   target:
@@ -34,7 +47,8 @@ win:
     - target: portable
       arch: [x64]
   artifactName: HumanSearchAssistant-Windows-${version}-${arch}.${ext}
-  signingHashAlgorithms: [sha256]
+  signtoolOptions:
+    signingHashAlgorithms: [sha256]
 
 nsis:
   oneClick: false

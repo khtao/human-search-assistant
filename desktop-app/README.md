@@ -54,6 +54,27 @@
 
 完整修改说明见项目根目录的 `CHANGELOG_V1.3.7.md` 与 `TASK_CLICK_INDEX_V1.3.7.md`。
 
+<<<<<<< HEAD
+=======
+## R4：Windows CMD 安全打包与慢速扫描
+
+- `npm run dist:win` 和 `build-win-local.cmd` 现在调用 `scripts/build-win-safe.js`：优先恢复本机缓存中的 Electron 二进制，并将每次构建输出到 `dist/windows-builds/win-...` 独立目录，避免旧版 `dist/win-unpacked` 被占用造成 EBUSY。
+- `npm run ci` 后无 `node_modules/electron/dist` 时，安全脚本会自动调用官方 Electron installer，失败时再用项目镜像修复脚本。
+- 桌面与插件打开 `/dashboard`、`/earn` 后各等待至少 5 秒，再做不少于 5 秒的慢速分段扫描；点击间隔仍可在设置中调节，默认 10 秒。
+- 完整说明见项目根目录 `R4-慢速滚动与Windows编译修复说明.md`。
+
+CMD 示例：
+
+```cmd
+cd /d C:\Users\86155\Downloads\human-search-assistant-main\desktop-app
+npm run ci
+npm run verify
+npm run dist:win
+```
+
+Windows 构建输出位于新建的 `dist/windows-builds/win-*` 目录中；不会自动覆盖原来的 `dist/win-unpacked`。
+
+>>>>>>> fb5efdd15db37cf18e87c9be2597e688bc7a03cf
 ## Ubuntu 编译为 DEB
 
 ### 环境要求

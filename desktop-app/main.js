@@ -640,7 +640,13 @@ function applyPanelBounds() {
  *                     扫描页永远不被覆盖，因此可以依次点完全部卡片
  * 全程不 active / 不 bringToFront / 不抢系统焦点。
  * ======================================================================== */
+<<<<<<< HEAD
 const TASK_CLICK_SETTLE_MS = 350;   // 索引定位后给 Rewards 页面留出短暂响应时间
+=======
+const TASK_CLICK_SETTLE_MS = 350;
+const TASK_PAGE_READY_WAIT_MS = 5000; // R4: wait after each page is loaded before scrolling
+const TASK_SCAN_STEP_DELAY_MS = 520;  // R4: at least 12 slow scan steps = 6240ms   // 索引定位后给 Rewards 页面留出短暂响应时间
+>>>>>>> fb5efdd15db37cf18e87c9be2597e688bc7a03cf
 let taskView = null, taskTabId = null, taskResultView = null, taskClickRunning = false;
 let taskResultLoadPromise = null, taskResultLoadWatcher = null;
 
@@ -731,15 +737,40 @@ function taskAimIndexedSrc(entry) {
       const n = clean(b).match(/^\\s*([\\d,]{1,5})\\s*$/);
       return n ? parseInt(n[1].replace(/,/g, ''), 10) : 0;
     };
+<<<<<<< HEAD
     const all = () => [...document.querySelectorAll('a,button,[role="button"],[data-bi-id]')];
+=======
+    /* HSA_TASK_LOCATOR_REPAIR_20261109: include offer-id/test-id cards but require strong identity evidence. */
+    const all = () => [...document.querySelectorAll('a,button,[role="button"],[data-bi-id],[data-offer-id],[data-testid]')];
+>>>>>>> fb5efdd15db37cf18e87c9be2597e688bc7a03cf
     const find = () => {
       const nodes = all(); let best = null, bestScore = 0;
       const wantHref = expectedHref ? abs(expectedHref) : '';
       const wantTitle = norm(expectedTitle);
+<<<<<<< HEAD
       for (const el of nodes) {
         const tx = clean(el).slice(0, 500);
         const href = el.tagName === 'A' ? abs(el.getAttribute('href') || '') : '';
         let score = 0;
+=======
+       for (const el of nodes) {
+         const tx = clean(el).slice(0, 500);
+         const href = el.tagName === 'A' ? abs(el.getAttribute('href') || '') : '';
+         const strongMatch = !!(
+           (wantHref && href === wantHref)
+           || (loc.dataBiId && el.getAttribute('data-bi-id') === String(loc.dataBiId))
+           || (loc.dataOfferId && el.getAttribute('data-offer-id') === String(loc.dataOfferId))
+           || (loc.dataTestId && el.getAttribute('data-testid') === String(loc.dataTestId))
+           || (loc.id && el.id === String(loc.id))
+           || (loc.ariaLabel && el.getAttribute('aria-label') === String(loc.ariaLabel)));
+         const semanticMatch = !!(wantTitle && norm(tx).includes(wantTitle));
+         const gotPoints0 = expectedPoints ? pointsOf(el, tx) : 0;
+         if (expectedPoints && gotPoints0 > 0 && gotPoints0 !== expectedPoints) continue;
+         if (!strongMatch && (!semanticMatch || (expectedPoints && gotPoints0 !== expectedPoints))) continue;
+         /* Avoid treating a multi-card wrapper as an individual click target. */
+         if (!strongMatch && tx.length > 280) continue;
+         let score = 0;
+>>>>>>> fb5efdd15db37cf18e87c9be2597e688bc7a03cf
         if (wantHref && href === wantHref) score += 120;
         if (loc.dataBiId && el.getAttribute('data-bi-id') === String(loc.dataBiId)) score += 100;
         if (loc.dataOfferId && el.getAttribute('data-offer-id') === String(loc.dataOfferId)) score += 95;
@@ -752,7 +783,13 @@ function taskAimIndexedSrc(entry) {
         const gotPoints = expectedPoints ? pointsOf(el, tx) : 0;
         if (expectedPoints && gotPoints === expectedPoints) score += 24;
         else if (expectedPoints && gotPoints > 0) score -= 22;
+<<<<<<< HEAD
         if (score > bestScore) { best = el; bestScore = score; }
+=======
+         if (score > bestScore || (score === bestScore && best && el.contains(best))) {
+           best = el; bestScore = score;
+         }
+>>>>>>> fb5efdd15db37cf18e87c9be2597e688bc7a03cf
       }
       return bestScore >= 42 ? best : null;
     };
@@ -904,7 +941,8 @@ async function loadTaskPage(view, url) {
     } catch {}
     await new Promise(r => setTimeout(r, 400));
   }
-  await new Promise(r => setTimeout(r, 600));
+  // R4: wait a full five seconds after the page has become ready.
+  await new Promise(r => setTimeout(r, TASK_PAGE_READY_WAIT_MS));
 }
 
 function panelState() {
@@ -1121,12 +1159,163 @@ function orderHint(list, current) {
   return next ? '下一张：' + next : '';
 }
 
+<<<<<<< HEAD
+=======
+/* HSA_TASK_LOCATOR_REPAIR_20261109: discover scored real click targets omitted from server-side HTML index. */
+async function discoverLiveScoredCards(webContents, pageDef) {
+  const collectSource = (() => {
+    return String.raw`(() => {
+      const norm = s => String(s || '').replace(/\s+/g, ' ').trim();
+      const candidates = document.querySelectorAll('a[href],button,[role="button"],[data-bi-id],[data-offer-id]');
+      const rows = [];
+      for (const el of candidates) {
+        if (!el || !el.getBoundingClientRect) continue;
+        const hrefRaw = el.tagName === 'A' ? el.getAttribute('href') || '' : '';
+        let href = '';
+        if (hrefRaw) {
+          try { href = new URL(hrefRaw, location.href).href; } catch { continue; }
+          if (!/^https:\/\/(?:[^/]+\.)?(?:bing\.com|microsoft\.com)\//i.test(href) && !/^https:\/\/aka\.ms\//i.test(href)) continue;
+          if (/\/(?:redeem|referandearn)(?:\/|[?#]|$)/i.test(href)) continue;
+        }
+        const idBi = el.getAttribute('data-bi-id') || '';
+        const offerId = el.getAttribute('data-offer-id') || '';
+        const testId = el.getAttribute('data-testid') || '';
+        if (!href && !idBi && !offerId) continue; // no stable clickable identity
+        const text = norm(el.innerText || el.textContent);
+        if (text.length < 3 || text.length > 280) continue;
+        const matched = text.match(/(?:\+|＋)\s*(\d{1,4})(?!\d)/);
+        if (!matched) continue;
+        const points = Number(matched[1]);
+        if (!Number.isFinite(points) || points <= 0) continue;
+        if (/^(?:可用积分|今日积分|可领取|兑换|积分概览|points balance)/i.test(text)) continue;
+        if (el.querySelector && el.querySelector('a[href],button,[role="button"]')) {
+          // outer wrapper is not the actual card; avoid clicks over several children
+          if (el.tagName !== 'A' && el.tagName !== 'BUTTON') continue;
+        }
+        const r = el.getBoundingClientRect();
+        if (r.width < 30 || r.height < 20) continue;
+        const title = text.replace(/(?:\+|＋)\s*\d{1,4}(?!\d)/g, '').trim().slice(0, 100);
+        if (!title) continue;
+        rows.push({name:title,points,completed:/已完成|已领取|completed|claimed/i.test(text),
+          url:href,target:el.getAttribute('target')||'',
+          locator:{href,dataBiId:idBi,dataOfferId:offerId,dataTestId:testId,
+            id:el.id||'',ariaLabel:el.getAttribute('aria-label')||'',
+            title,points}});
+      }
+      return rows.slice(0, 120);
+    })()`;
+  })();
+  const found = new Map();
+  const invoke = async source => {
+    try { return await webContents.executeJavaScript(source, true); } catch { return null; }
+  };
+  const add = rows => {
+    for (const row of (Array.isArray(rows) ? rows : [])) {
+      const l = row.locator || {};
+      const k = l.href || l.dataOfferId || l.dataBiId || '';
+      if (!k) continue;
+      const id = k + '|' + Number(row.points);
+      if (!found.has(id)) found.set(id, row);
+    }
+  };
+  const metrics = await invoke('(() => {window.scrollTo(0,0);const e=document.scrollingElement||document.documentElement;return {h:e.scrollHeight,v:innerHeight}})()');
+  let height = Math.max(500, Number(metrics && metrics.h) || 800);
+  const view = Math.max(250, Number(metrics && metrics.v) || 700);
+  /* R4.1: limit each move to at most 220 CSS pixels, rather than allocating
+     the whole height across a fixed number of passes. Scan ticks are spaced
+     by 520ms; a completed page gets at least twelve (>= 6.24s). */
+  const minimumTicks = Math.ceil(5000 / TASK_SCAN_STEP_DELAY_MS) + 2;
+  let lastY = 0;
+  for (let n = 0; n < 160 && state.running; n++) {
+    const maxY = Math.max(0, height - view);
+    // Spread small scroll ranges over the whole 5+ second window.
+    const slowStep = Math.min(220, Math.max(1, Math.floor(maxY / Math.max(1, minimumTicks - 1))));
+    const y = n === 0 ? 0 : Math.min(maxY, lastY + slowStep);
+    // Real CDP wheel input triggers lazy-loader listeners; scrollTo pins
+    // the exact target in case the browser consumed the wheel in a child.
+    if (y > lastY && webContents.debugger && webContents.debugger.isAttached()) {
+      try { await webContents.debugger.sendCommand('Input.dispatchMouseEvent', {
+        type: 'mouseWheel', x: 330, y: Math.max(50, Math.round(view / 2)),
+        deltaX: 0, deltaY: y - lastY, modifiers: 0, button: 'none'
+      }); } catch (err) { DBG.log('task', 'CDP slow scroll fallback to DOM', {error: String(err)}); }
+    }
+    const pos = await invoke('(() => {window.scrollTo(0,' + y + ');const e=document.scrollingElement||document.documentElement;return e.scrollHeight})()');
+    await new Promise(r => setTimeout(r, TASK_SCAN_STEP_DELAY_MS));
+    add(await invoke(collectSource));
+    height = Math.max(height, Number(pos) || 0);
+    lastY = y;
+    if (n + 1 >= minimumTicks && y >= Math.max(0, height - view)) {
+      // One additional lazy-load/hydration opportunity at the bottom.
+      await new Promise(r => setTimeout(r, TASK_SCAN_STEP_DELAY_MS));
+      add(await invoke(collectSource));
+      const updated = await invoke('(() => (document.scrollingElement||document.documentElement).scrollHeight)()');
+      if (Number(updated) > height) height = Number(updated);
+      else break;
+    }
+  }
+  /* Do not guess shadow/iframe locations: only the rendered DOM with stable locators. */
+  const count = await invoke('(() => {window.__hsaDiscoverScrollers=[...document.querySelectorAll("*")].filter(e=>e.scrollHeight>e.clientHeight+40 && /auto|scroll/i.test(getComputedStyle(e).overflowY)).slice(0,12);return window.__hsaDiscoverScrollers.length})()');
+  for (let i = 0; i < Math.min(Number(count)||0,12) && state.running; i++) {
+    let max = Number(await invoke('(() => {const e=window.__hsaDiscoverScrollers[' + i + '];return e?e.scrollHeight-e.clientHeight:0})()')) || 0;
+    for (let y = 0, n = 0; n < 48 && state.running; y += Math.max(95, Math.round(0.32 * 400)), n++) {
+      const pos = await invoke('(() => {const e=window.__hsaDiscoverScrollers[' + i + '];if(!e)return 0;e.scrollTop=' + y + ';return e.scrollHeight-e.clientHeight})()');
+      await new Promise(r => setTimeout(r, TASK_SCAN_STEP_DELAY_MS));
+      add(await invoke(collectSource));
+      max = Math.max(max, Number(pos) || 0);
+      if (y >= max) break;
+    }
+  }
+  return [...found.values()].map((e,i) => ({
+    ...e,key:'live-dom|' + pageDef.page + '|' + i,
+    page:pageDef.page,pageUrl:pageDef.url,
+    section:pageDef.page === '/dashboard' ? 'daily' : 'promo',source:'live-dom'
+  }));
+}
+
+/* HSA_TASK_LOCATOR_REPAIR_20261109: sweep SPA/virtual-list viewports for an indexed card. */
+async function locateIndexedCardAcrossScroll(webContents, entry) {
+  const aim = async () => webContents.executeJavaScript(taskAimIndexedSrc(entry), true).catch(() => null);
+  let result = await aim();
+  if (result && result.ok) return result;
+  const scroll = async (script) => {
+    try { return await webContents.executeJavaScript(script, true); } catch { return null; }
+  };
+  let m = await scroll('(() => { window.scrollTo(0,0); const e=document.scrollingElement||document.documentElement; return {height:e.scrollHeight, view:window.innerHeight}; })()');
+  let height = Math.max(800, Number(m && m.height) || 800);
+  const view = Math.max(250, Number(m && m.view) || 700);
+  const step = Math.max(160, Math.round(view * 0.65));
+  for (let y = 0, i = 0; i < 48 && state.running; i++, y += step) {
+    const pos = await scroll('(() => {window.scrollTo(0,' + y + ');const e=document.scrollingElement||document.documentElement;return e.scrollHeight})()');
+    await new Promise(r => setTimeout(r, 190));
+    result = await aim();
+    if (result && result.ok) return result;
+    height = Math.max(height, Number(pos) || 0);
+    if (y >= height - view) break;
+  }
+  /* Also search the scrollable panel; many Rewards lists do not scroll window. */
+  const count = await scroll('(() => { const a=[...document.querySelectorAll("*")].filter(e=>e.scrollHeight>e.clientHeight+40 && /auto|scroll/i.test(getComputedStyle(e).overflowY)); window.__hsaLocateScrollers=a.slice(0,12); return window.__hsaLocateScrollers.length; })()');
+  for (let i = 0; i < Math.min(Number(count) || 0, 12) && state.running; i++) {
+    let max = Number(await scroll('(() => {const e=window.__hsaLocateScrollers&&window.__hsaLocateScrollers[' + i + '];return e?e.scrollHeight-e.clientHeight:0})()')) || 0;
+    for (let y = 0, n = 0; n < 48 && state.running; n++, y += 230) {
+      const more = await scroll('(() => {const e=window.__hsaLocateScrollers&&window.__hsaLocateScrollers[' + i + '];if(!e)return 0;e.scrollTop=' + y + ';return e.scrollHeight-e.clientHeight})()');
+      await new Promise(r => setTimeout(r, 190));
+      result = await aim();
+      if (result && result.ok) return result;
+      max = Math.max(max, Number(more) || 0);
+      if (y >= max) break;
+    }
+  }
+  return {ok:false, reason:'not-found-after-full-outer-inner-scroll'};
+}
+
+>>>>>>> fb5efdd15db37cf18e87c9be2597e688bc7a03cf
 ipcMain.handle('chrome:task:clickAll', async (_event, clickIndex, options) => {
   if (taskClickRunning) return { ok: false, reason: 'busy' };
   taskClickRunning = true;
   const pages = [];
   let totalClicked = 0, totalOpened = 0, totalFailed = 0, totalScanned = 0, totalUnconfirmed = 0;
   let debuggerAttachedHere = false;
+<<<<<<< HEAD
   let tv = null, dbg = null;
   try {
     const index = clickIndex && clickIndex.schemaVersion === 1 ? clickIndex : null;
@@ -1138,13 +1327,40 @@ ipcMain.handle('chrome:task:clickAll', async (_event, clickIndex, options) => {
     }
     const indexedEntries = index.items.filter(x => x && (x.page === '/dashboard' || x.page === '/earn'));
     const skipCompletedCards = !!(options && options.skipCompletedCards);
+=======
+  let lastPhysicalClickAt = 0;
+  let tv = null, dbg = null;
+  try {
+    const index = clickIndex && clickIndex.schemaVersion === 1 ? clickIndex : null;
+    const indexFresh = !!(index && Array.isArray(index.items) && Number.isFinite(index.updatedAt)
+      && Date.now() - index.updatedAt <= 30 * 60 * 1000);
+    const indexedEntries = indexFresh ? index.items.filter(x => x &&
+      (x.page === '/dashboard' || x.page === '/earn')) : [];
+    const skipCompletedCards = !!(options && options.skipCompletedCards);
+    const intervalRaw = Number(options && options.cardClickIntervalSec != null ? options.cardClickIntervalSec : NaN);
+    const cardClickIntervalMs = (Number.isFinite(intervalRaw)
+      ? Math.min(60, Math.max(1, Math.round(intervalRaw))) : 10) * 1000;
+    // Count actual CDP mouse actions rather than time spent locating cards.
+    const waitClickSpacing = async () => {
+      while (lastPhysicalClickAt && state.running) {
+        const remain = cardClickIntervalMs - (Date.now() - lastPhysicalClickAt);
+        if (remain <= 0) break;
+        await new Promise(resolve => setTimeout(resolve, Math.min(remain, 300)));
+      }
+      return !!state.running;
+    };
+>>>>>>> fb5efdd15db37cf18e87c9be2597e688bc7a03cf
     // Match the browser extension: default=false clicks all scored cards;
     // enabling the setting filters completed cards at the last responsible moment.
     const entries = indexedEntries.filter(x => !skipCompletedCards || !x.completed);
     const skippedCompleted = indexedEntries.length - entries.length;
+<<<<<<< HEAD
     if (!entries.length) {
       return { ok: true, reason: 'no-pending-indexed-tasks', pages, clicked: 0, scanned: 0, opened: 0, failed: 0, skipped: skippedCompleted };
     }
+=======
+    /* HSA_TASK_LOCATOR_REPAIR_20261109: an empty RSC index does not imply the real page has no clickable task cards. */
+>>>>>>> fb5efdd15db37cf18e87c9be2597e688bc7a03cf
 
     /* 自动运行时保证任务侧栏有可见视口；索引只包含受信任的两个 Rewards 页面。 */
     if (!sideVisible) showSidePanel(null, 'run', false);
@@ -1166,14 +1382,42 @@ ipcMain.handle('chrome:task:clickAll', async (_event, clickIndex, options) => {
       { page: '/earn', url: 'https://rewards.bing.com/earn' }
     ]) {
       if (!state.running) break;
+<<<<<<< HEAD
       const pageEntries = entries.filter(x => x.page === pageDef.page);
       if (!pageEntries.length) continue;
+=======
+      let pageEntries = entries.filter(x => x.page === pageDef.page);
+>>>>>>> fb5efdd15db37cf18e87c9be2597e688bc7a03cf
       desktopActivityPush({
         state: 'opening', page: pageDef.url,
         zh: '打开页面 · Rewards ' + pageDef.page + ' · 待点击 ' + pageEntries.length + ' 张卡片',
         en: 'Opening · Rewards ' + pageDef.page + ' · ' + pageEntries.length + ' cards to click'
       });
       await loadTaskPage(tv, pageDef.url);
+<<<<<<< HEAD
+=======
+      desktopActivityPush({state:'opening', page:pageDef.url,
+        zh:'页面加载后已等待 5 秒 · 正在慢速滚动扫描（不少于 5 秒）',
+        en:'Loaded; waited 5s · slow-scanning page for at least 5s'});
+      const live = await discoverLiveScoredCards(tv.webContents, pageDef);
+      const known = new Set(pageEntries.map(e => {
+        const l = e.locator || {};
+        return String(l.href || e.url || l.dataOfferId || l.dataBiId || '') + '|' + Number(e.points || 0);
+      }));
+      for (const item of live) {
+        if (skipCompletedCards && item.completed) continue;
+        const l = item.locator || {};
+        const id = String(l.href || item.url || l.dataOfferId || l.dataBiId || '') + '|' + Number(item.points || 0);
+        if (known.has(id)) continue;
+        known.add(id);
+        pageEntries.push(item);
+      }
+      if (!pageEntries.length) {
+        DBG.log('task', '同步索引和实时 DOM 均无任务卡', {page:pageDef.page});
+        continue;
+      }
+      DBG.log('task', '同步索引和实时 DOM 合并', {page:pageDef.page, live:live.length, total:pageEntries.length});
+>>>>>>> fb5efdd15db37cf18e87c9be2597e688bc7a03cf
       const page = {
         url: pageDef.url, found: pageEntries.length, clicked: 0,
         opened: 0, skipped: 0, failed: 0, source: 'sync-index'
@@ -1184,6 +1428,7 @@ ipcMain.handle('chrome:task:clickAll', async (_event, clickIndex, options) => {
         if (!state.running) break;
         let aim = null;
         try {
+<<<<<<< HEAD
           for (let locateRound = 0; locateRound < 6 && (!aim || !aim.ok); locateRound++) {
             if (locateRound > 0) {
               const y = await tv.webContents.executeJavaScript('Math.min((window.scrollY || 0) + Math.max(240, Math.round((window.innerHeight || 800) * 0.72)), (document.scrollingElement || document.documentElement).scrollHeight)', true);
@@ -1192,6 +1437,9 @@ ipcMain.handle('chrome:task:clickAll', async (_event, clickIndex, options) => {
             }
             aim = await tv.webContents.executeJavaScript(taskAimIndexedSrc(entry), true);
           }
+=======
+          aim = await locateIndexedCardAcrossScroll(tv.webContents, entry);
+>>>>>>> fb5efdd15db37cf18e87c9be2597e688bc7a03cf
         } catch (err) {
           DBG.log('task', '索引定位异常', {
             name: entry.name, error: String(err && err.message || err)
@@ -1206,6 +1454,10 @@ ipcMain.handle('chrome:task:clickAll', async (_event, clickIndex, options) => {
           continue;
         }
 
+<<<<<<< HEAD
+=======
+        if (!(await waitClickSpacing())) break;
+>>>>>>> fb5efdd15db37cf18e87c9be2597e688bc7a03cf
         taskResultLoadPromise = null;
         const targetBlank = String(aim.target || entry.target || '').toLowerCase() === '_blank';
         const samePageWatcher = !targetBlank ? watchMainFrameLoad(tv.webContents, 12000) : null;
@@ -1223,6 +1475,11 @@ ipcMain.handle('chrome:task:clickAll', async (_event, clickIndex, options) => {
               + ' · Next: ' + (orderHint(pageEntries, entry) || 'search')
               + ' · wait ' + TASK_CLICK_SETTLE_MS + 'ms'
           });
+<<<<<<< HEAD
+=======
+          // Timestamp corresponds to the beginning of the CDP mouse action.
+          lastPhysicalClickAt = Date.now();
+>>>>>>> fb5efdd15db37cf18e87c9be2597e688bc7a03cf
           await dispatchTaskMouseClick(dbg, aim.x, aim.y);
           page.clicked++;
           totalClicked++;
@@ -1928,7 +2185,11 @@ function createPopup() {
     if (level >= 2) DBG.log('popup-console', message, { line, source: sourceId });
   });
   popupWin.on('close', e => {
-    if (!quitting) { e.preventDefault(); popupWin.hide(); }
+    if (quitting) return;
+    if (tray) { e.preventDefault(); popupWin.hide(); return; }
+    // If the tray could not be initialized, do not hide an unrecoverable window.
+    quitting = true;
+    app.quit();
   });
   popupWin.webContents.setWindowOpenHandler(({ url }) => {
     if (/^https?:\/\//i.test(url)) openInSidePanel(url, 'user');
@@ -1990,24 +2251,48 @@ function buildMenu() {
   ]);
 }
 
+/* v1.3.8 Windows tray repair: packed Windows builds formerly excluded build/icon.png,
+ * while the tray unconditionally read that file. Always package both icons; prefer
+ * Windows ICO (multi-resolution) and fall back to PNG. Never silently hide a window
+ * if Tray creation failed, otherwise closing X leaves an invisible orphan process. */
+function showMainFromTray() {
+  if (!popupWin || popupWin.isDestroyed()) { createPopup(); return; }
+  if (typeof popupWin.isMinimized === 'function' && popupWin.isMinimized()) popupWin.restore();
+  popupWin.show();
+  popupWin.focus();
+}
 function createTray() {
-  try {
-    const p = path.join(ROOT, 'build', 'icon.png');
-    if (!fs.existsSync(p)) return;
-    const img = nativeImage.createFromPath(p).resize({ width: 20, height: 20 });
-    tray = new Tray(img);
-    tray.setToolTip('拟人搜索助手');
-    /* v1.1.6：托盘右击菜单只保留「打开主界面」与「退出」。
-       调试功能默认禁用且只能从命令行（npm run start:debug）开启，
-       菜单里不再提供任何调试入口。 */
-    tray.setContextMenu(Menu.buildFromTemplate([
-      { label: '打开主界面', click: () => { popupWin && (popupWin.show(), popupWin.focus()); } },
-      { label: '退出', click: () => { quitting = true; app.quit(); } }
-    ]));
-    tray.on('click', () => { popupWin && (popupWin.show(), popupWin.focus()); });
-  } catch (err) {
-    console.warn('[tray] 当前桌面环境不支持托盘，已跳过：', err.message);
+  if (tray) return true;
+  const files = process.platform === 'win32'
+    ? ['icon.ico', 'icon.png'] : ['icon.png', 'icon.ico'];
+  // Prefer real on-disk resources over virtual paths inside app.asar.
+  const dirs = process.resourcesPath
+    ? [path.join(process.resourcesPath, 'tray-icons'), path.join(ROOT, 'build')]
+    : [path.join(ROOT, 'build')];
+  for (const dir of dirs) for (const file of files) {
+    const iconPath = path.join(dir, file);
+    if (!fs.existsSync(iconPath)) continue;
+    try {
+      let img = nativeImage.createFromPath(iconPath);
+      if (!img || (typeof img.isEmpty === 'function' && img.isEmpty())) continue;
+      if (file === 'icon.png') img = img.resize({ width: 24, height: 24 });
+      const candidate = new Tray(img);
+      candidate.setToolTip('拟人搜索助手');
+      candidate.setContextMenu(Menu.buildFromTemplate([
+        { label: '打开主界面', click: showMainFromTray },
+        { label: '退出', click: () => { quitting = true; app.quit(); } }
+      ]));
+      candidate.on('click', showMainFromTray);
+      candidate.on('double-click', showMainFromTray);
+      tray = candidate; // strong reference keeps the icon alive until app shutdown
+      DBG.log('tray', '托盘已创建', { icon: iconPath });
+      return true;
+    } catch (err) {
+      console.warn('[tray] 加载图标或创建托盘失败：' + iconPath, err.message);
+    }
   }
+  console.warn('[tray] 无法创建系统托盘；关闭窗口时将正常退出，不会隐藏成后台残留进程。');
+  return false;
 }
 
 app.whenReady().then(() => {
@@ -2122,6 +2407,7 @@ try {
 app.on('window-all-closed', () => {});
 app.on('before-quit', () => { quitting = true; });
 app.on('will-quit', () => {
+  try { if (tray && typeof tray.destroy === 'function') tray.destroy(); tray = null; } catch {}
   for (const k of [...alarmTimers.keys()]) clearAlarm(k);
   try { if (taskResultLoadWatcher) taskResultLoadWatcher.cancel(); } catch {}
   try { if (DBG && typeof DBG.close === 'function') DBG.close(); } catch {}

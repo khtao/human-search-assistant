@@ -111,7 +111,8 @@ const ADAPT_WHITELIST = {
   summarizeTaskItems: 'V137 进度精确取整，只有 earned 达到 total 才显示 100%',
   refreshTodayTasks: 'V13 支持复用同一份 pages、可跳过 25s 注入兜底',
   autoSearchCount: 'V13 修正 cap=0 被 || 吞掉的 bug',
-  maybeShowReminder: 'V13 禁用「浏览网页就抓 /earn」的空闲请求'
+  maybeShowReminder: 'V13 禁用「浏览网页就抓 /earn」的空闲请求',
+  taskClickSpacing: 'R3 双端用户可设置 1–60 秒卡片点击间隔（默认 10 秒）'
 };
 
 function testAlignment() {

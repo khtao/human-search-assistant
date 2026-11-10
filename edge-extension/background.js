@@ -35,20 +35,24 @@ let guardBlocks = 0;
  *  · dashboard 用 <a target="_blank"> + 文本 "+10"；earn 用徽章 <p>5</p>
  *  · 统一改为以 a[href] 为入口，双通道取积分，定位/点击都落在 <a> 本身
  * ==========================================================================
- * v1.9 · 双页面独立点击 / 同名卡片可区分 / 页面就绪等待 / 统一 5s 调度
+ * v1.9 · 双页面独立点击 / 同名卡片可区分 / 页面就绪等待 / 可配置间隔（默认 10s）
  *  · dashboard 与 earn 两页都存在可点击任务，逐页独立扫描、各自去重，
  *    一页点过不会让另一页的同名任务被跳过
  *  · 同名同分卡片（如「你是否知道答案？」×2）用页面内序号 idx 定位，逐张点击
  *  · 导航后等页面真正加载完成并识别登录页，避免扫到上一页 / 空 DOM 就提前退出
- *  · 相邻两次点击统一按「点击时刻 + 5s」调度，跨页、跨轮次都成立
+ *  · 相邻两次点击按配置的点击时刻调度（默认 10s），跨页、跨轮次都成立
  *  · 任务卡片：每日活动(每日任务) → 日常任务；点击弹出的任务页保留不关闭
  *  · 搜索标签页运行期间保持焦点、结束关闭（后台节流会让搜索暂停）
  * ======================================================================== */
+<<<<<<< HEAD
 const TASK_CLICK_INTERVAL_MS = 350;   // 相邻两次任务点击的间隔（每张卡片打开间隔 5 秒）
+=======
+const TASK_CLICK_INTERVAL_MS = 10000;   // 相邻两次任务点击的间隔（默认每张卡片打开间隔 10 秒，可在设置中更改）
+>>>>>>> fb5efdd15db37cf18e87c9be2597e688bc7a03cf
 /* v1.2 · Rewards 侧栏 flyout 全量检查：从页面顶部滚到底部，逐段收集所有可打开的
-   任务卡，再按固定 5 秒间隔逐张打开。用户指定页面见 PRIMARY_FLYOUT_URL。 */
-const FLYOUT_SCAN_STEP_MS = 420;       // 每段滚动后等待 hydration / 懒加载
-const FLYOUT_SCAN_MAX_SEGMENTS = 24;   // 最多滚动段数，防超长页面卡死
+   任务卡，再按设置中的间隔（默认 10 秒）逐张打开。用户指定页面见 PRIMARY_FLYOUT_URL。 */
+const FLYOUT_SCAN_STEP_MS = 520;       // 每段滚动后等待 hydration / 懒加载
+const FLYOUT_SCAN_MAX_SEGMENTS = 160; // R4.1: cover long/dynamically expanding pages at small scroll increments   // 最多滚动段数，防超长页面卡死
 const FLYOUT_SCAN_SETTLE_MS = 900;     // 扫完回到顶部后的稳定等待
 const FLYOUT_INNER_MAX_SEGMENTS = 48;  // 所有内部滚动容器合计最多滚动段数
 const KEEP_TASK_TABS = true;            // 任务阶段打开的标签页一律不关闭
@@ -56,7 +60,7 @@ const KEEP_SEARCH_TAB_FOCUSED = true;   // 每轮搜索前把搜索页拉回焦�
 const FOCUS_WINDOW_TOO = true;          // 同时把浏览器窗口置为系统前台
 const RESTORE_FOCUS_ON_FINISH = true;   // 搜索结束后把焦点还给用户原来的标签页
 const TASK_TAB_KEYS = new Set(['rewardsTabId', 'taskClickTabId', 'sidebarTabId', 'taskListTabId', 'humanTabId']);
-let lastTaskClickAt = 0;                // 上一次「点击时刻」，用于统一 5s 间隔调度
+let lastTaskClickAt = 0;                // 上一次「点击时刻」，用于可配置间隔调度
 
 /* ==========================================================================
  * v2.1 · 从 Bing 搜索/首页右侧的 Microsoft Rewards 侧栏点任务卡
@@ -74,7 +78,7 @@ const TASK_MODE = 'human';              // 'human' | 'tasklist' | 'sidebar' | 'r
 const TASKLIST_REQUIRE_CARD_CLICK = true;
 /* v2.5：默认走 human —— 不抓 HTML、不用 CDP、不做 URL 指纹、不跨 frame 编排。
  * 打开页面 → 滚动 → 页面内鼠标点击卡片，仅此三步。 */
-const HUMAN_PAGE_SETTLE_MS = 1500;
+const HUMAN_PAGE_SETTLE_MS = 5000;
 const HUMAN_SCROLL_RESCAN = true;
 /* v2.8：点之前/之后调官方 getuserinfo 核验，只点「未完成且给分」的卡。
    页面内 fetch 失败/CORS 时静默回退到本地严格白名单，绝不阻塞。 */
@@ -215,6 +219,18 @@ function clampInt(v, lo, hi) { return Math.min(hi, Math.max(lo, Math.round(v)));
 let haltFlag = false;
 let runSignal = null;
 const cdpAttached = new Set();
+let lastTaskCdpError = '';
+// Edge can detach a debugger when another DevTools client takes ownership.
+// Invalidate the cached session so the next click cannot assume CDP remains active.
+if (chrome.debugger && chrome.debugger.onDetach &&
+    typeof chrome.debugger.onDetach.addListener === 'function') {
+  chrome.debugger.onDetach.addListener((source, reason) => {
+    if (!source || !Number.isInteger(source.tabId)) return;
+    cdpAttached.delete(source.tabId);
+    lastTaskCdpError = 'debugger-detached: ' + String(reason || 'unknown');
+    console.warn('[AutoTask][CDP] ' + lastTaskCdpError + ' tab=' + source.tabId);
+  });
+}
 
 function resetHalt() {
   haltFlag = false;
@@ -541,28 +557,41 @@ async function domWheel(tabId, dy) {
 
 /* ------------------------------------------- chrome.debugger / CDP 真实输入 */
 async function cdpAttach(tabId) {
-  if (haltFlag || !USE_REAL_INPUT) return false;
-  const id = Number(tabId);
-  if (cdpAttached.has(id)) return true;
-  let tab = null;
-  try { tab = await chrome.tabs.get(id); } catch { return false; }
-  if (!tab || !/^https:\/\/[^\/]*bing\.com\//i.test(String(tab.url || ''))) return false;
-  try {
-    await chrome.debugger.attach({ tabId: id }, '1.3');
-    if (haltFlag) {
-      try { await chrome.debugger.detach({ tabId: id }); } catch {}
-      return false;
-    }
-    cdpAttached.add(id);
-    // 让页面始终「自认为」有焦点：不抢可见焦点也能避免后台页自身被挂起
-    try {
-      await chrome.debugger.sendCommand({ tabId: id },
-        'Emulation.setFocusEmulationEnabled', { enabled: true });
-    } catch {}
-    return true;
-  } catch {
+  if (haltFlag || !USE_REAL_INPUT) {
+    lastTaskCdpError = haltFlag ? 'task-stopped' : 'real-input-disabled';
     return false;
   }
+  const id = Number(tabId);
+  if (cdpAttached.has(id)) return true;
+  // Navigation may still be in progress when waitForTab resolves; retry a
+  // bounded number of times rather than silently skipping CDP and all scrolling.
+  for (let attempt = 0; attempt < 3 && !haltFlag; attempt++) {
+    let tab = null;
+    try { tab = await chrome.tabs.get(id); }
+    catch (err) { lastTaskCdpError = 'tabs.get: ' + String(err && err.message || err); return false; }
+    let host = '';
+    try { host = new URL(String(tab && tab.url || '')).hostname.toLowerCase(); } catch {}
+    if (!host || !(host === 'bing.com' || host.endsWith('.bing.com'))) {
+      lastTaskCdpError = 'not-bing-task-page: ' + String(tab && tab.url || 'unknown');
+      if (attempt < 2) { await sleep(350); continue; }
+      break;
+    }
+    try {
+      await chrome.debugger.attach({ tabId: id }, '1.3');
+      if (haltFlag) { try { await chrome.debugger.detach({ tabId: id }); } catch {} return false; }
+      cdpAttached.add(id);
+      lastTaskCdpError = '';
+      try { await chrome.debugger.sendCommand({ tabId: id },
+        'Emulation.setFocusEmulationEnabled', { enabled: true }); } catch {}
+      console.info('[AutoTask][CDP] 已附加到任务标签页 ' + id + ' · ' + host);
+      return true;
+    } catch (err) {
+      lastTaskCdpError = 'debugger.attach: ' + String(err && err.message || err);
+      console.warn('[AutoTask][CDP] 第 ' + (attempt + 1) + ' 次附加失败：' + lastTaskCdpError);
+      if (attempt < 2) await sleep(450);
+    }
+  }
+  return false;
 }
 
 async function cdpDetachAll() {
@@ -1602,6 +1631,7 @@ const DEFAULT_SETTINGS = {
   reminderTo: '23:00',
   reminderSeconds: 5,
   reduceMotion: false,
+  cardClickIntervalSec: 10,
   skipCompletedCards: false      // 默认不跳过：点击所有包含积分的卡片
 };
 
@@ -4002,104 +4032,172 @@ function ybInject(action, payload) {
   var POINTS_RE = /\+\s*(\d{1,4})(?!\d)/;
   var DONE_RE = /已完成|已领取|已拿满|已获得|已完成领取|completed|claimed|offer completed/i;
 
+  /* v1.3.8-R2: collect the ACTUAL clickable task cards, not only +N text nodes.
+   * Rewards often renders plain "10" in a colored badge, uses a clickable wrapper
+   * with no <a>, or virtualizes cards into an inner scrolling panel.
+   * Each visible card is returned with a stable href/offer id or title+points.
+   */
   var scoreCards = function (includeDone) {
-    var all = deepAll(document, '*');
-    var out = [], skipped = [], seen = [];
-    for (var i = 0; i < all.length && i < 12000; i++) {
-      var el = all[i];
-      var tag0 = String(el.tagName || '').toUpperCase();
-      if (tag0 === 'SCRIPT' || tag0 === 'STYLE' || tag0 === 'NOSCRIPT'
-          || tag0 === 'TEMPLATE' || tag0 === 'SVG') continue;
-      /* 只看「自身文本节点」里的 +N：自动取到最内层徽章，父容器不会重复命中 */
-      var own = '';
+    var cards = [], skipped = [], visited = [], seenIdentity = {};
+    var norm = function (s) { return String(s || '').replace(/\s+/g, ' ').trim(); };
+    var pointPattern = /(?:\+|＋)\s*(\d{1,4})(?!\d)/;
+    var plainPointPattern = /^\s*(\d{1,4})\s*(?:分|积分|pts?|points?)?\s*$/i;
+    var badgeSelector = '[class*="bg-statusSuccessRewardsBg"],[class*="pointBadge" i],[class*="pointsBadge" i],[class*="rewardBadge" i],[data-testid*="point" i],[aria-label*="point" i]';
+    var isDone = function (s) { return !/\bnot\s+(?:yet\s+)?completed\b/i.test(s) && DONE_RE.test(s); };
+    var identity = function (el, href, title, pts) {
+      var id = el.getAttribute('data-offer-id') || el.getAttribute('data-bi-id')
+        || el.getAttribute('data-testid') || el.id || '';
+      return (href ? 'href:' + href : id ? 'id:' + id : 'text:' + norm(title).toLowerCase()) + '|p:' + pts;
+    };
+    var badgePoints = function (el) {
       try {
-        for (var n = 0; n < el.childNodes.length; n++) {
-          var nd = el.childNodes[n];
-          if (nd && nd.nodeType === 3) own += nd.nodeValue;
+        var list = el.querySelectorAll(badgeSelector);
+        for (var k = 0; k < list.length && k < 12; k++) {
+          var t = norm(clean(list[k])), m = pointPattern.exec(t) || plainPointPattern.exec(t);
+          if (m && +m[1] > 0 && +m[1] <= 1000) return +m[1];
         }
-      } catch (e) { continue; }
-      var m = POINTS_RE.exec(String(own).replace(/\s+/g, ' '));
-      if (!m) continue;
-      var pts = parseInt(m[1], 10);
-      if (!(pts > 0)) continue;
-
-      /* 向上找卡片容器。cursor:pointer 是「继承」属性，最内层 +N 徽章 span 也会
-         命中；若直接拿 span 当卡片，title/href 全空、点击坐标落在小徽章上、
-         后台按空 title 去重会把大量卡片压成一组（E2E 实测 11 张 → 4 张）。
-         两轮查找：① 先认语义可点击祖先  ② 再退到「有尺寸」的 pointer 容器。 */
-      var card = null, p = el;
-      for (var up = 0; up < 8 && p; up++, p = p.parentElement) {
-        if (p === document.body || p === document.documentElement) break;
-        var tag = p.tagName || '';
-        if (tag === 'A' || tag === 'BUTTON' || p.getAttribute('role') === 'button'
-            || p.getAttribute('onclick')) { card = p; break; }
-      }
-      if (!card) {
-        p = el;
-        for (var up2 = 0; up2 < 8 && p; up2++, p = p.parentElement) {
-          if (p === document.body || p === document.documentElement) break;
-          var pr0 = p.getBoundingClientRect();
-          if (pr0.width < 40 || pr0.height < 24) continue;
-          try {
-            if (/pointer/i.test(window.getComputedStyle(p).cursor)) { card = p; break; }
-          } catch (e2) {}
+      } catch (e) {}
+      return 0;
+    };
+    // Older Rewards cards render a bare numeric <p> under an offer link, without
+    // a badge class or plus sign. Only trust it when the URL/id is task-specific.
+    var taskLinkPoints = function (el, href) {
+      if (!TASK_HREF.test(href || '') && !el.getAttribute('data-offer-id')) return 0;
+      try {
+        var parts = el.querySelectorAll('p,span');
+        for (var k = 0; k < parts.length && k < 24; k++) {
+          if (parts[k].children && parts[k].children.length) continue;
+          var m = plainPointPattern.exec(norm(clean(parts[k])));
+          if (m && +m[1] > 0 && +m[1] <= 1000) return +m[1];
         }
+      } catch (e) {}
+      return 0;
+    };
+    var getHref = function (el) {
+      var a = el.tagName === 'A' ? el : el.querySelector && el.querySelector('a[href]');
+      return a ? absUrl(a.getAttribute('href') || '') : '';
+    };
+    var isClickable = function (el) {
+      var tag = String(el.tagName || '').toUpperCase();
+      return tag === 'A' || tag === 'BUTTON' || /^(?:button|link)$/.test(el.getAttribute('role') || '')
+        || el.hasAttribute('data-offer-id') || el.hasAttribute('data-bi-id')
+        || el.hasAttribute('onclick');
+    };
+    var resolveCard = function (origin) {
+      var el = origin;
+      for (var i = 0; el && i < 9; i++, el = el.parentElement) {
+        if (el === document.body || el === document.documentElement) break;
+        if (isClickable(el)) return el;
       }
-      if (!card) card = el.parentElement || el;
-      var dup = false;
-      for (var j = 0; j < seen.length; j++) if (seen[j] === card) { dup = true; break; }
-      if (dup) continue;
-      seen.push(card);
-
-      var text = clean(card);
-      var aria = String(card.getAttribute('aria-label') || '');
-      var done = DONE_RE.test(text) || DONE_RE.test(aria);
+      // Last resort: some Rewards cards use only CSS cursor:pointer on a div.
+      // Do not return the tiny inherited-pointer badge; require a card-sized
+      // ancestor containing meaningful text beyond the points number.
+      el = origin;
+      for (var j = 0; el && j < 7; j++, el = el.parentElement) {
+        if (el === document.body || el === document.documentElement) break;
+        var rect = el.getBoundingClientRect();
+        if (rect.width < 80 || rect.height < 30 || rect.height > 480) continue;
+        var t = norm(clean(el)).replace(/(?:\+|＋)\s*\d{1,4}/g, '').trim();
+        if (t.length < 3 || t.length > 280) continue;
+        try { if (window.getComputedStyle(el).cursor === 'pointer') return el; }
+        catch (e) {}
+      }
+      return null;
+    };
+    var add = function (el, fallbackPoints, kind) {
+      if (!el || visited.indexOf(el) >= 0 || !el.getBoundingClientRect) return;
+      var text = norm(clean(el)) || norm(el.getAttribute('aria-label'));
+      if (!text || text.length > 700 || bannedText.test(text)) return;
+      var r = el.getBoundingClientRect();
+      if (r.width < 24 || r.height < 16) return;
+      var href = getHref(el);
+      if (href && (BAD_HREF.test(href) || NAV_ONLY.test(href) || /^javascript:/i.test(href))) return;
+      var hit = pointPattern.exec(text);
+      var pts = hit ? +hit[1] : badgePoints(el) || taskLinkPoints(el, href) || (+fallbackPoints || 0);
+      if (!(pts > 0) || pts > 1000) return;
+      // Do not count a navigation link, profile score or static Rewards totals as a task.
+      if (!href && !isClickable(el)) {
+        try { if (window.getComputedStyle(el).cursor !== 'pointer') return; }
+        catch (e) { return; }
+      }
+      var titleNode = null;
+      try {
+        var titles = el.querySelectorAll('[class*="title" i],h2,h3,h4,strong,[data-testid*="title" i]');
+        for (var j = 0; j < titles.length && j < 8; j++) {
+          var t = norm(clean(titles[j]));
+          if (t && t.length < 115 && !pointPattern.test(t) && !plainPointPattern.test(t)) {
+            titleNode = titles[j]; break;
+          }
+        }
+      } catch (e) {}
+      var title = norm(titleNode ? clean(titleNode) : text)
+        .replace(/(?:\+|＋)\s*\d{1,4}(?!\d)/g, '')
+        .replace(/\b(?:Offer )?(?:not )?completed\b/gi, '')
+        .replace(/已完成|已领取|待完成|可获得/g, '').trim().slice(0, 100);
+      var label = String(el.getAttribute('aria-label') || '');
+      if ((!title || plainPointPattern.test(title)) && label) title = label.slice(0, 100);
+      if (!title) return;
+      var done = isDone(text + ' ' + label);
       if (done && !includeDone) {
-        skipped.push({ title: text.slice(0, 40), points: pts, reason: '已完成/已领取' });
-        continue;
+        visited.push(el);
+        skipped.push({ title: title.slice(0, 40), points: pts, reason: '已完成/已领取' });
+        return;
       }
-      var tr = topRect(card);
-      if ((tr.w || 0) < 2 && (tr.h || 0) < 2) continue;   // 隐藏节点点不到
-      /* 稳定标识：DOM 顺序变化 / 懒加载 / 面板刷新后仍指向同一张卡。
-         之前用 out.length 编号，滚动前后 idx 会漂移，human.aim 就点丢。 */
-      var href0 = card.tagName === 'A' ? absUrl(card.getAttribute('href') || '') : '';
-      var stable = String(href0 || text || '').replace(/\s+/g, ' ').trim().slice(0, 160);
-      var idx = 'yb-' + stable;
-      if (stable) { try { card.setAttribute('data-yb-hidx', idx); } catch (e3) {} }
-      out.push({
-        idx: idx, el: card,
-        href: card.tagName === 'A' ? absUrl(card.getAttribute('href') || '') : '',
-        text: text.slice(0, 120),
-        title: text.replace(/\+\s*\d{1,4}/g, '').replace(/\s+/g, ' ').trim().slice(0, 48),
-        points: pts, done: done,
-        target: card.getAttribute('target') || '',
-        section: 'daily', kind: 'badge', badgeIndex: out.length,
-        x: tr.x, y: tr.y, w: tr.w, h: tr.h
-      });
-    }
+      var key = identity(el, href, title, pts);
+      if (seenIdentity[key]) return;
+      visited.push(el);
+      seenIdentity[key] = true;
+      var hidx = 'yb-' + key.slice(0, 235);
+      try { el.setAttribute('data-yb-hidx', hidx); } catch (e) {}
+      cards.push({ idx: hidx, el: el, href: href,
+        text: text.slice(0, 160), title: title, points: pts, done: done,
+        target: el.getAttribute('target') || (el.querySelector && el.querySelector('a[target]')
+          ? el.querySelector('a[target]').getAttribute('target') : '') || '',
+        section: 'daily', kind: kind || 'badge', badgeIndex: cards.length,
+        x: r.left + r.width / 2, y: r.top + r.height / 2, w: r.width, h: r.height });
+    };
 
-    /* 圆形 Offer 卡（aria-label 里含 Offer，无 +N 文本）也算积分卡，不再限定恰好 3 个 */
-    var offers = deepAll(document, '[aria-label*="Offer"],[aria-label*="offer"]');
-    for (var k = 0; k < offers.length && k < 60; k++) {
-      var o = offers[k];
-      var label = String(o.getAttribute('aria-label') || '');
-      if (!/offer/i.test(label)) continue;
-      var odone = !/not completed/i.test(label) || /offer completed/i.test(label);
-      if (odone && !includeDone) {
-        skipped.push({ title: label.slice(0, 40), points: 10, reason: '已完成/已领取' });
-        continue;
+    // 1) Anchor / button / offer-id candidates with either +N or a plain points badge.
+    var controls = deepAll(document,
+      'a[href],button,[role="button"],[role="link"],[data-offer-id],[data-bi-id]');
+    for (var i = 0; i < controls.length && i < 8000; i++) {
+      var c = controls[i];
+      // The outer panel can contain many task links: prefer its innermost action.
+      if (c.querySelector && c.tagName !== 'A' && c.tagName !== 'BUTTON') {
+        var nested = c.querySelector('a[href],button,[role="button"],[role="link"]');
+        if (nested && (pointPattern.test(clean(nested)) || badgePoints(nested))) continue;
       }
-      var otr = topRect(o);
-      var oidx = 'yb-offer-' + label.replace(/\s+/g, ' ').trim().slice(0, 120) + '-' + k;
-      try { o.setAttribute('data-yb-hidx', oidx); } catch (e4) {}
-      out.push({
-        idx: oidx, el: o, href: '', text: label.slice(0, 100), title: label.slice(0, 48),
-        points: 10, done: odone, target: '', section: 'daily', kind: 'offer',
-        offerIndex: k, x: otr.x, y: otr.y, w: otr.w, h: otr.h
-      });
+      add(c, 0, 'badge');
     }
-    return { cards: out, skipped: skipped, zone: { start: -1, end: 1e9 },
-      hasBadges: out.length > 0 };
+    // 2) +N text nested in an unlabelled clickable wrapper (common SPA layout).
+    var nodes = deepAll(document, '*');
+    for (var i = 0; i < nodes.length && i < 16000; i++) {
+      var node = nodes[i], own = '';
+      if (/^(?:SCRIPT|STYLE|NOSCRIPT|TEMPLATE|SVG)$/.test(String(node.tagName || ''))) continue;
+      try {
+        for (var j = 0; j < node.childNodes.length; j++) {
+          if (node.childNodes[j].nodeType === 3) own += node.childNodes[j].nodeValue;
+        }
+      } catch (e) {}
+      if (!pointPattern.test(own)) continue;
+      var parent = resolveCard(node);
+      if (parent) add(parent, 0, 'badge');
+    }
+    // 3) Microsoft offer cards may encode status/points in aria-label rather than text.
+    var offers = deepAll(document, '[aria-label*="Offer"],[aria-label*="offer"]');
+    for (var i = 0; i < offers.length && i < 120; i++) {
+      var o = offers[i], label = norm(o.getAttribute('aria-label'));
+      if (!/\boffer\b/i.test(label)) continue;
+      var m = pointPattern.exec(label);
+      var pts = m ? +m[1] : badgePoints(o);
+      // Default 10 is only safe for explicitly annotated offer-state controls.
+      if (!pts && /\boffer\s+(?:not\s+)?completed\b/i.test(label)) pts = 10;
+      if (!pts) continue;
+      var control = resolveCard(o) || o;
+      add(control, pts, 'offer');
+    }
+    return { cards: cards, skipped: skipped, zone: { start: -1, end: 1e9 },
+      hasBadges: cards.length > 0 };
   };
 
   /* 兼容旧调用点：badgeCards 别名（humanProbe 仍用它做诊断） */
@@ -4163,6 +4261,7 @@ function ybInject(action, payload) {
       out.push({ idx: i, max: max, view: el.clientHeight || 400,
         scrollTop: el.scrollTop || 0,
         top: Math.round(el.getBoundingClientRect().top),
+        left: Math.round(el.getBoundingClientRect().left),
         w: Math.round(el.clientWidth), h: Math.round(el.clientHeight) });
     }
     return { ok: true, scrollers: out, url: location.href };
@@ -4201,6 +4300,7 @@ function ybInject(action, payload) {
     };
   };
 
+<<<<<<< HEAD
   /* 稳定身份优先：href → Offer/徽章序号 → DOM 标记 → 标题。 */
   var pickCard = function (cards, payload) {
     var i, c = null;
@@ -4241,12 +4341,43 @@ function ybInject(action, payload) {
     }
     if (!c && Number.isFinite(payload.order)) c = cards[payload.order] || null;
     return c;
+=======
+  /* HSA_TASK_LOCATOR_REPAIR_20261109: do not use stale order/badgeIndex as task identity. */
+  /* Never reuse a stale DOM order. For a real href or offer id, match its
+   * stable identity first. Ambiguous title-only matches are deliberately skipped. */
+  var pickCard = function (cards, payload) {
+    var p = payload || {};
+    var norm = function (v) { return String(v || '').replace(/\s+/g, '').toLowerCase(); };
+    var title = norm(p.title), id = String(p.idx || '');
+    var points = Number(p.points) || 0;
+    var href = String(p.href || '');
+    var sameTitle = function (c) {
+      if (!title) return true;
+      var t = norm(c.title || c.text);
+      return !!t && (t.indexOf(title) >= 0 || title.indexOf(t) >= 0);
+    };
+    var eligible = cards.filter(function (c) {
+      return (!points || Number(c.points) === points) && (!href || c.href === href);
+    });
+    if (href) {
+      // A URL is stronger evidence than a localized title. Never guess if
+      // two distinct rendered nodes point to the same URL at once.
+      return eligible.length === 1 ? eligible[0] : null;
+    }
+    if (id) {
+      var byId = eligible.filter(function (c) { return String(c.idx || '') === id; });
+      if (byId.length === 1 && sameTitle(byId[0])) return byId[0];
+      if (byId.length > 1) return null;
+    }
+    var byTitle = eligible.filter(sameTitle);
+    return title && points && byTitle.length === 1 ? byTitle[0] : null;
+>>>>>>> fb5efdd15db37cf18e87c9be2597e688bc7a03cf
   };
 
   /**
    * v2.7 关键：点击前「实时」把目标滚进视口并重读坐标。
    * 不能用扫描时缓存的坐标 —— 调试横幅出现、hydration、内部滚动容器、
-   * 5s 等待、上一张点击后面板刷新，都会让旧坐标失效（点偏到空白处）。
+   * 按设置等待、上一张点击后面板刷新，都会让旧坐标失效（点偏到空白处）。
    */
   var humanAim = function (payload) {
     var cards = humanCards(!!(payload && payload.includeDone), !!(payload && payload.full));
@@ -4305,6 +4436,25 @@ function ybInject(action, payload) {
       try { return new URL(String(v || ''), location.href).href; }
       catch (e) { return String(v || ''); }
     };
+<<<<<<< HEAD
+=======
+    var sameTaskHref = function (a, b) {
+      if (!a || !b) return false;
+      var x = abs(a), y = abs(b);
+      if (x === y) return true;
+      try {
+        var u = new URL(x), v = new URL(y);
+        if (u.hostname !== v.hostname || u.pathname.replace(/\/$/,'') !== v.pathname.replace(/\/$/,'')) return false;
+        var q = u.searchParams.get('q'), q2 = v.searchParams.get('q');
+        if (q && q2) return q.trim().toLowerCase() === q2.trim().toLowerCase();
+        for (var k of ['offerId', 'offerid', 'OCID', 'BTEPOKey']) {
+          var l = u.searchParams.get(k), r = v.searchParams.get(k);
+          if (l && r && l === r) return true;
+        }
+      } catch (e) {}
+      return false;
+    };
+>>>>>>> fb5efdd15db37cf18e87c9be2597e688bc7a03cf
     var pointsOf = function (el, text) {
       var m = /(?:\+|＋)\s*([\d,]{1,5})(?![\d,])/.exec(text || cleanLocal(el));
       if (m) return parseInt(m[1].replace(/,/g, ''), 10);
@@ -4313,19 +4463,51 @@ function ybInject(action, payload) {
         var n = /^\s*([\d,]{1,5})\s*$/.exec(cleanLocal(b));
         if (n) return parseInt(n[1].replace(/,/g, ''), 10);
       } catch (e2) {}
+<<<<<<< HEAD
       return 0;
     };
     var all = function () { return deepAll(document, 'a,button,[role="button"],[data-bi-id]'); };
     var find = function () {
       var nodes = all(), best = null, bestScore = 0;
+=======
+      try {
+        var labels = el.querySelectorAll('[class*="bg-statusSuccessRewardsBg"],[class*="pointBadge" i],[data-testid*="point" i]');
+        for (var i = 0; i < labels.length && i < 10; i++) {
+          var n = /^\s*([\d,]{1,5})\s*$/.exec(cleanLocal(labels[i]));
+          if (n) return parseInt(n[1].replace(/,/g, ''), 10);
+        }
+      } catch (e3) {}
+      return 0;
+    };
+    var all = function () { return deepAll(document, 'a,button,[role="button"],[data-bi-id],[data-offer-id],[data-testid]'); };
+    var find = function () {
+      var nodes = all(), best = null, bestScore = 0, ties = 0;
+>>>>>>> fb5efdd15db37cf18e87c9be2597e688bc7a03cf
       var wantHref = expectedHref ? abs(expectedHref) : '';
       var wantTitle = norm(expectedTitle);
       for (var i = 0; i < nodes.length; i++) {
         var el = nodes[i];
         if (!el || !el.getBoundingClientRect) continue;
         var tx = cleanLocal(el), href = el.tagName === 'A' ? abs(el.getAttribute('href') || '') : '';
+<<<<<<< HEAD
         var score = 0;
         if (wantHref && href && href === wantHref) score += 120;
+=======
+        var stableId = !!((wantHref && sameTaskHref(href, wantHref))
+          || (loc.dataBiId && el.getAttribute('data-bi-id') === String(loc.dataBiId))
+          || (loc.dataOfferId && el.getAttribute('data-offer-id') === String(loc.dataOfferId))
+          || (loc.dataTestId && el.getAttribute('data-testid') === String(loc.dataTestId))
+          || (loc.id && el.id === String(loc.id))
+          || (loc.ariaLabel && el.getAttribute('aria-label') === String(loc.ariaLabel)));
+        if (wantHref && href && !sameTaskHref(href, wantHref)) continue;
+        var semantic = !!(wantTitle && norm(tx).indexOf(wantTitle) >= 0);
+        var actualPoints = expectedPoints ? pointsOf(el, tx) : 0;
+        if (expectedPoints && actualPoints && actualPoints !== expectedPoints) continue;
+        if (!stableId && (!semantic || (expectedPoints && actualPoints !== expectedPoints))) continue;
+        if (!stableId && tx.length > 280) continue;
+        var score = 0;
+        if (wantHref && href && sameTaskHref(href, wantHref)) score += 120;
+>>>>>>> fb5efdd15db37cf18e87c9be2597e688bc7a03cf
         if (loc.dataBiId && el.getAttribute('data-bi-id') === String(loc.dataBiId)) score += 100;
         if (loc.dataOfferId && el.getAttribute('data-offer-id') === String(loc.dataOfferId)) score += 95;
         if (loc.dataTestId && el.getAttribute('data-testid') === String(loc.dataTestId)) score += 85;
@@ -4337,18 +4519,32 @@ function ybInject(action, payload) {
         var gotPoints = expectedPoints ? pointsOf(el, tx) : 0;
         if (expectedPoints && gotPoints === expectedPoints) score += 24;
         else if (expectedPoints && gotPoints > 0) score -= 22;
+<<<<<<< HEAD
         if (score > bestScore) { best = el; bestScore = score; }
       }
       return bestScore >= 42 ? best : null;
+=======
+        if (score > bestScore) { best = el; bestScore = score; ties = 1; }
+        else if (score === bestScore && score > 0) { ties++; }
+      }
+      return bestScore >= 60 && ties === 1 ? best : null;
+>>>>>>> fb5efdd15db37cf18e87c9be2597e688bc7a03cf
     };
     var el = find();
     if (!el) return { ok: false, reason: 'indexed-card-not-found', title: expectedTitle, href: expectedHref };
     var txFinal = cleanLocal(el);
     var hrefFinal = el.tagName === 'A' ? abs(el.getAttribute('href') || '') : '';
+<<<<<<< HEAD
     if (expectedHref && hrefFinal && hrefFinal !== abs(expectedHref)) {
       return { ok: false, reason: 'indexed-href-mismatch', href: hrefFinal, expectedHref: expectedHref };
     }
     if (expectedTitle && norm(txFinal).indexOf(norm(expectedTitle)) < 0 && !(expectedHref && hrefFinal === abs(expectedHref))) {
+=======
+    if (expectedHref && hrefFinal && !sameTaskHref(hrefFinal, expectedHref)) {
+      return { ok: false, reason: 'indexed-href-mismatch', href: hrefFinal, expectedHref: expectedHref };
+    }
+    if (expectedTitle && norm(txFinal).indexOf(norm(expectedTitle)) < 0 && !(expectedHref && sameTaskHref(hrefFinal, expectedHref))) {
+>>>>>>> fb5efdd15db37cf18e87c9be2597e688bc7a03cf
       return { ok: false, reason: 'indexed-title-mismatch', title: txFinal.slice(0, 80) };
     }
     try { el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' }); } catch (e4) {}
@@ -4720,7 +4916,7 @@ async function waitForNewTaskTabs(before, tabId, stat, token, timeoutMs = 2200) 
 
 /**
  * 在侧栏里逐张点击任务卡。
- *  · 统一 5s 间隔（taskClickSpacing，按点击时刻对齐）
+ *  · 统一可配置间隔（taskClickSpacing，按点击时刻对齐）
  *  · cdp-first：能算顶层坐标就用 CDP 真鼠标；没弹出新标签页再补页面内事件序列
  *  · 仍没弹出 → 按 href 兜底 chrome.tabs.create，任务标签页一律保留不关闭
  *  · 载体页 sidebarTabId 也保留（closeTab 对 TASK_TAB_KEYS 放行）
@@ -4757,7 +4953,7 @@ async function clickCardsInSidebar(level, token, done, stat) {
       for (const item of items) {
         if (!isCurrent(token)) break;
         const before = await tabIds();
-        await taskClickSpacing(token);           // ← 相邻点击固定 5s
+        await taskClickSpacing(token);           // ← 相邻点击按设置的间隔
         await ensureTabActive(tabId);            // 后台标签页点击可能不触发导航
 
         let method = 'dom';
@@ -4863,8 +5059,13 @@ async function waitForTaskPageReady(tabId, url, token) {
 
 /** 统一调度：相邻任务卡点击间保留短暂渲染间隔，避免页面状态竞争。 */
 async function taskClickSpacing(token) {
-  const left = TASK_CLICK_INTERVAL_MS - (Date.now() - lastTaskClickAt);
-  if (left > 0) await nap(left, token);
+  const cfg = await getSettings();
+  const seconds = Number(cfg.cardClickIntervalSec);
+  const interval = Number.isFinite(seconds)
+    ? Math.round(Math.min(60, Math.max(1, seconds)) * 1000) : TASK_CLICK_INTERVAL_MS;
+  const left = interval - (Date.now() - lastTaskClickAt);
+  if (lastTaskClickAt && left > 0) await nap(left, token);
+  if (token != null && !isCurrent(token)) throw STOP;
   lastTaskClickAt = Date.now();
 }
 
@@ -4943,7 +5144,7 @@ async function clickCardsOnPage(url, level, token, done, stat) {
         }
         const before = await tabIds();
 
-        await taskClickSpacing(token);           // ← 统一 5s 间隔（点击时刻对齐）
+        await taskClickSpacing(token);           // ← 可配置间隔（点击时刻对齐）
 
         // 后台标签页的 CDP 点击可能不触发 target=_blank，临时置为 active
         if (KEEP_TASK_CLICK_ACTIVE) await ensureTabActive(tabId);
@@ -5304,7 +5505,7 @@ async function clickTargetsFromTaskList(token, stat) {
     if (done.has(key)) continue;
     done.add(key);
 
-    await taskClickSpacing(token);          // 相邻点击统一 5s 间隔
+    await taskClickSpacing(token);          // 相邻点击按设置中的间隔
     const target = { url: t.url, name: t.name, points: t.points, section: t.section, page: t.page };
 
     // 等卡片真正渲染出来（hydration / 侧栏展开都需要时间）
@@ -5448,16 +5649,32 @@ async function humanWaitPage(tabId, token) {
  *  · 先展开侧栏面板，再按视口 70% 步长从 y=0 逐段滚到页面底部
  *  · 每段等待 hydration / 懒加载后扫一次，按「标题+积分+类型」稳定键去重合并
  *  · 同步滚动侧栏内部 overflow:auto/scroll 容器，避免漏掉内嵌列表里的卡片
- *  · 扫完回到顶部，返回完整清单；后续逐张打开由 taskClickSpacing 保证 5s 间隔
+ *  · 扫完回到顶部，返回完整清单；后续逐张打开由 taskClickSpacing 保证设置的间隔（默认 10s）
  */
 async function collectFlyoutCardsFull(tabId, token, stat, needPanel, includeDone) {
+  // CDP mouse-wheel triggers real scroll listeners / lazy loading, while the
+  // following scripted position guarantees exact coverage of virtual lists.
+  const wheel = async (dy, x, y) => {
+    if (!cdpAttached.has(Number(tabId)) || !dy) return;
+    try {
+      await cdpCmd(tabId, 'Input.dispatchMouseEvent', {
+        type: 'mouseWheel', x: Math.max(20, Math.round(x || 360)),
+        y: Math.max(20, Math.round(y || 280)), deltaX: 0, deltaY: dy,
+        button: 'none', modifiers: 0
+      });
+      if (stat) stat.cdpWheelEvents = (stat.cdpWheelEvents || 0) + 1;
+    } catch (err) {
+      console.warn('[AutoTask][Scroll] CDP wheel unavailable; using explicit scrollTo: '
+        + String(err && err.message || err));
+    }
+  };
   const merged = [];
   const seen = new Set();
   let segments = 0, height = 800, viewport = 700;
   let lastTitle = '', lastSignedOut = false, lastSkipped = [];
 
   const keyOf = c => [
-    String(c.title || c.text || '').replace(/\s+/g, '').toLowerCase().slice(0, 48),
+    String(c.idx || c.href || c.title || c.text || '').replace(/\s+/g, '').toLowerCase(),
     Number(c.points) || 0, String(c.kind || '')
   ].join('|');
   const add = list => {
@@ -5479,17 +5696,40 @@ async function collectFlyoutCardsFull(tabId, token, stat, needPanel, includeDone
   const first = await inject(tabId, ybInject, ['human.scrollTo', { y: 0 }]);
   if (first && Number(first.scrollHeight) > height) height = Number(first.scrollHeight);
   if (first && Number(first.viewport) > 0) viewport = Number(first.viewport);
-  const step = Math.max(280, Math.round(viewport * 0.7));
-
-  for (let y = 0; y <= height && segments < FLYOUT_SCAN_MAX_SEGMENTS && isCurrent(token); y += step) {
-    await inject(tabId, ybInject, ['human.scrollTo', { y: y }]);
+  /* R4.1: scroll by a capped number of pixels, never divide the whole page
+     into large jumps. A completed sweep always contains at least twelve
+     520ms scan ticks (6.24s), even for pages with no overflow. If navigation
+     or the user cancels, stop immediately rather than imposing the minimum. */
+  const minimumTicks = Math.ceil(5000 / FLYOUT_SCAN_STEP_MS) + 2;
+  let previousY = 0;
+  for (let n = 0; n < FLYOUT_SCAN_MAX_SEGMENTS && isCurrent(token); n++) {
+    const maxY = Math.max(0, height - viewport);
+    // Distribute the movement over >= 5 seconds even when the page is short;
+    // on long pages, never jump more than 220 CSS pixels per tick.
+    const slowStep = Math.min(220, Math.max(1, Math.floor(maxY / Math.max(1, minimumTicks - 1))));
+    const y = n === 0 ? 0 : Math.min(maxY, previousY + slowStep);
+    if (y > previousY) await wheel(y - previousY, 350, Math.max(40, Math.round(viewport / 2)));
+    const position = await inject(tabId, ybInject, ['human.scrollTo', { y }]);
     await nap(FLYOUT_SCAN_STEP_MS, token);
     const snap = await inject(tabId, ybInject, ['human.scan', { full: true, includeDone }]);
     if (snap && Array.isArray(snap.cards)) add(snap.cards);
     if (snap && snap.title) lastTitle = snap.title;
     if (snap && snap.signedOut) lastSignedOut = true;
     if (snap && Array.isArray(snap.skipped)) lastSkipped = snap.skipped;
+    if (position && Number(position.scrollHeight) > height) height = Number(position.scrollHeight);
+    previousY = y;
     segments++;
+    if (n + 1 >= minimumTicks && y >= Math.max(0, height - viewport)) {
+      // Keep a final hydration window at the current bottom before exiting.
+      // If a lazy loader grows the page, the next pass advances only slowStep.
+      await nap(FLYOUT_SCAN_STEP_MS, token);
+      const tail = await inject(tabId, ybInject, ['human.scan', { full: true, includeDone }]);
+      if (tail && Array.isArray(tail.cards)) add(tail.cards);
+      const tailPos = await inject(tabId, ybInject, ['human.scrollTo', { y }]);
+      if (tailPos && Number(tailPos.scrollHeight) > height) {
+        height = Number(tailPos.scrollHeight);
+      } else break;
+    }
   }
 
   /* ② 内部滚动条：cn.bing.com/rewards/panelflyout 有「页面 + 面板」双滚动条。
@@ -5500,9 +5740,11 @@ async function collectFlyoutCardsFull(tabId, token, stat, needPanel, includeDone
   for (const sc of scrollers) {
     const max = Number(sc.max) || 0;
     if (max <= 0) continue;
-    const stepInner = Math.max(120, Math.round((Number(sc.view) || 400) * 0.7));
+    const stepInner = Math.max(95, Math.round((Number(sc.view) || 400) * 0.32));
     for (let y = 0; y <= max && innerSegments < FLYOUT_INNER_MAX_SEGMENTS
          && isCurrent(token); y += stepInner) {
+      if (y > 0) await wheel(stepInner, Number(sc.left) + Number(sc.w) / 2,
+        Math.max(30, Number(sc.top) + Number(sc.h) / 2));
       await inject(tabId, ybInject, ['human.scrollInner', { idx: sc.idx, y: y }]);
       await nap(FLYOUT_SCAN_STEP_MS, token);
       const snap = await inject(tabId, ybInject,
@@ -5541,6 +5783,42 @@ async function collectFlyoutCardsFull(tabId, token, stat, needPanel, includeDone
   };
 }
 
+/* HSA_TASK_LOCATOR_REPAIR_20261109: relocate a virtualized card by incrementally visiting the page and scrollable panels. */
+async function locateHumanCardAcrossScroll(tabId, payload, token) {
+  const tryAim = async () => {
+    const result = await inject(tabId, ybInject, ['human.aim', payload]).catch(() => null);
+    return result && result.ok ? result : null;
+  };
+  let aim = await tryAim();
+  if (aim) return aim;
+  const start = await inject(tabId, ybInject, ['human.scrollTo', { y: 0 }]).catch(() => null);
+  let height = Math.max(800, Number(start && start.scrollHeight) || 800);
+  const viewport = Math.max(250, Number(start && start.viewport) || 700);
+  const step = Math.max(180, Math.round(viewport * 0.65));
+  for (let y = 0, n = 0; n < 48 && isCurrent(token); y += step, n++) {
+    const pos = await inject(tabId, ybInject, ['human.scrollTo', { y }]).catch(() => null);
+    await nap(180, token);
+    aim = await tryAim();
+    if (aim) return aim;
+    height = Math.max(height, Number(pos && pos.scrollHeight) || 0);
+    if (y >= height - viewport) break;
+  }
+  const info = await inject(tabId, ybInject, ['human.scrollers', {}]).catch(() => null);
+  for (const sc of ((info && info.scrollers) || []).slice(0, 12)) {
+    let max = Number(sc.max) || 0;
+    const stride = Math.max(120, Math.round((Number(sc.view) || 400) * 0.6));
+    for (let y = 0, n = 0; n < 48 && isCurrent(token); y += stride, n++) {
+      const pos = await inject(tabId, ybInject, ['human.scrollInner', { idx: sc.idx, y }]).catch(() => null);
+      await nap(180, token);
+      aim = await tryAim();
+      if (aim) return aim;
+      max = Math.max(max, Number(pos && pos.max) || 0);
+      if (y >= max) break;
+    }
+  }
+  return { ok: false, reason: 'not-found-after-viewport-and-inner-scroll-revisit' };
+}
+
 async function humanClickTasks(token, stat) {
   /* v1.3.5：两页扫描 + 实时定位 + CDP 鼠标点击。
      不再点 flyout 的重复入口，不再注入 MouseEvent / HTMLElement.click() 兜底。
@@ -5565,10 +5843,17 @@ async function humanClickTasks(token, stat) {
   stat.openedTabs = 0;
   stat.pages = [];
 
+<<<<<<< HEAD
   const normUrl = h => String(h || '').split('#')[0].trim().slice(0, 220);
   const keyOf = c => normUrl(c.href)
     || (String(c.title || c.text || '').replace(/\s+/g, '').slice(0, 100)
       + '|' + String(c.points || 0) + '|' + String(c.kind || ''));
+=======
+  const normUrl = h => String(h || '').split('#')[0].trim();
+  const keyOf = (c, page) => normUrl(c.href)
+    ? 'href|' + normUrl(c.href) + '|' + String(c.points || 0)
+    : String(page) + '|' + String(c.idx || '') + '|' + String(c.points || 0);
+>>>>>>> fb5efdd15db37cf18e87c9be2597e688bc7a03cf
 
   for (const pg of pages) {
     if (!isCurrent(token)) break;
@@ -5595,7 +5880,11 @@ async function humanClickTasks(token, stat) {
       const skipped = collected.skipped || [];
       stat.skipped += skipped.length;
       const cards = (collected.cards || []).filter(c => {
+<<<<<<< HEAD
         const key = keyOf(c);
+=======
+        const key = keyOf(c, pg.page);
+>>>>>>> fb5efdd15db37cf18e87c9be2597e688bc7a03cf
         if (!key || seen.has(key)) return false;
         seen.add(key);
         return true;
@@ -5626,10 +5915,16 @@ async function humanClickTasks(token, stat) {
         const aimPayload = {
           idx: c.idx, href: c.href, order, full: true,
           includeDone, offerIndex: c.offerIndex, badgeIndex: c.badgeIndex,
+<<<<<<< HEAD
           title: c.title || ''
         };
 
         const aim = await inject(tabId, ybInject, ['human.aim', aimPayload]).catch(() => null);
+=======
+          title: c.title || '', points: c.points || 0
+        };
+        const aim = await locateHumanCardAcrossScroll(tabId, aimPayload, token);
+>>>>>>> fb5efdd15db37cf18e87c9be2597e688bc7a03cf
         if (!aim || !aim.ok) {
           stat.aimFailed++;
           pageFailed++;
@@ -5716,7 +6011,7 @@ async function completePendingTaskCards(level, token) {
   };
   if (TASK_MODE === 'human') {
     console.info('[AutoTask] 任务模式：与桌面版 taskPanel.clickAll 一致 —— '
-      + '逐页从头到尾全量扫描 → 跨页稳定 key 去重 → 5s 间隔逐张点击（扫描页不变）');
+      + '逐页从头到尾全量扫描 → 跨页稳定 key 去重 → 默认 10s、可在设置更改间隔逐张点击（扫描页不变）');
     await humanClickTasks(token, stat);
     return stat;
   }
@@ -5870,7 +6165,7 @@ async function checkAllTasksDone() {
 /**
  * 一次完整的自动完成任务：
  *   刷新任务 → 在 Bing 侧栏（或回退模式下的 dashboard/earn 两页）逐个点击未完成卡片
- *            （每日活动 → 日常任务，统一 5s 间隔，任务页保留）
+ *            （每日活动 → 日常任务，设置间隔默认 10s，任务页保留）
  *            → 再进行日常搜索（按剩余搜索分数决定次数，搜索页保持焦点、结束关闭）→ 刷新
  * 定时触发与首页按钮都走这里；与正式运行互斥，点「停止」可中断。
  */
@@ -6529,6 +6824,102 @@ async function handlePanelMessage(msg) {
 /* v1.3.7：自动点击直接消费「同步积分任务列表」时建立的 taskClickIndex。
  * 不再重新滚动扫描、重建卡片列表；每张任务只做一次索引定位 + 实时坐标校验 + CDP 鼠标输入。
  */
+<<<<<<< HEAD
+=======
+/* HSA_TASK_LOCATOR_REPAIR_20261109: active v1.3.7 locator. Do not synthesize DOM clicks. */
+async function hsaLocateCurrentTask(tabId, entry, token, includeDone) {
+  const live = !!entry._hsaLive;
+  const c = entry._hsaCard || {};
+  const payload = live
+    ? {idx:c.idx, href:c.href, title:c.title || '', points:c.points || 0,
+       full:true, includeDone}
+    : {locator:entry.locator || {}, href:entry.url || '', title:entry.name || '',
+       points:entry.points || 0, target:entry.target || '', key:entry.key || ''};
+  const act = live ? 'human.aim' : 'human.aimIndexed';
+  const tryAim = async () => {
+    const out = await inject(tabId, ybInject, [act, payload]).catch(() => null);
+    return out && out.ok ? out : null;
+  };
+  let found = await tryAim();
+  if (found) return found;
+  const first = await inject(tabId, ybInject, ['human.scrollTo',{y:0}]).catch(() => null);
+  let height = Math.max(0, Number(first && first.scrollHeight) || 0);
+  const viewport = Math.max(250, Number(first && first.viewport) || 700);
+  const stride = Math.max(160, Math.floor(viewport * 0.62));
+  for (let y=0, n=0; n<64 && isCurrent(token); n++, y+=stride) {
+    const at = await inject(tabId,ybInject,['human.scrollTo',{y}]).catch(()=>null);
+    await nap(180,token);
+    found = await tryAim();
+    if (found) return found;
+    height = Math.max(height,Number(at && at.scrollHeight)||0);
+    if (y >= Math.max(0,height-viewport)) break;
+  }
+  const info = await inject(tabId,ybInject,['human.scrollers',{}]).catch(()=>null);
+  const scrollers = (info && info.scrollers) || [];
+  for (const sc of scrollers.slice(0,16)) {
+    let max = Number(sc.max)||0;
+    const innerStep = Math.max(100,Math.floor((Number(sc.view)||400)*0.62));
+    for (let y=0,n=0;n<64 && isCurrent(token);n++,y+=innerStep) {
+      const at=await inject(tabId,ybInject,['human.scrollInner',{idx:sc.idx,y}]).catch(()=>null);
+      await nap(180,token);
+      found=await tryAim();
+      if (found) return found;
+      max=Math.max(max,Number(at && at.max)||0);
+      if (y>=max) break;
+    }
+  }
+  return {ok:false,reason:'not-found-after-full-outer-inner-scan'};
+}
+
+/* Join server-derived index and live DOM results without clicking the same task twice. */
+/* v1.3.8-R2: same-title / same-point offers are NOT necessarily the same card.
+ * Only collapse known URLs or offer ids. An unidentified indexed card may cover
+ * one live matching card, never an unlimited number of distinct live cards. */
+function hsaMergeLiveTaskCards(indexed, liveCards, page) {
+  const out = indexed.slice();
+  const normalize = x => String(x || '').replace(/\s+/g, '').toLowerCase();
+  const titleKey = (title, points) => normalize(title) + '|' + Number(points || 0);
+  const hrefKey = (href, points) => String(href || '').split('#')[0] + '|p:' + Number(points || 0);
+  const ids = new Set();
+  const indexedUnidentified = new Map();
+  for (const entry of indexed) {
+    const loc = entry.locator || {};
+    const href = loc.href || entry.url || '';
+    const stable = loc.dataOfferId || loc.dataBiId || '';
+    const name = loc.title || entry.name || '';
+    if (href) ids.add('href:' + hrefKey(href, entry.points));
+    else if (stable) ids.add('id:' + stable + '|p:' + Number(entry.points || 0));
+    else {
+      const key = titleKey(name, entry.points);
+      indexedUnidentified.set(key, (indexedUnidentified.get(key) || 0) + 1);
+    }
+  }
+  for (const card of liveCards || []) {
+    if (!card || !(Number(card.points) > 0)) continue;
+    const href = card.href || '';
+    const name = card.title || card.text || '';
+    const title = titleKey(name, card.points);
+    const rawId = String(card.idx || '');
+    // scoreCards emits yb-id:<stable id>|p:<points> for no-href DOM cards.
+    const stable = rawId.match(/^yb-id:(.+)\|p:\d+$/);
+    const id = href ? 'href:' + hrefKey(href, card.points)
+      : stable ? 'id:' + stable[1] + '|p:' + Number(card.points)
+      : 'live:' + rawId + '|p:' + Number(card.points);
+    if (ids.has(id)) continue;
+    const remaining = indexedUnidentified.get(title) || 0;
+    if (remaining > 0) {
+      indexedUnidentified.set(title, remaining - 1);
+      continue;
+    }
+    ids.add(id);
+    out.push({ _hsaLive:true, _hsaCard:card, name, points:card.points, url:href,
+      target:card.target || '', page, completed:!!card.done,
+      key:'live|' + page + '|' + String(card.idx || name) });
+  }
+  return out;
+}
+
+>>>>>>> fb5efdd15db37cf18e87c9be2597e688bc7a03cf
 const humanClickTasksV136Original = humanClickTasks;
 humanClickTasks = async function (token, stat) {
   stat = stat || {};
@@ -6546,6 +6937,7 @@ humanClickTasks = async function (token, stat) {
   stat.clickUnconfirmed = 0;
   stat.openedTabs = 0;
   stat.pages = [];
+<<<<<<< HEAD
   if (!index || index.schemaVersion !== 1 || !Array.isArray(index.items)) {
     stat.clickFailed = 1;
     stat.reason = 'task-click-index-missing';
@@ -6569,6 +6961,18 @@ humanClickTasks = async function (token, stat) {
     console.info('[AutoTask] 同步索引中没有符合当前设置的待点击任务');
     return stat;
   }
+=======
+  const indexFresh = !!(index && index.schemaVersion === 1 && Array.isArray(index.items)
+    && Number.isFinite(index.updatedAt) && Date.now() - index.updatedAt <= 30 * 60 * 1000);
+  if (!indexFresh) console.warn('[AutoTask] 同步索引不存在或已过期，将仅使用当前官网页面实时扫描结果');
+
+  const cfg = await getSettings();
+  const includeDone = !cfg.skipCompletedCards;
+  const indexed = indexFresh ? index.items : [];
+  const entries = indexed.filter(x => x && (x.page === '/dashboard' || x.page === '/earn')
+    && (includeDone || !x.completed));
+  stat.skipped = Math.max(0, indexed.length - entries.length);
+>>>>>>> fb5efdd15db37cf18e87c9be2597e688bc7a03cf
 
   const pages = [
     { page: '/dashboard', url: DASHBOARD_URL, label: '/dashboard' },
@@ -6577,8 +6981,12 @@ humanClickTasks = async function (token, stat) {
   let clicked = 0, total = 0;
   for (const pg of pages) {
     if (!isCurrent(token)) break;
+<<<<<<< HEAD
     const pageEntries = entries.filter(x => x.page === pg.page);
     if (!pageEntries.length) continue;
+=======
+    let pageEntries = entries.filter(x => x.page === pg.page);
+>>>>>>> fb5efdd15db37cf18e87c9be2597e688bc7a03cf
     const pageStart = clicked;
     let tabId = null, pageFailed = 0;
     try {
@@ -6586,6 +6994,7 @@ humanClickTasks = async function (token, stat) {
       stat.usedTabIds.add(Number(tabId));
       await ensureTabActive(tabId);
       await humanWaitPage(tabId, token);
+<<<<<<< HEAD
       const attached = await cdpAttach(tabId).catch(() => false);
       if (!attached) {
         stat.clickFailed += pageEntries.length;
@@ -6617,6 +7026,47 @@ humanClickTasks = async function (token, stat) {
           }
           aim = await inject(tabId, ybInject, ['human.aimIndexed', aimPayload]).catch(() => null);
         }
+=======
+      console.info('[AutoTask][R4] ' + pg.label + ' 页面加载后已等待 5 秒，开始不少于 5 秒的慢速分段滚动扫描');
+      // Request CDP before scrolling (to dispatch actual wheel events). If the
+      // browser rejects it, still scan and scroll the page using DOM positions;
+      // attachment must never gate task discovery.
+      const initialAttached = await cdpAttach(tabId);
+      const liveScan = await collectFlyoutCardsFull(tabId,token,stat,false,includeDone);
+      stat.skipped += (liveScan.skipped || []).length;
+      pageEntries = hsaMergeLiveTaskCards(pageEntries,liveScan.cards || [],pg.page);
+      total += pageEntries.length;
+      console.info('[AutoTask][Scroll] ' + pg.label + ': ' + liveScan.segments
+        + ' outer steps, ' + liveScan.innerSegments + ' inner steps, '
+        + (stat.cdpWheelEvents || 0) + ' CDP wheel events, '
+        + (liveScan.cards || []).length + ' visible task candidates');
+      if (!pageEntries.length) {
+        stat.humanEmpty.push(pg.label);
+        stat.pages.push({page:pg.page,clicked:0,anchors:0,doneSkipped:0,failed:0,source:'live+index'});
+        continue;
+      }
+      const attached = initialAttached || await cdpAttach(tabId);
+      if (!attached) {
+        stat.clickFailed += pageEntries.length;
+        pageFailed += pageEntries.length;
+        stat.cdpUnavailable = lastTaskCdpError || 'unknown';
+        stat.pages.push({ page: pg.page, clicked: 0, anchors: pageEntries.length,
+          doneSkipped: (liveScan.skipped || []).length, failed: pageEntries.length, source: 'live+index' });
+        console.warn('[AutoTask][CDP] ' + pg.label + ' 已滚动扫描，但无法建立真实鼠标会话：'
+          + stat.cdpUnavailable + '；未执行 DOM 合成点击。请检查 Edge 扩展 debugger 权限和其他调试器占用。');
+        continue;
+      }
+      await nap(250, token);
+      console.info('[AutoTask] ' + pg.label + '：索引与实时 DOM 合并识别 ' + pageEntries.length
+        + ' 张任务卡（实时扫描 ' + (liveScan.cards||[]).length + ' 张）');
+      let supplementalScans = 0;
+      for (let order = 0; order < pageEntries.length && isCurrent(token); order++) {
+        const entry = pageEntries[order];
+        const beforeIds = await tabIds();
+        const beforeTab = await chrome.tabs.get(tabId).catch(() => null);
+        // The locator below also supports live DOM-only cards missed by HTML sync.
+        const aim = await hsaLocateCurrentTask(tabId, entry, token, includeDone);
+>>>>>>> fb5efdd15db37cf18e87c9be2597e688bc7a03cf
         if (!aim || !aim.ok) {
           stat.aimFailed++;
           pageFailed++;
@@ -6636,6 +7086,10 @@ humanClickTasks = async function (token, stat) {
 
         try {
           await ensureTabActive(tabId);
+<<<<<<< HEAD
+=======
+          await taskClickSpacing(token);
+>>>>>>> fb5efdd15db37cf18e87c9be2597e688bc7a03cf
           await cdpClickAt(tabId, aim.x, aim.y);
           stat.realMouse++;
           stat.clicked++;
@@ -6667,6 +7121,22 @@ humanClickTasks = async function (token, stat) {
         }
         console.info('[AutoTask] ✓ 索引定位 + CDP 鼠标点击 ' + (order + 1) + '/' + pageEntries.length
           + '：「' + (entry.name || '').slice(0, 36) + '」(+' + (entry.points || 0) + ')');
+<<<<<<< HEAD
+=======
+        // Some SPA cards appear only after the previous offer has been opened.
+        // One extra full scan after the last original card picks them up without
+        // repeatedly clicking anything already scheduled or building an endless loop.
+        if (order === pageEntries.length - 1 && supplementalScans++ === 0 && isCurrent(token)) {
+          const extra = await collectFlyoutCardsFull(tabId, token, stat, false, includeDone);
+          const combined = hsaMergeLiveTaskCards(pageEntries, extra.cards || [], pg.page);
+          if (combined.length > pageEntries.length) {
+            console.info('[AutoTask] ' + pg.label + ' 点击后新发现 ' + (combined.length-pageEntries.length)
+              + ' 张任务卡，继续使用 CDP 点击');
+            total += combined.length - pageEntries.length;
+            pageEntries = combined;
+          }
+        }
+>>>>>>> fb5efdd15db37cf18e87c9be2597e688bc7a03cf
       }
       stat.pages.push({ page: pg.page, clicked: clicked - pageStart,
         anchors: pageEntries.length, doneSkipped: 0, failed: pageFailed, source: 'sync-index' });

@@ -54,15 +54,27 @@ ck(extAim.includes('document.elementFromPoint') &&
 ck(extAim.includes("target: c.target || c.el.getAttribute('target') || ''"),
   '浏览器插件回传 target 类型，按新标签页加载情况等待验证');
 const pick = block(EXT, 'var pickCard = function (cards, payload) {', '\n  /**');
+<<<<<<< HEAD
 ck(pick.indexOf('if (payload.href)') < pick.indexOf('data-yb-hidx'),
   '浏览器插件优先按稳定 href 定位，避免滚动后旧 index 指向别的卡片');
+=======
+ck(pick.includes('if (href)') && pick.includes('eligible.length === 1') && pick.includes('byId.length === 1') && !pick.includes('cards[payload.order]'),
+  '浏览器插件以 href/稳定身份严格匹配，不按旧顺序误点');
+>>>>>>> fb5efdd15db37cf18e87c9be2597e688bc7a03cf
 const extCdpClick = block(EXT, 'async function cdpClickAt(tabId, x, y) {', '\n/** 粘贴前清空');
 ck(extCdpClick.includes("type: 'mousePressed'") &&
    extCdpClick.includes("type: 'mouseReleased'") &&
    extCdpClick.includes('releaseError'),
   '浏览器插件鼠标按下后始终尝试释放，停止任务也不会遗留按下态');
+<<<<<<< HEAD
 ck(EXT.includes("const TASK_CLICK_INTERVAL_MS = 350;"),
   '浏览器插件将卡片间隔压缩为短渲染等待');
+=======
+ck(EXT.includes('const TASK_CLICK_INTERVAL_MS = 10000;') &&
+   EXT.includes('const seconds = Number(cfg.cardClickIntervalSec);') &&
+   EXT.includes('await taskClickSpacing(token);'),
+  '浏览器插件默认 10 秒并读取可调整的卡片点击间隔');
+>>>>>>> fb5efdd15db37cf18e87c9be2597e688bc7a03cf
 ck(EXT_MANIFEST.permissions.includes('debugger'),
   '浏览器插件保留 CDP debugger 权限');
 
