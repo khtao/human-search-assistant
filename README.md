@@ -2,6 +2,8 @@
 
 > 一个本地运行的 Microsoft Rewards 状态看板，附带「自动完成任务卡片与 Bing 搜索」的执行能力。
 >
+> 本包为**插件版 / 桌面版差异统一版**：27 项已勾选决策的落地情况、共享 `shared/` 目录结构与回归命令见 [实施说明.md](实施说明.md)。
+>
 
 ---
 
@@ -83,7 +85,7 @@ npm run verify         # 8 个离线回归脚本
 
 1. **同步**：`syncStart()` 读取积分、搜索配额与今日任务；失败（未登录 / 页面不可读）则写回 `idle` 并零动作返回。
 2. **判定全完成**：按上文 `allDone` 条件判断，满足则直接返回；`dontSkipCompletedCards = false` 时不会重载页面、不点卡片、不搜索。
-3. **点击待完成卡片**：`completePendingTaskCards()` 打开 / 扫描 Rewards 侧栏或 dashboard / earn 页面，按 DOM 顺序用 CDP 真鼠标点击；相邻点击间隔扩展默认 5000 ms、桌面默认 10000 ms，可在设置里调 1–60 秒。弹出的任务标签页保留不关闭。
+3. **点击待完成卡片**：`completePendingTaskCards()` 打开 / 扫描 Rewards 侧栏或 dashboard / earn 页面，按宿主能力优先采用官网卡片的真实交互路径（桌面可用 CDP 真鼠标，不可用时降级页面交互并逐卡记录触发方式）；相邻点击间隔两版统一默认 10 秒，等待页面稳定后才继续，可在设置里调 1–60 秒。弹出的任务标签页保留不关闭。
 4. **执行搜索**：`handleStart()` 启动流程，`runFlow()` 中调用 `searchLoop()`，按剩余搜索配额生成查询词，访问 `www.bing.com/search?q=...`，混合「粘贴关键词 / 相关词改词 / 回首页」等路径，每轮时长基准 16–29 秒（再乘以强度档系数 0.7–1.0），并做滚动、结果点击等拟人动作；`POINTS_PER_SEARCH = 3` 只用于本地估算。
 5. **收尾**：`presetSyncFinish()` 再同步一次，写入 `endPoints` / `finalEarned`（起始积分未知时 `earnedIsEstimate = true`）、`lastRun` 与 `pointsHistory`；关闭搜索页、恢复运行前的标签页焦点。
 
