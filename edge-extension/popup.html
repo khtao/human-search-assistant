@@ -17,8 +17,7 @@
         <h1 data-i18n="app.title">拟人搜索助手</h1>
       </div>
       <div class="header-actions">
-        <!-- v1.2：登录徽标只是「状态提示」，不是按钮：不响应点击/双击，
-             不打开官网、不切换面板。未登录灰色图标 +「未登录」，已登录金色 +「已登录」。 -->
+        
         <div id="login-badge" class="login-badge signed-out" role="status" aria-live="polite"
              aria-label="登录状态" data-i18n-aria="a11y.login">
           <img id="login-badge-icon" class="login-badge-icon"
@@ -27,7 +26,7 @@
         </div>
         <button id="settings-open" class="icon-btn" type="button" aria-label="打开设置" title="设置"
                 aria-haspopup="dialog" aria-controls="settings"
-                data-i18n-aria="a11y.settings" data-i18n-title="a11y.settings" data-tip-role="hint">
+                data-i18n-aria="a11y.settings" data-i18n-title="a11y.settings">
           <svg class="icon-gear" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
         </button>
       </div>
@@ -98,7 +97,7 @@
         <button id="error-dismiss" class="error-close" type="button" aria-label="关闭" data-i18n-aria="a11y.dismiss">&times;</button>
       </div>
 
-      <!-- 今日任务列表：按扩展读取积分的同一思路从 Rewards 页面获取 -->
+      
       <section id="today-tasks" class="today-tasks enter" style="--i:6" aria-labelledby="today-tasks-title">
         <div class="tt-head">
           <h2 id="today-tasks-title" data-i18n="todayTasks.title">今日任务</h2>
@@ -118,7 +117,7 @@
   <section id="settings" class="settings" role="dialog" aria-modal="true" aria-labelledby="settings-title" inert>
     <header class="settings-head">
       <button id="settings-back" class="icon-btn" type="button" aria-label="返回" title="返回"
-              data-i18n-aria="a11y.back" data-i18n-title="a11y.back" data-tip-role="hint">
+              data-i18n-aria="a11y.back" data-i18n-title="a11y.back">
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>
       </button>
       <h2 id="settings-title" data-i18n="settings.title">设置</h2>
@@ -130,9 +129,9 @@
         <div class="set-row">
           <span class="set-label" data-i18n="settings.language">语言 / Language</span>
           <div class="segmented lang-segmented" id="set-lang" role="radiogroup" aria-label="Language">
-            <button type="button" role="radio" data-value="zh" data-i18n="lang.zh" aria-checked="false">中文</button>
-            <button type="button" role="radio" data-value="en" data-i18n="lang.en" aria-checked="false">英文</button>
             <button type="button" role="radio" data-value="system" data-i18n="lang.system" aria-checked="true">跟随系统</button>
+            <button type="button" role="radio" data-value="zh" aria-checked="false">中文</button>
+            <button type="button" role="radio" data-value="en" aria-checked="false">English</button>
           </div>
         </div>
         <div class="set-row">
@@ -144,15 +143,59 @@
           </div>
         </div>
         <label class="set-row" data-i18n-title="settings.reduceHint" data-tip-role="hint" title="关闭动效">
-          <span class="set-label"><span data-i18n="settings.reduce">减少动画</span></span>
+          <span class="set-label" data-i18n="settings.reduce">减少动画</span>
           <input type="checkbox" id="set-reduce" class="switch">
         </label>
       </div>
 
+      <div class="set-group" id="auto-group" style="--g:1">
+        <h3 class="set-title" data-i18n="auto.title">自动完成任务</h3>
+        <label class="set-row" data-i18n-title="auto.cardIntervalHint" data-tip-role="hint" title="相邻两张任务卡片的点击间隔（1–60 秒）">
+          <span class="set-label" data-i18n="auto.cardInterval">卡片点击间隔</span>
+          <span class="set-inline-number"><input type="number" id="set-card-interval" min="1" max="60" step="1" value="5" aria-label="卡片点击间隔（秒）"><span class="set-unit" data-i18n="settings.seconds">秒</span></span>
+        </label>
+        <label class="set-row" data-i18n-title="auto.dontSkipCompletedHint" data-tip-role="hint" title="默认关闭，只点主界面显示未完成的任务卡；开启后即使积分和任务全完成也逐张点击所有任务卡">
+          <span class="set-label" data-i18n="auto.dontSkipCompleted">不跳过已完成任务卡</span>
+          <input type="checkbox" id="set-dont-skip-completed" class="switch">
+        </label>
+        <label class="set-row" data-i18n-title="auto.enableHint" data-tip-role="hint" title="到点自动点击任务卡并按剩余分数搜索">
+          <span class="set-label" data-i18n="auto.enable">定时自动运行</span>
+          <input type="checkbox" id="set-auto" class="switch">
+        </label>
+        <p id="auto-disabled-hint" class="auto-disabled-hint" hidden></p>
+        <div id="auto-opts" class="auto-opts">
+          <div class="set-row column" data-i18n-title="auto.countHint" data-tip-role="hint" title="按今日搜索剩余分数自动决定，不超过此值">
+            <span class="set-label" data-i18n="auto.count">搜索次数上限</span>
+            <div class="chips" id="set-auto-count-chips" role="radiogroup" aria-label="Auto task searches">
+              <button type="button" role="radio" data-value="10">10</button>
+              <button type="button" role="radio" data-value="20">20</button>
+              <button type="button" role="radio" data-value="30">30</button>
+              <button type="button" role="radio" data-value="50">50</button>
+              <input type="number" id="set-auto-count" min="1" max="150" step="1" aria-label="自定义搜索次数" data-i18n-aria="a11y.customCount" data-i18n-ph="settings.other" placeholder="其他">
+            </div>
+          </div>
+          <div class="set-row column" data-i18n-title="auto.timesHint" data-tip-role="hint" title="可添加多个时间，自动去重排序">
+            <span class="set-label" data-i18n="auto.times">启动时间</span>
+            <div class="time-add">
+              <input type="time" id="set-auto-time" aria-label="启动时间" data-i18n-aria="a11y.autoTime">
+              <button id="set-auto-time-add" class="small-btn" type="button" data-i18n="auto.addTime">添加</button>
+            </div>
+            <div id="set-auto-times" class="time-chips"></div>
+          </div>
+          <div class="set-row" data-i18n-title="auto.levelHint" data-tip-role="hint" title="影响鼠标轨迹、滚动与每轮时长">
+            <span class="set-label" data-i18n="auto.level">拟人强度</span>
+            <div class="segmented" id="set-auto-level" role="radiogroup" aria-label="Human level">
+              <button type="button" role="radio" data-value="1" data-i18n="level.low">低</button>
+              <button type="button" role="radio" data-value="2" data-i18n="level.mid">中</button>
+              <button type="button" role="radio" data-value="3" data-i18n="level.high">高</button>
+            </div>
+          </div>
+        </div>
+        <p id="set-auto-msg" class="preview-msg" role="status" hidden></p>
+      </div>
 
-      <!-- v1.3.8 · 积分日历：支付宝收益日历风格，格子只显示积分，说明走悬停提示 -->
-      <div class="set-group" id="calendar-group" style="--g:1">
-        <h3 class="set-title" data-i18n="calendar.title">积分赚取日历</h3>
+      <details class="set-group cal-fold" id="calendar-group" style="--g:2">
+        <summary class="set-title" data-i18n="calendar.title">积分赚取日历</summary>
         <div class="cal-head">
           <button id="cal-prev" class="cal-nav" type="button" aria-label="上一周期" title="上一周期"
                   data-i18n-aria="calendar.prev" data-i18n-title="calendar.prev" data-tip-role="hint">‹</button>
@@ -172,65 +215,11 @@
         <div id="cal-weekdays" class="cal-weekdays" aria-hidden="true"></div>
         <div id="cal-grid" class="cal-grid" role="grid" aria-label="积分日历"
              data-i18n-title="calendar.hoverTip" data-tip-role="hint"
-<<<<<<< HEAD
-             title="按日历排布 · 格子只显示积分，不显示日期 · 淡蓝为有积分、灰色为无积分、未来留空。悬停方格查看当日详情"></div>
-=======
-             title="日视图显示每日积分，周/月视图显示汇总 · 淡蓝为有积分、灰色为无积分、未来留空。悬停查看详情"></div>
-        <div class="cal-legend" aria-hidden="true"><span><i class="cal-legend-dot earned"></i><span data-i18n="calendar.legendHas">已获得</span></span><span><i class="cal-legend-dot empty"></i><span data-i18n="calendar.legendNone">无积分</span></span></div>
->>>>>>> fb5efdd15db37cf18e87c9be2597e688bc7a03cf
+             title="日视图显示每日积分，周/月视图显示汇总"></div>
         <p id="cal-summary" class="cal-summary"></p>
-      </div>
-      <!-- 原 Daily reminders → 自动完成任务设置 -->
-      <div class="set-group" id="auto-group" style="--g:3">
-        <h3 class="set-title" data-i18n="auto.title">自动完成任务</h3>
-<<<<<<< HEAD
-=======
-        <label class="set-row" data-i18n-title="auto.cardIntervalHint" data-tip-role="hint" title="两张任务卡片的 CDP 点击至少间隔 10 秒，可修改为 1～60 秒">
-          <span class="set-label" data-i18n="auto.cardInterval">卡片点击间隔</span>
-          <span class="set-inline-number"><input type="number" id="set-card-interval" min="1" max="60" step="1" value="10" aria-label="卡片点击间隔（秒）"><span class="set-unit" data-i18n="settings.seconds">秒</span></span>
-        </label>
->>>>>>> fb5efdd15db37cf18e87c9be2597e688bc7a03cf
-        <label class="set-row" data-i18n-title="auto.skipCompletedHint" data-tip-role="hint" title="默认不跳过：点击所有包含积分的卡片">
-          <span class="set-label"><span data-i18n="auto.skipCompleted">跳过已完成任务卡</span></span>
-          <input type="checkbox" id="set-skip-completed" class="switch">
-        </label>
-        <label class="set-row" data-i18n-title="auto.enableHint" data-tip-role="hint" title="到点自动点击未完成任务卡片，并按剩余分数搜索">
-          <span class="set-label"><span data-i18n="auto.enable">定时自动运行</span></span>
-          <input type="checkbox" id="set-auto" class="switch">
-        </label>
-        <div id="auto-opts" class="auto-opts">
-          <div class="set-row column" data-i18n-title="auto.countHint" data-tip-role="hint" title="按今日 Bing 搜索剩余分数自动决定，不超过此值">
-            <span class="set-label"><span data-i18n="auto.count">搜索次数上限</span></span>
-            <div class="chips" id="set-auto-count-chips" role="radiogroup" aria-label="Auto task searches">
-              <button type="button" role="radio" data-value="10">10</button>
-              <button type="button" role="radio" data-value="20">20</button>
-              <button type="button" role="radio" data-value="30">30</button>
-              <button type="button" role="radio" data-value="50">50</button>
-              <input type="number" id="set-auto-count" min="1" max="150" step="1" aria-label="自定义搜索次数" data-i18n-aria="a11y.customCount" data-i18n-ph="settings.other" placeholder="其他">
-            </div>
-          </div>
-          <div class="set-row column" data-i18n-title="auto.timesHint" data-tip-role="hint" title="可添加多个，自动去重排序">
-            <span class="set-label"><span data-i18n="auto.times">启动时间</span></span>
-            <div class="time-add">
-              <input type="time" id="set-auto-time" aria-label="启动时间" data-i18n-aria="a11y.autoTime">
-              <button id="set-auto-time-add" class="small-btn" type="button" data-i18n="auto.addTime">添加</button>
-            </div>
-            <div id="set-auto-times" class="time-chips"></div>
-          </div>
-          <div class="set-row" data-i18n-title="auto.levelHint" data-tip-role="hint" title="影响鼠标轨迹、滚动与每轮时长">
-            <span class="set-label"><span data-i18n="auto.level">拟人强度</span></span>
-            <div class="segmented" id="set-auto-level" role="radiogroup" aria-label="Human level">
-              <button type="button" role="radio" data-value="1" data-i18n="level.low">低</button>
-              <button type="button" role="radio" data-value="2" data-i18n="level.mid">中</button>
-              <button type="button" role="radio" data-value="3" data-i18n="level.high">高</button>
-            </div>
-          </div>
-        </div>
-        <p id="set-auto-msg" class="preview-msg" role="status" hidden></p>
-      </div>
+      </details>
 
-
-      <button id="set-reset" class="reset-btn" type="button" style="--g:5" data-i18n="settings.reset">恢复默认设置</button>
+      <button id="set-reset" class="reset-btn" type="button" style="--g:3" data-i18n="settings.reset">恢复默认设置</button>
     </div>
   </section>
 

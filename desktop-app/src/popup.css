@@ -1782,11 +1782,7 @@ a.tt-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px;
   margin-bottom: 6px; color: var(--fg-tertiary); font-size: 10px; text-align: center;
 }
 .cal-weekdays:empty { display: none; }
-<<<<<<< HEAD
-.cal-grid { display: grid; gap: 6px; }
-=======
 .cal-grid { display: grid; gap: 6px; min-width: 0; width: 100%; }
->>>>>>> fb5efdd15db37cf18e87c9be2597e688bc7a03cf
 .cal-grid.cal-day { grid-template-columns: repeat(7, 1fr); }
 .cal-grid.cal-week { grid-template-columns: repeat(7, 1fr); }
 .cal-grid.cal-month { grid-template-columns: repeat(4, 1fr); }
@@ -1830,8 +1826,6 @@ a.tt-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px;
   max-width: 100%; text-transform: none; letter-spacing: 0;
   font-size: 11px; font-weight: 600; text-overflow: ellipsis;
 }
-<<<<<<< HEAD
-=======
 
 /* v1.3.8-R3 · 周/月积分日历：真实视图，兼顾窄弹窗与桌面侧栏 */
 .set-inline-number { display:inline-flex; align-items:center; gap:6px; flex-shrink:0; }
@@ -1878,4 +1872,3 @@ a.tt-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px;
 .cal-legend-dot { width:9px; height:9px; border-radius:3px; display:inline-block; }
 .cal-legend-dot.earned { background:var(--cal-has-fg); }
 .cal-legend-dot.empty { background:var(--cal-gray-fg); opacity:.55; }
->>>>>>> fb5efdd15db37cf18e87c9be2597e688bc7a03cf

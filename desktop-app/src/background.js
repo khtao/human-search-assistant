@@ -14,8 +14,6 @@ const LOGIN_GRACE_MS = 15000;
 const ABOUT_GRACE_MS = 4000;
 const MAX_FAILURES = 3;
 const ACTIVE_PHASES = ['fetchingStartPoints', 'checkingLimit', 'searching', 'fetchingEndPoints'];
-const COOLDOWN_STALL = 3;
-const MAX_COOLDOWNS = 6;
 
 /* ==========================================================================
  * v1.3.0 · 自动完成任务流程（按用户明确口径重排）
@@ -46,11 +44,7 @@ let desktopGuardBlocks = 0;
  *  · 任务卡片：每日活动(每日任务) → 日常任务；点击弹出的任务页保留不关闭
  *  · 搜索标签页运行期间保持焦点、结束关闭（后台节流会让搜索暂停）
  * ======================================================================== */
-<<<<<<< HEAD
-const TASK_CLICK_INTERVAL_MS = 350;   // 索引定位后留出短暂渲染间隔
-=======
 const TASK_CLICK_INTERVAL_MS = 10000;   // 索引定位后留出短暂渲染间隔
->>>>>>> fb5efdd15db37cf18e87c9be2597e688bc7a03cf
 const KEEP_TASK_TABS = true;            // 任务阶段打开的标签页一律不关闭
 const KEEP_SEARCH_TAB_FOCUSED = true;   // 每轮搜索前把搜索页拉回焦点，防后台节流暂停
 const FOCUS_WINDOW_TOO = true;          // 同时把浏览器窗口置为系统前台
@@ -68,24 +62,17 @@ let lastTaskClickAt = 0;                // 上一次「点击时刻」，用于�
  *  · 若面板其实是浏览器内置 UI（非网页 DOM），注入扫不到，日志会明确提示
  * ======================================================================== */
 const TASK_MODE = 'human';              // 'human' | 'tasklist' | 'sidebar' | 'rewards'
-/** 任务列表驱动的点击：即使页面注入/定位全失败，也按任务列表里的真实 URL 兜底开页 */
-/* v2.4 硬性约束：直接导航任务 URL 不会计入 Rewards 完成（缺卡片点击时的上报上下文）。
- * 因此本版彻底移除「按 URL 兜底开页」，找不到卡片就明确失败并给诊断。 */
-const TASKLIST_REQUIRE_CARD_CLICK = true;
-/* v2.5：默认走 human —— 不抓 HTML、不用 CDP、不做 URL 指纹、不跨 frame 编排。
- * 打开页面 → 滚动 → 页面内鼠标点击卡片，仅此三步。 */
+/* 直接导航任务 URL 不会计入 Rewards 完成；找不到卡片必须明确失败并给诊断。 */
 const HUMAN_PAGE_SETTLE_MS = 1500;
 const HUMAN_SCROLL_RESCAN = true;
-/* v2.8：点之前/之后调官方 getuserinfo 核验，只点「未完成且给分」的卡。
-   页面内 fetch 失败/CORS 时静默回退到本地严格白名单，绝不阻塞。 */
+/* 点击前后调官方 getuserinfo 核验，只点「未完成且给分」的卡；
+   页面内 fetch 失败 / CORS 时静默回退到本地严格白名单。 */
 const HUMAN_VERIFY_OFFICIAL = true;
-/* 参考项目 activity_click.py：侧栏 iframe 的直接 URL，顶层打开就不用猜 iframe 结构 */
-/* 截图实测：中文环境实际落在 cn.bing.com/rewards/panelflyout，不是 www */
+/* 侧栏 flyout 顶层页：中文环境实际落在 cn.bing.com，不是 www */
 const FLYOUT_URLS = [
   'https://cn.bing.com/rewards/panelflyout?channel=bingflyout&partnerId=BingRewards',
   'https://www.bing.com/rewards/panelflyout?channel=bingflyout&partnerId=BingRewards'
 ];
-const FLYOUT_URL = FLYOUT_URLS[0];
 const TASKLIST_CDP_FIRST = true;        // 先 CDP 真鼠标，没弹出新标签页再补页面内事件序列
 const TASKLIST_CARD_WAIT_ROUNDS = 6;    // 等目标卡片渲染的轮数（跨候选页）
 const TASKLIST_CLICK_RETRIES = 3;       // 点击后没开出任务页时的重试次数
@@ -1716,11 +1703,9 @@ const DEFAULT_SETTINGS = {
   reminderTo: '23:00',
   reminderSeconds: 5,
   reduceMotion: false,
-<<<<<<< HEAD
-=======
   cardClickIntervalSec: 10,
->>>>>>> fb5efdd15db37cf18e87c9be2597e688bc7a03cf
-  skipCompletedCards: false
+  /* v1.3.8-s2：设置项反转为「不跳过已完成任务卡」，默认关闭 = 默认跳过已完成卡 */
+  notSkipCompletedCards: false
 };
 
 async function getSettings() {
@@ -1861,20 +1846,6 @@ async function finishLimitReached() {
   });
   chrome.alarms.clear('watchdog');
   await restoreUserFocus();
-}
-
-async function enterCooldown(settings) {
-  const { cooldownCycles } = await load(['cooldownCycles']);
-  const cycles = (cooldownCycles || 0) + 1;
-  if (cycles > MAX_COOLDOWNS) {
-    await store({ cooldownGaveUp: true });
-    return false;
-  }
-  const waitMs = Math.max(5, Number(settings.cooldownMinutes) || 15) * 60 * 1000;
-  const until = Date.now() + waitMs;
-  await store({ phase: 'cooldown', cooldownUntil: until, cooldownWaitMs: waitMs, cooldownCycles: cycles, currentQuery: null });
-  chrome.alarms.create('cooldownEnd', { when: until });
-  return true;
 }
 
 async function endCooldown() {
@@ -3359,21 +3330,6 @@ async function refreshPointsOnly() {
 /* ============================================================================
  * 自动完成任务：模拟鼠标点击 Rewards 页面的未完成任务卡片 + 按需拟人搜索
  * ========================================================================== */
-
-/** 搜索次数由今日 Bing 搜索剩余分数自动决定，不超过设置页上限。 */
-async function autoSearchCount(cap) {
-  const { todaySearch, todayTasks } = await load(['todaySearch', 'todayTasks']);
-  const item = todayTasks && Array.isArray(todayTasks.items)
-    ? todayTasks.items.find(i => i.section === 'search') : null;
-  const max = Number(item && item.points) || Number(todaySearch && todaySearch.max) || 60;
-  const got = Number.isFinite(item && item.earned) ? item.earned
-    : (Number(todaySearch && todaySearch.progress) || 0);
-  const need = Math.ceil(Math.max(0, max - got) / POINTS_PER_SEARCH);
-  /* v1.3.0：cap=0 是用户明确「不搜索」，不能被 || 吞掉回退到配置值 */
-  const rawCap = Number(cap);
-  const limit = Number.isFinite(rawCap) && rawCap > 0 ? Math.floor(rawCap) : (await getAutoTasks()).count;
-  return Math.max(0, Math.min(need, limit));
-}
 
 /**
  * v2.0 注入区（在页面 DOM 上下文执行）。
@@ -5757,130 +5713,15 @@ async function completePendingTaskCardsOnRewards(level, token, stat) {
 
 var autoCompleteActive = false;
 
-/* ============================================================================
- * v2.9：全部任务已完成时，点「自动完成任务」必须零动作
- * ----------------------------------------------------------------------------
- * 旧逻辑只在 TASK_MODE === 'rewards' 才检查 allDone，而当前默认是 human，
- * 于是缓存 100% 也被忽略，照样打开侧边栏、点卡片、跑搜索。
- * 这里改为：任何模式、任何入口（按钮 / 定时），只要确认全完成就直接返回，
- * 不刷新页面、不打开标签页、不注入、不点卡片、不搜索、不写 running 状态。
- * 判定全部只读：先看本地缓存，再看官方 getuserinfo（不打开任何标签页）。
- * ========================================================================== */
-const ALL_DONE_MIN_ROWS = 3;        // 官方接口至少要给出 3 项才敢判「全完成」
-const OFFICIAL_CHECK_TIMEOUT = 2500;
-
-function sameUtcDay(ts) {
-  try {
-    return new Date(Number(ts)).toISOString().slice(0, 10)
-      === new Date().toISOString().slice(0, 10);
-  } catch { return false; }
-}
-
-/** 本地缓存：今日任务列表必须非空、未登录页、100% 且每项完成，且是同一 UTC 日。 */
-function cachedAllDone(tt) {
-  if (!tt || tt.signedOut || !Array.isArray(tt.items) || !tt.items.length) return false;
-  if (!sameUtcDay(tt.updatedAt)) return false;
-  if (Number(tt.percent) < 100) return false;
-  return tt.items.every(i => !!i.completed || Number(i.earned) >= Number(i.points));
-}
-
-/** 把官方 getuserinfo 摊平成 { name, points, earned, complete } 行。 */
-function officialTaskRows(data) {
-  const dash = (data && data.dashboard) || {};
-  const user = dash.userStatus || {};
-  const counters = user.counters || {};
-  const rows = [];
-  const num = v => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
-  const push = (name, it) => {
-    const max = num(it.pointProgressMax ?? it.pointsMax ?? it.max ?? 0);
-    const cur = num(it.pointProgress ?? it.progress ?? it.current ?? 0);
-    if (!(max > 0)) return;
-    rows.push({ name: String(name), points: max, earned: Math.min(cur, max),
-      complete: !!it.complete || cur >= max });
-  };
-  // 搜索配额（PC / 移动）也算任务，没满就不能算「全部完成」
-  for (const key of ['pcSearch', 'mobileSearch']) {
-    if (counters[key] && typeof counters[key] === 'object') push(key, counters[key]);
-  }
-  // Rewards 按 UTC 日切分，用 UTC 日期取当日每日任务集
-  const d = new Date();
-  const iso = d.toISOString().slice(0, 10);
-  const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
-  const dd = String(d.getUTCDate()).padStart(2, '0');
-  const dsp = dash.dailySetPromotions || {};
-  let daily = dsp[iso] || dsp[mm + '/' + dd + '/' + d.getUTCFullYear()] || [];
-  if (!daily.length) {
-    for (const k of Object.keys(dsp)) {
-      if (String(k).indexOf(iso) >= 0 && Array.isArray(dsp[k])) { daily = dsp[k]; break; }
-    }
-  }
-  for (const it of (Array.isArray(daily) ? daily : [])) {
-    if (it && typeof it === 'object') push(it.title || it.name || it.offerId || 'daily', it);
-  }
-  // 更多活动（排除未解锁的）
-  for (const it of (Array.isArray(dash.morePromotions) ? dash.morePromotions : [])) {
-    if (!it || typeof it !== 'object') continue;
-    if (String(it.exclusiveLockedFeatureStatus || '').toLowerCase() === 'locked') continue;
-    push(it.title || it.name || it.offerId || 'more', it);
-  }
-  return rows;
-}
-
-/**
- * 只读官方接口：绝对 URL + credentials:include，不打开任何标签页、不注入脚本。
- * 超时 / 未登录 / 解析失败一律返回 null（不误判成「全完成」）。
- */
-async function fetchOfficialTaskRows() {
-  const url = 'https://rewards.bing.com/api/getuserinfo?type=1&X-Requested-With=XMLHttpRequest';
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), OFFICIAL_CHECK_TIMEOUT);
-  try {
-    const res = await fetch(url, {
-      credentials: 'include', cache: 'no-store', redirect: 'error', signal: ctrl.signal,
-      headers: { 'X-Requested-With': 'XMLHttpRequest' }
-    });
-    if (!res.ok) return null;
-    const data = await res.json();
-    if (!data || !data.dashboard || !data.dashboard.userStatus) return null;
-    return officialTaskRows(data);
-  } catch {
-    return null;
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-/** 返回 { ok, source }；ok=true 时调用方必须零动作直接返回。 */
-async function checkAllTasksDone() {
-  const st = await load(['todayTasks', 'officialTaskState']);
-  if (cachedAllDone(st.todayTasks)) return { ok: true, source: 'cache' };
-
-  // v2.8 官方核验留下的短时状态（同一 UTC 日内有效）
-  const os = st.officialTaskState;
-  if (os && os.allDone && sameUtcDay(os.updatedAt)) {
-    return { ok: true, source: 'official-cache' };
-  }
-
-  const rows = await fetchOfficialTaskRows();
-  if (rows === null) return { ok: false, reason: 'official-unavailable' };
-  const pending = rows.filter(r => !r.complete).length;
-  const hasSearch = rows.some(r => /Search/i.test(r.name));
-  // 必须包含搜索配额、至少 3 项、且无未完成项 —— 数据不全时宁可继续跑，绝不误跳
-  const allDone = hasSearch && rows.length >= ALL_DONE_MIN_ROWS && pending === 0;
-  await store({ officialTaskState: {
-    allDone, rows: rows.length, pending, updatedAt: Date.now()
-  } }).catch(() => {});
-  return allDone
-    ? { ok: true, source: 'official' }
-    : { ok: false, reason: 'pending:' + pending, rows: rows.length, hasSearch };
-}
-
-
 /**
  * 一次完整的自动完成任务：
- *   刷新任务 → 在 Bing 侧栏（或回退模式下的 dashboard/earn 两页）逐个点击未完成卡片
- *            （每日活动 → 日常任务，统一 5s 间隔，任务页保留）
- *            → 再进行日常搜索（按剩余搜索分数决定次数，搜索页保持焦点、结束关闭）→ 刷新
+ *   ① 自动开始按键点击后先同步积分状态；积分与任务都已完成则零动作直接返回
+ *      （唯一例外：开启「不跳过已完成任务卡」仍发起点击流程）
+ *   ② 点击流程开启时主动重新加载 Bing Rewards 侧栏页面，按 DOM 顺序点击积分卡，
+ *      结束时关闭页面；点哪张只取决于主界面任务状态，不看侧栏显示
+ *      （默认关闭「不跳过」= 跳过已完成卡只点未完成；开启则点全部积分卡）
+ *   ③ 再进行日常搜索（按剩余搜索分数决定次数）→ ④ 收尾同步
+ * 侧栏读不到积分卡时才回退到 dashboard/earn 两页的索引点击。
  * 定时触发与首页按钮都走这里；与正式运行互斥，点「停止」可中断。
  */
 /* ==========================================================================
@@ -5993,22 +5834,28 @@ async function presetSyncFinish(st, searches, start) {
 }
 
 /**
- * 一次完整的自动完成任务（v1.3.0 流程）：
- *   ① 开始时同步一次积分与任务列表，并按官方搜索配额预先锁定搜索次数
- *   ② 仍有待完成任务 → 先逐个点击未完成任务卡片（每日活动 → 日常任务，5s 间隔)
+ * 一次完整的自动完成任务（v1.3.0 流程 / v1.3.8-s2 侧栏点击）：
+ *   ① 开始时同步一次积分与任务列表，并按官方搜索配额预先锁定搜索次数；
+ *      积分与任务都完成则零动作返回（开启「不跳过已完成任务卡」除外）
+ *   ② 通过 Bing Rewards 侧栏逐个点击积分卡片：流程开启主动重载页面、
+ *      结束关闭页面；点哪张只看主界面任务状态，不看侧栏完成标记
+ *      （默认跳过已完成卡；开启「不跳过」则点全部积分卡；不给分卡排除）
  *   ③ 再按锁定次数跑拟人搜索；搜索中间不读积分、不刷任务列表
  *   ④ 结束后同步一次，把最终结果显示到界面
  * 定时触发与首页按钮都走这里；与正式运行互斥，点「停止」可中断。
  */
 async function runAutoComplete(opts) {
   const o = opts || {};
-  /* 同步占位：旧版在 checkAllTasksDone 的 await 期间可被重复点击 */
+  /* 同步占位：开始时同步的 await 期间禁止重复点击 */
   if (autoCompleteActive || flowActive) return { ok: false, reason: 'running' };
   autoCompleteActive = true;
   const token = ++flowToken;
   try {
     if ((await load(['running'])).running) return { ok: false, reason: 'running' };
     const tasks = await getAutoTasks();
+    /* v1.3.8-s2：「不跳过已完成任务卡」开启时，即使积分与任务全部完成也要发起点击流程 */
+    const autoSettings = await getSettings();
+    const notSkipCompletedCards = !!autoSettings.notSkipCompletedCards;
     const level = clampInt(Number(o.level) || tasks.level, 1, 3);
     await store({
       running: true, phase: 'completingTasks', stopRequested: false,
@@ -6033,12 +5880,17 @@ async function runAutoComplete(opts) {
       console.warn('[AutoTask] 开始时同步失败（' + sync.reason + '），未登录或页面不可读，零动作返回');
       return { ok: false, reason: sync.reason, clicked: 0, searches: 0 };
     }
-    if (sync.allDone && !o.force) {
-      console.info('[AutoTask] 本次同步显示今日任务已全部完成，零动作：不点卡片、不搜索');
+    /* 自动开始按键 → 先同步积分；积分与任务都已完成时不做任何其他动作。
+       唯一例外：开启「不跳过已完成任务卡」，此时仍要发起点击任务卡片流程。 */
+    if (sync.allDone && !o.force && !notSkipCompletedCards) {
+      console.info('[AutoTask] 同步后积分与任务均已全部完成，零动作：不重载页面、不点卡片、不搜索');
       await store({ running: false, phase: 'completed', stopRequested: false,
                     lastActivity: Date.now() });
       return { ok: true, skipped: true, reason: 'allDone', source: 'start-sync',
                clicked: 0, searches: 0 };
+    }
+    if (sync.allDone && notSkipCompletedCards) {
+      console.info('[AutoTask] 积分与任务已完成，但「不跳过已完成任务卡」已开启：仍发起点击流程');
     }
 
     /* ② 点击任务卡片 */
@@ -6070,7 +5922,7 @@ async function runAutoComplete(opts) {
           + (p.panelFound === false ? '/未找到面板' : '') + ')'
         : p.page + '=' + p.clicked + '(卡' + (p.anchors || 0) + '/完成' + (p.doneSkipped || 0) + ')'
     ).join(' / ') || '无';
-    console.info('[AutoTask] 自动完成[' + TASK_MODE + ']：共点击 ' + clickRes.clicked + ' 张（' + perPage
+    console.info('[AutoTask] 自动完成[先同步积分状态 → 侧栏点击积分卡 → 搜索]：共点击 ' + clickRes.clicked + ' 张（' + perPage
       + '），保留任务标签页 ' + (clickRes.openedTabs || 0) + ' 个'
       + '（DOM 降级点击 ' + (clickRes.domClick || 0)
       + '，真鼠标 ' + (clickRes.realMouse || 0) + '/降级 ' + (clickRes.degraded || 0)
@@ -6614,21 +6466,10 @@ refreshToday = async function () {
 };
 
 /* ==========================================================================
- * v1.3.2 · 桌面版任务点击：专用「任务侧栏」，从头滚动到结束逐张点击
- *
- * 上传版的 humanClickTasks / completePendingTaskCardsOnRewards 假设浏览器有
- * 多个标签页：每张卡片 target=_blank 会开一个新标签，载体页保持不动。
- * 桌面壳只有一个可见侧栏，所有 tabs.create 都复用同一 sideView，点开第一张
- * 卡就把扫描页导航走了，后面的卡片全部丢失 —— 这正是「只打开一两个」的根因。
- *
- * 主进程新增 taskView（第二个侧栏）+ 隐藏结果视图：扫描页始终不变，
- * 点击弹出的任务页落到结果视图。滚动扫描收集全部 +N 卡片后逐张点击，
- * 跨 /dashboard 与 /earn 两页、按稳定 key 去重，一张都不漏。
- * 上传版函数体一行未改，这里只换绑定（verify:align 白名单登记）。
+ * 桌面版任务点击：专用任务侧栏保持扫描页不变，点击弹出的任务页落到结果视图，
+ * 跨 /dashboard 与 /earn 两页、按稳定 key 去重逐张点击。
+ * 统一走主进程 CDP 真鼠标输入；CDP 不可用就明确记失败，不回退 DOM 合成事件。
  * ======================================================================== */
-const uploadCompletePendingTaskCards = completePendingTaskCards;
-/* v1.3.5：桌面版任务点击统一交给主进程 CDP 鼠标输入。
-   不再回退到上传版 humanClickTasks 的 DOM 合成事件；CDP 不可用就明确记失败。 */
 completePendingTaskCards = async function (level, token) {
   const stat = {
     clicked: 0, skipped: 0, real: false, realMouse: 0,
@@ -6647,29 +6488,27 @@ completePendingTaskCards = async function (level, token) {
     return stat;
   }
 
-  const clickState = await load(['taskClickIndex']);
-  const clickIndex = clickState && clickState.taskClickIndex;
-  if (!clickIndex || clickIndex.schemaVersion !== 1 || !Array.isArray(clickIndex.items)) {
-    stat.clickFailed = 1;
-    stat.reason = 'task-click-index-missing';
-    console.warn('[AutoTask] 同步任务定位索引不存在；请先刷新积分和任务列表');
-    return stat;
-  }
+  /* v1.3.8-s1：开始时已由 desktopSyncRewards 同步积分状态（todayTasks）与
+     任务定位索引；侧栏只用来枚举卡片与定位坐标，点哪张由主界面任务状态决定。
+     把同步结果挂在 clickIndex 上透传，主进程不再要求索引非空。 */
+  const clickState = await load(['taskClickIndex', 'todayTasks']);
+  const clickIndex = Object.assign({}, (clickState && clickState.taskClickIndex) || {}, {
+    sidebarFirst: true,
+    taskSummary: (clickState && clickState.todayTasks) || null
+  });
 
   const clickSettings = await getSettings();
-  const skipCompletedCards = !!clickSettings.skipCompletedCards;
+  /* 设置项已反转为「不跳过已完成任务卡」：默认关闭 → 默认跳过已完成卡。
+     下发给主进程的仍是内部指令 skipCompletedCards（是否跳过）。 */
+  const notSkipCompletedCards = !!clickSettings.notSkipCompletedCards;
+  const skipCompletedCards = !notSkipCompletedCards;
   let r = null;
   try {
     r = await Promise.race([
-<<<<<<< HEAD
-      panel.clickAll(clickIndex, { skipCompletedCards: skipCompletedCards }),
-      sleep(180000).then(() => ({ ok: false, reason: 'timeout' }))
-=======
       panel.clickAll(clickIndex, { skipCompletedCards: skipCompletedCards, cardClickIntervalSec: clickSettings.cardClickIntervalSec }),
-      sleep(Math.max(180000, (clickIndex.items.length + 10) *
+      sleep(Math.max(180000, ((Array.isArray(clickIndex.items) ? clickIndex.items.length : 8) + 10) *
         Math.min(60, Math.max(1, Number(clickSettings.cardClickIntervalSec) || 10)) * 1000 + 120000))
         .then(() => ({ ok: false, reason: 'timeout' }))
->>>>>>> fb5efdd15db37cf18e87c9be2597e688bc7a03cf
     ]);
   } catch (err) {
     stat.clickFailed = 1;
@@ -6687,7 +6526,8 @@ completePendingTaskCards = async function (level, token) {
 
   for (const p of (r.pages || [])) {
     stat.pages.push({
-      page: /\/earn/.test(p.url || '') ? 'earn' : 'dashboard',
+      page: p.source === 'sidebar-flyout' ? 'sidebar'
+        : /\/earn/.test(p.url || '') ? 'earn' : 'dashboard',
       clicked: Number(p.clicked) || 0,
       anchors: Number(p.found) || 0,
       doneSkipped: Number(p.skipped) || 0,
@@ -6825,8 +6665,8 @@ const desktopActivityOrigAuto = runAutoComplete;
 runAutoComplete = async function (opts) {
   await desktopActivityWrite({
     state: 'autoStart',
-    zh: '开始自动任务 · 同步积分 → 点击卡片 → 补全搜索',
-    en: 'Auto-start · sync points → cards → searches'
+    zh: '开始自动任务 · 同步积分 → 侧栏点击卡片 → 补全搜索',
+    en: 'Auto-start · sync points → sidebar cards → searches'
   });
   const r = await desktopActivityOrigAuto(opts);
   const skipped = !!(r && (r.skipped === true || r.reason === 'allDone'));

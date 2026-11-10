@@ -126,8 +126,6 @@ body {
 
 .app { display: flex; flex-direction: column; }
 
-/* v3.0 · 扩展 popup 固定 380px，官网在独立标签页打开，
-   不存在桌面壳「右侧 WebContentsView 覆盖」的布局，这里不再改宽度。 */
 body.panel-open { overflow: hidden; }
 body.panel-open .app { width: 100%; max-width: 100%; }
 
@@ -152,7 +150,6 @@ body.panel-open .app { width: 100%; max-width: 100%; }
 .panel-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .panel-btn[aria-pressed="true"] { color: var(--accent); border-color: var(--accent); }
 .panel-btn[hidden] { display: none; }
-
 
 .header {
   display: flex;
@@ -207,9 +204,6 @@ body.panel-open .app { width: 100%; max-width: 100%; }
 .icon-btn:active { transform: scale(0.94); }
 .icon-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
-/* v1.2 · 右上角登录状态提示（纯展示，不可点击）
-   未登录 → 灰色勋章图标 +「未登录」；已登录 → 金色勋章图标 +「已登录」。
-   不显示积分数字 / 头像，不注册 click / dblclick，没有 hover 气泡与点击反馈。 */
 .login-badge {
   position: relative;
   display: inline-flex;
@@ -239,7 +233,7 @@ body.panel-open .app { width: 100%; max-width: 100%; }
   transition: transform var(--transition), filter var(--transition), opacity var(--transition);
 }
 .login-badge-icon[hidden] { display: none !important; }
-/* 未登录：整枚图标去色变灰；已登录：保留原图的橙色/金色 */
+
 .login-badge.signed-out .login-badge-icon { filter: grayscale(1); opacity: .58; }
 .login-badge.in .login-badge-icon { filter: none; opacity: 1; }
 .login-badge-text {
@@ -253,12 +247,6 @@ body.panel-open .app { width: 100%; max-width: 100%; }
 .login-badge.in .login-badge-text { color: #b8860b; }
 [data-theme="dark"] .login-badge.in .login-badge-text { color: #f0c05a; }
 
-/* v1.2：登录徽标是纯状态提示，不再有 hover 提示气泡与点击反馈。 */
-/* v1.2 rev2 · 修复 UI 崩溃：上一版把「tip 样式块」之后的整段 CSS 一起删掉了
-   （274–741 行：进度环 / 状态条 / 积分卡 / 今日任务 / 通知 / 错误条）。
-   SVG <circle> 失去 fill:none 与固定 130px 尺寸后变成铺满的纯黑大圆，
-   .ring-hover-card 失去 .ring-wrap 的 position:relative 后飘到页面中间。
-   这里把该段完整恢复，仅剔除 .login-badge-tip 相关规则。 */
 @media (prefers-reduced-motion: reduce) {
   .login-badge, .login-badge-icon { transition: none; }
 }
@@ -367,7 +355,6 @@ body.panel-open .app { width: 100%; max-width: 100%; }
 .status.completed { color: var(--success); background: var(--success-light); }
 .status.completed .status-dot { background: var(--success); }
 
-/* v2.9：全完成提示 —— 圆圈下方的一行小绿字，不做大写/字距处理，更接近正文提示 */
 .status.completed.all-done {
   text-transform: none;
   letter-spacing: 0;
@@ -377,7 +364,6 @@ body.panel-open .app { width: 100%; max-width: 100%; }
 
 .status.error { color: var(--danger); background: var(--danger-light); }
 
-/* 冷却轮次是较长的一句话，不做大写/字距拉伸，读起来更清楚 */
 .status.cooldown {
   color: var(--warn);
   background: var(--warn-light);
@@ -466,7 +452,6 @@ body.panel-open .app { width: 100%; max-width: 100%; }
   filter: drop-shadow(0 0 6px var(--accent-glow-strong));
 }
 
-/* 鼠标移到进度圆圈：轻微放大 + 光环绕圈旋转 + 进度弧发光加强 */
 .progress-halo {
   fill: none;
   stroke: var(--accent);
@@ -694,7 +679,6 @@ body.panel-open .app { width: 100%; max-width: 100%; }
 }
 .error-close:hover { opacity: 1; }
 
-/* ── Controls ── */
 .controls {
   display: flex;
   flex-direction: column;
@@ -741,7 +725,6 @@ body.panel-open .app { width: 100%; max-width: 100%; }
 
 .hint { font-size: 11px; color: var(--fg-tertiary); font-weight: 500; flex-shrink: 0; }
 
-
 .btn {
   display: flex;
   align-items: center;
@@ -770,7 +753,6 @@ body.panel-open .app { width: 100%; max-width: 100%; }
 
 .btn.danger { background: var(--danger); box-shadow: var(--btn-danger-shadow); }
 .btn.danger:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 4px 16px rgba(205,43,49,0.3); }
-
 
 .footer {
   display: flex;
@@ -864,9 +846,10 @@ body.panel-open .app { width: 100%; max-width: 100%; }
   transform: translateY(-3px);
   box-shadow: var(--shadow-lift);
   border-color: var(--border-strong);
+  position: relative;
+  z-index: 2147483647;   
 }
 
-/* 可领取卡片：默认外观与其他卡片完全一致，只在悬浮/聚焦时露出「可跳转」提示 */
 .point-card.clickable { cursor: pointer; }
 .point-card.clickable::after {
   content: "↗";
@@ -891,7 +874,7 @@ body.panel-open .app { width: 100%; max-width: 100%; }
   position: absolute;
   bottom: calc(100% + 10px);
   left: 50%;
-  z-index: 30;
+  z-index: 2147483647;
   width: max-content;
   max-width: 220px;
   padding: 9px 11px;
@@ -1000,7 +983,7 @@ body.settings-open { min-height: 590px; }
 
 .settings {
   position: fixed;
-  /* v3.0：popup 没有右侧原生视图，设置面板直接铺满 380px。 */
+  
   inset: 0;
   width: 100%;
   max-width: 100%;
@@ -1092,8 +1075,6 @@ label.set-row { cursor: pointer; }
   color: var(--fg);
 }
 
-.set-label small { font-size: 11px; font-weight: 500; color: var(--fg-tertiary); }
-
 .switch {
   appearance: none;
   flex-shrink: 0;
@@ -1159,7 +1140,6 @@ label.set-row { cursor: pointer; }
 .segmented button:focus-visible,
 .chips button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 
-
 .chips { display: flex; gap: 6px; }
 
 .chips button {
@@ -1196,7 +1176,6 @@ label.set-row { cursor: pointer; }
 .chips input.custom { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-glow); }
 .chips input:focus,
 .time-range input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-glow); }
-
 
 .stepper {
   display: inline-flex;
@@ -1239,7 +1218,6 @@ label.set-row { cursor: pointer; }
   from { transform: scale(0.7); opacity: 0.4; }
   to { transform: none; opacity: 1; }
 }
-
 
 .time-range { display: flex; align-items: center; gap: 4px; color: var(--fg-tertiary); }
 .time-range input { width: 104px; padding: 0 6px; font-size: 11.5px; }
@@ -1324,10 +1302,8 @@ label.set-row { cursor: pointer; }
   .enter { animation: none !important; }
 }
 
-/* ── 语言分段控件（跟随系统 / 中文 / English） ── */
 .lang-segmented button { padding: 5px 8px; font-size: 11px; }
 
-/* ── 今日任务列表（首页，按截图卡片分组，仅显示有积分项） ── */
 .today-tasks {
   margin: 0 20px 14px;
   padding: 12px 12px 10px;
@@ -1480,8 +1456,6 @@ a.tt-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px;
 
 .today-tasks .preview-msg { margin: 8px 0 0; }
 
-/* ── 自动完成任务设置 ── */
-/* 总开关关闭时只做视觉弱化：启动时间等仍可提前配置，避免「添加」按钮点不了 */
 .auto-opts { transition: opacity 260ms ease; }
 .auto-opts.off { opacity: 0.62; }
 
@@ -1557,11 +1531,9 @@ a.tt-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px;
 
 #set-auto-msg { margin: 2px 0 8px; }
 
-/* v1.6：首页按钮移到三张积分卡正下方；提示模块与搜索次数输入已删除 */
 .controls.under-points { padding-top: 14px; padding-bottom: 16px; }
 .controls.under-points .btn { margin-top: 0; }
 
-/* v1.2 rev3：图标是透明 PNG，容器不再有背景色 / 阴影 / 圆角裁切。 */
 .brand-icon {
   width: 32px; height: 32px;
   background: transparent;
@@ -1569,21 +1541,13 @@ a.tt-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px;
 }
 .brand-img { width: 32px; height: 32px; display: block; }
 
-/* 圆环副标题改用「今日任务」，不做大写/字距拉伸 */
 .progress-sub { text-transform: none; letter-spacing: 0; font-size: 11px; }
-/* 冷却倒计时用警示色，和普通「今日任务」副标题区分开 */
+
 .progress-sub.cooldown { color: var(--warn); font-weight: 700; }
 
-/* 今日任务卡片只做展示，不提供点击 */
 .tt-card { cursor: default; }
 .tt-card:hover { transform: none; box-shadow: none; }
 
-
-/* ==========================================================================
- * v1.0.4 首页进度圆圈悬停：明确的信息卡 + 更明显的动画
- *   旧版只画了一圈细虚点（stroke-dasharray:1 13），用户看到的就只有「黑圈」，
- *   加上原生 title 黑框，观感是「悬停只有黑圈的提示信息」。
- * ======================================================================== */
 .progress-section { position: relative; overflow: visible; }
 .ring-wrap { z-index: 5; }
 
@@ -1632,7 +1596,6 @@ a.tt-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px;
   transform: translate(-50%, 0) scale(1);
 }
 
-/* 点环改成明显的弧段 + 发光，不再是一圈若隐若现的黑点 */
 .ring-wrap:hover .progress-halo {
   stroke-width: 3;
   stroke-dasharray: 20 12;
@@ -1655,7 +1618,6 @@ a.tt-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px;
   .ring-wrap:hover .progress-count { animation: none; }
 }
 
-/* 设置：总开关关闭时仍可点击；说明写进页内，不再用原生 title 黑框 */
 .auto-opts.off { opacity: 0.62; pointer-events: auto; }
 .auto-opts.off :is(button, input, .segmented, .chips) { pointer-events: auto; }
 .auto-disabled-hint {
@@ -1670,8 +1632,6 @@ a.tt-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px;
 }
 [data-theme="dark"] .auto-disabled-hint { color: #f0b45e; }
 
-/* v1.3.1 · 刷新无动画：数据完整到达后一次性替换，不做补间 / 滚动 / 脉冲。
-   仅覆盖数据呈现元素；鼠标悬停圆环、设置面板开合等交互反馈保留。 */
 .progress-fill,
 .tt-fill,
 .daily-fill,
@@ -1685,12 +1645,6 @@ a.tt-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px;
 .status.cooldown .status-dot { animation: none !important; }
 .progress-ring.spinning { animation: none !important; }
 
-/* ==========================================================================
- * v1.3.8 · 积分日历（支付宝收益日历风格）
- *  · 大数字主指标 + 极简圆角方格，无边框 / 无阴影 / 无渐变
- *  · 过去无积分 → 浅灰；未来 → 不显示方块；有积分 → 淡蓝；今日 → 细描边
- *  · 设置说明统一收进自定义悬停浮层 .hover-tip（不新增页内小字）
- * ========================================================================== */
 :root {
   --cal-has-bg: #EAF3FF;
   --cal-has-fg: #2B7FFF;
@@ -1721,7 +1675,6 @@ a.tt-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px;
 .cal-nav:hover { background: var(--surface-raised); color: var(--accent); }
 .cal-range { flex: 1; text-align: center; font-size: 12px; font-weight: 600; color: var(--fg-secondary); letter-spacing: .04em; }
 
-/* 收益日历的灵魂：一个大数字，下面一行极淡的指标名 */
 .cal-hero { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 8px 0 12px; }
 .cal-hero-value { display: flex; align-items: baseline; gap: 4px; }
 .cal-total { font-size: 28px; font-weight: 700; line-height: 1.1; letter-spacing: -.02em; color: var(--fg); font-variant-numeric: tabular-nums; }
@@ -1735,16 +1688,11 @@ a.tt-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px;
   margin-bottom: 6px; color: var(--fg-tertiary); font-size: 10px; text-align: center;
 }
 .cal-weekdays:empty { display: none; }
-<<<<<<< HEAD
-.cal-grid { display: grid; gap: 6px; }
-=======
 .cal-grid { display: grid; gap: 6px; min-width: 0; width: 100%; }
->>>>>>> fb5efdd15db37cf18e87c9be2597e688bc7a03cf
 .cal-grid.cal-day { grid-template-columns: repeat(7, 1fr); }
 .cal-grid.cal-week { grid-template-columns: repeat(7, 1fr); }
 .cal-grid.cal-month { grid-template-columns: repeat(4, 1fr); }
 
-/* 三种视图统一为圆角正方形：纯色、无边框、无阴影 */
 .cal-cell {
   position: relative; box-sizing: border-box;
   aspect-ratio: 1 / 1; min-height: 0;
@@ -1764,29 +1712,25 @@ a.tt-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px;
 }
 .cal-summary { margin: 10px 0 2px; text-align: center; font-size: 11px; color: var(--fg-tertiary); line-height: 1.5; }
 
-/* 自定义悬停提示：挂在 body 上的 fixed 浮层，不受设置页滚动容器裁剪 */
 .hover-tip {
-  position: fixed; z-index: 9999; max-width: 260px; width: max-content;
+  position: fixed; z-index: 2147483647; max-width: 92vw; width: max-content;
   padding: 8px 10px; border-radius: 10px;
   background: var(--surface-raised); color: var(--fg);
   border: 1px solid var(--border);
   box-shadow: 0 8px 24px rgba(16, 24, 40, .14);
-  font-size: 11px; font-weight: 500; line-height: 1.55;
-  letter-spacing: 0; text-transform: none; white-space: normal;
+  font-size: 11px; font-weight: 500; line-height: 1.4;
+  letter-spacing: 0; text-transform: none;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   pointer-events: none; animation: tipIn .14s ease-out;
 }
 .hover-tip[hidden] { display: none; }
 @keyframes tipIn { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }
 
-/* 运行详情复用状态行：排版放松一点，长句省略但悬停可看全文 */
 .status.activity {
   max-width: 100%; text-transform: none; letter-spacing: 0;
   font-size: 11px; font-weight: 600; text-overflow: ellipsis;
 }
-<<<<<<< HEAD
-=======
 
-/* v1.3.8-R3 · 周/月积分日历：真实视图，兼顾窄弹窗与桌面侧栏 */
 .set-inline-number { display:inline-flex; align-items:center; gap:6px; flex-shrink:0; }
 #set-card-interval { width:66px; min-width:0; box-sizing:border-box; padding:7px 8px;
   border:1px solid var(--border); border-radius:9px; text-align:center;
@@ -1825,10 +1769,14 @@ a.tt-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px;
   background:var(--cal-gray-bg); color:var(--cal-gray-fg); }
 .cal-grid.cal-week .cal-past-empty .cal-period-points,
 .cal-grid.cal-month .cal-past-empty .cal-period-points { color:var(--cal-gray-fg); }
-.cal-legend { display:flex; justify-content:center; align-items:center; gap:17px;
-  margin-top:12px; font-size:10px; color:var(--fg-tertiary); }
-.cal-legend > span { display:inline-flex; align-items:center; gap:5px; }
-.cal-legend-dot { width:9px; height:9px; border-radius:3px; display:inline-block; }
-.cal-legend-dot.earned { background:var(--cal-has-fg); }
-.cal-legend-dot.empty { background:var(--cal-gray-fg); opacity:.55; }
->>>>>>> fb5efdd15db37cf18e87c9be2597e688bc7a03cf
+
+/* 设置界面：更紧凑的分组与可折叠日历 */
+.set-row { padding: 8px 0; }
+.set-row.column { padding: 8px 0; gap: 6px; }
+.set-title + .set-row { border-top: none; }
+.set-label { font-size: 12.5px; }
+.cal-fold > summary { list-style: none; cursor: pointer; display: flex; align-items: center; justify-content: space-between; }
+.cal-fold > summary::-webkit-details-marker { display: none; }
+.cal-fold > summary::after { content: '›'; font-size: 16px; line-height: 1; color: var(--fg-tertiary); transition: transform 180ms ease; }
+.cal-fold[open] > summary::after { transform: rotate(90deg); }
+.cal-fold[open] .cal-head { margin-top: 10px; }

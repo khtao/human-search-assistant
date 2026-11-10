@@ -50,10 +50,11 @@ function main() {
       output:outputRel, arguments:configArgs, cacheFirst:true, uniqueOutput:true,dirOnly:isDirOnly},null,2));
     return 0;
   }
-  // Verify browser/desktop shared UI before packaging to prevent drift.
-  const check = path.join(__dirname, 'verify-ui-parity.js');
+  // 打包前确认主进程 require 的 lib 模块都在 files 白名单里。
+  // 漏列会让 app.asar 启动即报 "Cannot find module './lib/xxx'"。
+  const check = path.join(__dirname, 'verify-packaged-lib.js');
   if (run(process.execPath, [check]) !== 0) {
-    console.error('[HSA] Shared UI parity check failed; EXE not built.');
+    console.error('[HSA] Packaged lib manifest check failed; EXE not built.');
     return 1;
   }
   if (process.platform !== 'win32') {

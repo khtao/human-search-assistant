@@ -1,10 +1,3 @@
-/* v3.0 · 扩展平台独立兜底（外部脚本，符合 MV3 CSP: script-src 'self'）
- *
- * 桌面壳靠主进程 1 秒 IPC 心跳（chrome.onTick）反复驱动这段复位；MV3 没有
- * 该事件，也没有常驻主进程，这里改成 popup 打开后的一次性 3.5s 看门狗。
- * 与 popup.js 的 DOMContentLoaded 链路完全解耦：即使 popup.js 初始化失败，
- * 「正在启动…」「正在读取今日任务…」也不会永久卡住。
- */
 (function () {
   var boot = Date.now();
   var zh = (document.documentElement.lang || '').indexOf('zh') === 0;

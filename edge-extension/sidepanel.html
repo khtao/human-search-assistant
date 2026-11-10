@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>必应任务侧栏 · 拟人搜索助手</title>
+  <style>
+    :root {
+      --bg: #f5f7fb; --fg: #1b2330; --sub: #6b7686; --line: #e3e8f0;
+      --accent: #0a63f8; --card: #fff; --ok: #17864a;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root { --bg: #161b24; --fg: #eef2f8; --sub: #98a4b5; --line: #2b3543;
+        --accent: #5b9bff; --card: #1d2531; --ok: #57c98a; }
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; }
+    body {
+      display: flex; flex-direction: column;
+      font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI",
+            "Microsoft YaHei", "WenQuanYi Micro Hei", sans-serif;
+      background: var(--bg); color: var(--fg);
+    }
+    .head {
+      display: flex; align-items: center; gap: 8px;
+      padding: 9px 10px; border-bottom: 1px solid var(--line);
+      background: var(--card); flex-shrink: 0;
+    }
+    .head img { width: 20px; height: 20px; flex-shrink: 0; }
+    .head h1 { margin: 0; font-size: 13px; font-weight: 700; white-space: nowrap; }
+    .head .spacer { flex: 1; }
+    .head button {
+      border: 1px solid var(--line); background: transparent; color: var(--fg);
+      border-radius: 7px; padding: 4px 9px; font-size: 11px; cursor: pointer;
+      white-space: nowrap;
+    }
+    .head button:hover { border-color: var(--accent); color: var(--accent); }
+    .status {
+      padding: 7px 10px; font-size: 11.5px; color: var(--sub);
+      background: var(--card); border-bottom: 1px solid var(--line);
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      flex-shrink: 0;
+    }
+    .status.running { color: var(--accent); }
+    .status.done { color: var(--ok); }
+    .frame-wrap { flex: 1; min-height: 0; background: #fff; }
+    iframe { width: 100%; height: 100%; border: 0; display: block; }
+    .foot {
+      padding: 6px 10px; font-size: 10.5px; color: var(--sub);
+      border-top: 1px solid var(--line); background: var(--card);
+      flex-shrink: 0;
+    }
+    .foot b { color: var(--fg); font-weight: 600; }
+  </style>
+  <script src="sidepanel.js" defer></script>
+</head>
+<body>
+  <div class="head">
+    <img src="icons/icon32.png" alt="">
+    <h1>必应任务侧栏</h1>
+    <span class="spacer"></span>
+    <button id="btn-reload" type="button">重新加载</button>
+    <button id="btn-login" type="button">在标签页登录</button>
+  </div>
+  <div id="status" class="status" role="status" aria-live="polite">侧栏已就绪，等待自动任务…</div>
+  <div class="frame-wrap">
+    <iframe id="flyout"
+      src="https://cn.bing.com/rewards/panelflyout?channel=bingflyout&amp;partnerId=BingRewards"
+      title="Bing Rewards 任务侧栏" allow="clipboard-read; clipboard-write"></iframe>
+  </div>
+  <div class="foot">
+    <b>提示</b>：此页面由插件内部加载。若显示「未登录」，请点「在标签页登录」后用
+    <b>独立标签页流程</b>兜底（浏览器对扩展 iframe 的第三方 Cookie 可能有限制）。
+  </div>
+</body>
+</html>

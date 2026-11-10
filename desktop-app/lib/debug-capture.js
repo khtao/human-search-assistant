@@ -17,10 +17,11 @@
  * 抓取点全部在主进程，不改动 src/ 下的插件源码：
  *   · chrome:scripting:executeScript → 注入读 DOM 拿到的 outerHTML（积分/任务）
  *   · 侧栏 WebContentsView did-finish-load → 登录页 / Rewards 页 HTML
- *   · 后台数据视图 did-finish-load → /dashboard、/earn HTML
  *   · chrome:fetch → 热搜词源等响应体（可选）
  *
- * 默认开启（排障期）；HSA_DEBUG=0 关闭。HSA_DEBUG_REDACT=0 关闭脱敏。
+ * 默认关闭，只有 HSA_DEBUG=1（npm run start:debug）才采集，日常运行零开销。
+ * HSA_DEBUG_REDACT=0 可关闭脱敏；HSA_DEBUG_MAX_HTML 控制单次会话 HTML 上限。
+ * 日志、事件与索引全部走有界内存缓冲并定时批量落盘，避免同步 I/O 拖慢主进程。
  * ========================================================================== */
 'use strict';
 const fs = require('fs');
@@ -143,11 +144,9 @@ class DebugCapture {
     this.eventLines = [];
     this.ipcCounts = {};
     this.env = {};
-    /* v1.1.3 性能修复：调试模式默认开启，旧版每次 IPC 都同步 append 两次日志、
-       每次 captureHtml 都重写整份 manifest.json，主进程事件循环被 sync I/O
-       占满，反而让 fetchRewardsPage 的 12 秒 guard 抢先超时 —— 表现为
-       「一开 debug 就抓不到积分」。现在日志/事件/索引全部内存缓冲，
-       定时批量落盘；HTML 文件仍即时写（用户要的就是即时现场）。 */
+    /* 日志/事件/manifest 走有界内存缓冲 + 400ms 批量落盘；HTML 文件即时写。
+       早期版本每次 IPC 同步 append、每次 captureHtml 重写整份 manifest，
+       会把主进程事件循环占满，导致页面抓取超时。 */
     this._pendingLogs = [];
     this._pendingEvents = [];
     this._manifestDirty = false;
@@ -244,8 +243,8 @@ class DebugCapture {
     /* runtime.log 里也留一行 channel 名，方便直接看出「点击登录到底有没有发消息」。
        只 push 到内存缓冲、不额外 event，避免旧版双写拖慢主进程。 */
     if (this.enabled) {
-      this._pendingLogs.push(`[${new Date().toISOString()}] [ipc] ${channel}` +
-        (detail === undefined ? '' : ' ' + JSON.stringify(detail)));
+      pushBounded(this._pendingLogs, `[${new Date().toISOString()}] [ipc] ${channel}` +
+        (detail === undefined ? '' : ' ' + JSON.stringify(detail)), MAX_PENDING_LOGS);
     }
   }
 
@@ -282,6 +281,13 @@ class DebugCapture {
       process.removeListener('exit', this._onProcessExit);
       this._onProcessExit = null;
     }
+    /* 应用退出时释放所有内存缓冲，避免卸载阶段仍持有大 HTML 字符串 */
+    this._pendingLogs.length = 0;
+    this._pendingEvents.length = 0;
+    this.logLines.length = 0;
+    this.eventLines.length = 0;
+    this.entries.length = 0;
+    this.ipcCounts = {};
   }
 
   /** 核心：保存一次抓到的页面 HTML */

@@ -43,11 +43,14 @@ const VIEW_API = WebContentsView ? 'WebContentsView' : 'BrowserView';
 const path = require('path');
 const fs = require('fs');
 const zlib = require('zlib');
+const { pathToFileURL } = require('url');
 const { DebugCapture } = require('./lib/debug-capture');
 /* v1.1.6：调试默认禁用，仅命令行 `npm run start:debug`（HSA_DEBUG=1）开启。
    默认关闭可避免生产运行时持续的 HTML 落盘与 I/O。 */
 const DBG = new DebugCapture();
 const C = require('./lib/core');
+const SidebarCards = require('./lib/sidebar-task-cards');
+const { MemoryGovernor, trimSnapshotHtml, SNAPSHOT_HTML_LIMIT } = require('./lib/memory-governor');
 
 /* 所有窗口（popup / host / Rewards 标签页 / 登录窗口）显式共用同一个
    持久化会话。此前登录 Cookie 落在标签页会话、后台 fetch 读的是另一处视图，
@@ -214,7 +217,7 @@ ipcMain.handle('chrome:storage:set', (_e, patch) => {
       signedOut: patch.todayTasks ? !!patch.todayTasks.signedOut : null });
     DBG.snapshotStorage(state);
   }
-  // v1.0.9：运行时展开右侧官网面板，结束自动收起；手动展开的面板不自动收。
+  // 运行时展开右侧官网面板，结束自动收起；手动展开的面板不自动收。
   if (Object.prototype.hasOwnProperty.call(patch, 'running')) {
     try {
       if (patch.running === true) {
@@ -223,6 +226,8 @@ ipcMain.handle('chrome:storage:set', (_e, patch) => {
         hideSidePanel();
       }
     } catch (err) { console.warn('[panel] 自动显隐失败:', err.message); }
+    /* 任务启动要立刻退出静默并恢复保活；结束则允许重新进入低占用态 */
+    governMemory('running:' + patch.running);
   }
   return null;
 });
@@ -283,7 +288,7 @@ async function cookieHeaderFor(url) {
   } catch { return ''; }
 }
 
-/** net.fetch 不可用时的最小回退（旧版 Electron）。 */
+/** net.fetch 不可用时的最小回退。 */
 function legacyRequest(url, opts, cookie) {
   return new Promise((resolve, reject) => {
     const s = getAppSession();
@@ -321,8 +326,10 @@ function legacyRequest(url, opts, cookie) {
 
 ipcMain.handle('chrome:fetch', async (_e, url, init, id) => {
   const timeoutMs = Math.max(1000, Number(init.desktopTimeoutMs) || 12000);
-  // 用 Promise.race 实现超时/取消，不依赖 net.fetch 是否支持 signal 选项
-  const ctl = { reject: null, aborted: false };
+  // 用 Promise.race 实现超时/取消，同时用 AbortSignal 真正中止底层请求。
+  // 超时后若底层请求仍在下载响应体，主进程会一直持有那个 Buffer，必须真正中止。
+  const ctl = { reject: null, aborted: false, abort: null };
+  const controller = typeof AbortController === 'function' ? new AbortController() : null;
   let timer = null;
   const guard = new Promise((_resolve, reject) => {
     timer = setTimeout(() => {
@@ -332,15 +339,20 @@ ipcMain.handle('chrome:fetch', async (_e, url, init, id) => {
       const e = new Error('aborted'); e.name = 'AbortError'; reject(e);
     };
   });
+  ctl.abort = () => {
+    if (ctl.aborted) return;
+    ctl.aborted = true;
+    try { controller && controller.abort(); } catch {}
+    try { ctl.reject && ctl.reject(); } catch {}
+  };
   fetchControllers.set(id, ctl);
-  // 整个请求（含 cookie 读取）都放进 work，由同一个 guard 统一兜底。
-  // 旧版只 race 了 net.fetch，若 cookieHeaderFor 挂起或 IPC 无响应，
-  // handler 永不返回，AbortController 也无从取消 —— 登录探测就会卡死。
+  // cookie 读取也在同一个 guard 覆盖范围内，避免登录探测挂起时 handler 永不返回。
   const work = (async () => {
     const headers = Object.assign({}, init.headers || {});
     const cookie = await cookieHeaderFor(url);
     if (cookie && !headers.Cookie && !headers.cookie) headers.Cookie = cookie;
     const opts = { method: init.method || 'GET', headers, body: init.body || undefined };
+    if (controller) opts.signal = controller.signal;
     const res = typeof net.fetch === 'function'
       ? await net.fetch(url, opts)
       : await legacyRequest(url, opts, cookie);
@@ -370,15 +382,14 @@ ipcMain.handle('chrome:fetch', async (_e, url, init, id) => {
     });
   } finally {
     clearTimeout(timer);
+    /* 竞态失败（超时/主动取消）时中止底层请求，释放响应体 */
+    if (ctl.aborted) { try { controller && controller.abort(); } catch {} }
     fetchControllers.delete(id);
   }
 });
 ipcMain.on('chrome:fetch:abort', (_e, id) => {
   const c = fetchControllers.get(id);
-  if (c && !c.aborted) {
-    c.aborted = true;
-    try { c.reject && c.reject(); } catch {}
-  }
+  if (c && typeof c.abort === 'function') c.abort();
 });
 
 /* ==========================================================================
@@ -498,6 +509,26 @@ function panelActionActive() { return Date.now() < userPanelActionUntil; }
 let collapsedSize = null;
 const attachedViews = new Set();
 const dataViews = new Map();       // 'dash' | 'earn' -> { view, entry, id, lastNav }
+/* 每个 webContents 只保留一个延时 DOM 快照定时器：避免连续导航堆积闭包，
+   或在视图销毁后仍持有 outerHTML 字符串。 */
+const snapshotTimers = new WeakMap();
+function scheduleViewSnapshot(wc, fn, ms) {
+  if (!wc || wc.isDestroyed()) return;
+  const prev = snapshotTimers.get(wc);
+  if (prev) clearTimeout(prev);
+  const id = setTimeout(() => {
+    snapshotTimers.delete(wc);
+    if (wc.isDestroyed()) return;
+    try { Promise.resolve(fn()).catch(() => {}); } catch {}
+  }, ms);
+  if (id.unref) id.unref();
+  snapshotTimers.set(wc, id);
+}
+function cancelViewSnapshot(wc) {
+  if (!wc) return;
+  const prev = snapshotTimers.get(wc);
+  if (prev) { clearTimeout(prev); snapshotTimers.delete(wc); }
+}
 
 const isEmbeddedUrl = url => /^https?:\/\//i.test(String(url || ''));
 
@@ -539,7 +570,7 @@ function attachView(view) {
   }
   if (done) { attachedViews.add(view); DBG.log('view', '视图挂载成功', { via: canNew ? 'contentView.addChildView' : 'addBrowserView' }); }
   else {
-    // 旧版在这里是空的 catch{}，真机挂载失败时侧栏永远不出现、点登录「没反应」
+    /* 挂载失败会让侧栏永远不显示，必须留日志与控制台错误，不能静默吞掉 */
     DBG.log('view', '视图挂载失败（侧栏不会显示）', { error: String(lastErr && lastErr.message || lastErr) });
     console.error('[view] 挂载失败：' + String(lastErr && lastErr.message || lastErr));
   }
@@ -593,19 +624,15 @@ function ensureSideView() {
       const html = await sideView.webContents.executeJavaScript(
         'document.documentElement.outerHTML', true);
       DBG.captureHtml('side-panel', u, html, { source: 'visible-panel' });
-      /* 等 SPA 把积分/任务卡渲染出来再推快照（did-finish-load 常早于 React 挂载） */
-      setTimeout(() => pushVisibleSnapshot('panel-loaded').catch(() => {}), 900);
+      /* 等 SPA 把积分/任务卡渲染出来再推快照（did-finish-load 常早于 React 挂载）。
+         同一视图只保留一个待执行定时器，避免连续导航堆积闭包。 */
+      scheduleViewSnapshot(sideView.webContents,
+        () => pushVisibleSnapshot('panel-loaded'), 900);
     } catch (err) { DBG.log('panel', '侧栏 HTML 读取失败', { error: String(err.message || err) }); }
-    /* v1.3.3：导航到 Microsoft 授权 / 登录页**不是**登出信号。
-       官网 302、OAuth 授权跳转、/earn 返回登录页 DOM 都会命中 isLoginPageUrl，
-       旧版因此把已登录的 20,192 分写成 null、图标翻灰 —— 正是「点击登录按键
-       却把积分设成 null」的根因。只保留 URL 里明确带 logout/signout 的动作，
-       不把 Cookie 删除本身当作登出依据，避免认证票据轮换误清积分。 */
+    /* 只有 URL 明确带 logout/signout 才算登出。OAuth 跳转、/earn 返回登录页
+       DOM 都会命中 isLoginPageUrl，不能据此清空积分（认证票据轮换也同理）。 */
     if (/(?:\/logout|signout)/i.test(u)) markSignedOut('logout-url');
-    /* v1.3.3：登录页信号在「导航完成的那一刻」就记下。
-       旧版只靠 900ms 后的 DOM 快照置位，若 900ms 内已跳回 Rewards，
-       快照读到的是新 URL，loginPageSeen 永远不置位 → 登录后不派发统一同步，
-       积分与任务列表迟迟不更新。这里只记信号，不判登出（见上段注释）。 */
+    /* 登录页信号在导航完成这一刻就记下：延时 DOM 快照可能已被后续跳转覆盖。 */
     if (isLoginPageUrl(u)) loginPageSeen = true;
   });
   return sideView;
@@ -640,13 +667,9 @@ function applyPanelBounds() {
  *                     扫描页永远不被覆盖，因此可以依次点完全部卡片
  * 全程不 active / 不 bringToFront / 不抢系统焦点。
  * ======================================================================== */
-<<<<<<< HEAD
-const TASK_CLICK_SETTLE_MS = 350;   // 索引定位后给 Rewards 页面留出短暂响应时间
-=======
 const TASK_CLICK_SETTLE_MS = 350;
 const TASK_PAGE_READY_WAIT_MS = 5000; // R4: wait after each page is loaded before scrolling
 const TASK_SCAN_STEP_DELAY_MS = 520;  // R4: at least 12 slow scan steps = 6240ms   // 索引定位后给 Rewards 页面留出短暂响应时间
->>>>>>> fb5efdd15db37cf18e87c9be2597e688bc7a03cf
 let taskView = null, taskTabId = null, taskResultView = null, taskClickRunning = false;
 let taskResultLoadPromise = null, taskResultLoadWatcher = null;
 
@@ -737,22 +760,12 @@ function taskAimIndexedSrc(entry) {
       const n = clean(b).match(/^\\s*([\\d,]{1,5})\\s*$/);
       return n ? parseInt(n[1].replace(/,/g, ''), 10) : 0;
     };
-<<<<<<< HEAD
-    const all = () => [...document.querySelectorAll('a,button,[role="button"],[data-bi-id]')];
-=======
     /* HSA_TASK_LOCATOR_REPAIR_20261109: include offer-id/test-id cards but require strong identity evidence. */
     const all = () => [...document.querySelectorAll('a,button,[role="button"],[data-bi-id],[data-offer-id],[data-testid]')];
->>>>>>> fb5efdd15db37cf18e87c9be2597e688bc7a03cf
     const find = () => {
       const nodes = all(); let best = null, bestScore = 0;
       const wantHref = expectedHref ? abs(expectedHref) : '';
       const wantTitle = norm(expectedTitle);
-<<<<<<< HEAD
-      for (const el of nodes) {
-        const tx = clean(el).slice(0, 500);
-        const href = el.tagName === 'A' ? abs(el.getAttribute('href') || '') : '';
-        let score = 0;
-=======
        for (const el of nodes) {
          const tx = clean(el).slice(0, 500);
          const href = el.tagName === 'A' ? abs(el.getAttribute('href') || '') : '';
@@ -770,7 +783,6 @@ function taskAimIndexedSrc(entry) {
          /* Avoid treating a multi-card wrapper as an individual click target. */
          if (!strongMatch && tx.length > 280) continue;
          let score = 0;
->>>>>>> fb5efdd15db37cf18e87c9be2597e688bc7a03cf
         if (wantHref && href === wantHref) score += 120;
         if (loc.dataBiId && el.getAttribute('data-bi-id') === String(loc.dataBiId)) score += 100;
         if (loc.dataOfferId && el.getAttribute('data-offer-id') === String(loc.dataOfferId)) score += 95;
@@ -783,13 +795,9 @@ function taskAimIndexedSrc(entry) {
         const gotPoints = expectedPoints ? pointsOf(el, tx) : 0;
         if (expectedPoints && gotPoints === expectedPoints) score += 24;
         else if (expectedPoints && gotPoints > 0) score -= 22;
-<<<<<<< HEAD
-        if (score > bestScore) { best = el; bestScore = score; }
-=======
          if (score > bestScore || (score === bestScore && best && el.contains(best))) {
            best = el; bestScore = score;
          }
->>>>>>> fb5efdd15db37cf18e87c9be2597e688bc7a03cf
       }
       return bestScore >= 42 ? best : null;
     };
@@ -981,15 +989,12 @@ function showSidePanel(url, reason, active) {
   attachView(sideView);
   applyPanelBounds();
   if (url) {
-    // 徽标 / 可领取卡片 / 菜单显式传入 URL：一定要有可见反馈。
-    // 旧版仅在「URL 不同」时才导航，面板已展开且停在同一地址时点击
-    // 毫无变化 —— 这正是「未确认按键点击没反应」的第二个原因。
+    // 用户显式传入 URL 时一定要有可见反馈，即使面板已展开且停在同一地址。
     panelReason = 'user';           // 锁为手动，运行结束不自动收走
     sideView.webContents.loadURL(url);
     popupWin.show();
     popupWin.focus();   // 仅显式用户动作激活窗口
-    /* 不再调用侧栏视图自身的 focus()：它会把焦点从官网登录页的
-       账号/密码 iframe 拉回顶层 frame，正是「输入困难」的直接原因。 */
+    /* 不能调用侧栏视图自身的 focus()：会把焦点从登录页 iframe 拉回顶层 frame */
   }
   activeTabId = sideTabId;
   if (!wasVisible && !url && active !== false && panelReason === 'user') {
@@ -1159,8 +1164,6 @@ function orderHint(list, current) {
   return next ? '下一张：' + next : '';
 }
 
-<<<<<<< HEAD
-=======
 /* HSA_TASK_LOCATOR_REPAIR_20261109: discover scored real click targets omitted from server-side HTML index. */
 async function discoverLiveScoredCards(webContents, pageDef) {
   const collectSource = (() => {
@@ -1308,26 +1311,94 @@ async function locateIndexedCardAcrossScroll(webContents, entry) {
   return {ok:false, reason:'not-found-after-full-outer-inner-scroll'};
 }
 
->>>>>>> fb5efdd15db37cf18e87c9be2597e688bc7a03cf
+/* ==========================================================================
+ * v1.3.8-s2 · 通过 Bing Rewards 侧栏点击积分卡片
+ *
+ * 自动完成任务的顺序固定为：开始时同步积分状态 → （若积分与任务都完成则零动作）
+ * → 侧栏主动重新加载页面 → 按主界面任务状态逐张点击积分卡片 → 关闭页面
+ * → 拟人搜索 → 收尾同步。
+ * 侧栏取 cn.bing.com/rewards/panelflyout 顶层页，卡片是普通顶层 DOM。
+ * 识别与过滤规则集中在 lib/sidebar-task-cards.js；完成与否只看同步得到的
+ * todayTasks / taskClickIndex（主界面任务状态），不看侧栏 DOM 的完成标记。
+ * 侧栏读不到积分卡时才回退到 dashboard/earn 索引点击。
+ * ========================================================================== */
+/** 等待一次导航真正完成，带超时兜底，绝不遗留监听器。 */
+function waitForNavigation(wc, action, timeoutMs) {
+  return new Promise(resolve => {
+    let done = false, timer = null;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      if (timer) clearTimeout(timer);
+      wc.removeListener('did-finish-load', finish);
+      resolve();
+    };
+    wc.once('did-finish-load', finish);
+    timer = setTimeout(finish, timeoutMs || 20000);
+    try { Promise.resolve(action()).catch(finish); } catch { finish(); }
+  });
+}
+
+/**
+ * forceReload=true 表示「点击任务卡片流程开启」：先 loadURL，再主动 reload
+ * 丢弃首屏缓存 / 旧 DOM，保证任务状态与积分同步结果一致。
+ */
+async function loadSidebarFlyout(view, urls, forceReload) {
+  const list = Array.isArray(urls) ? urls.filter(Boolean) : [urls].filter(Boolean);
+  for (const u of list) {
+    try {
+      const wc = view.webContents;
+      await waitForNavigation(wc, () => wc.loadURL(u), 20000);
+      if (forceReload) {
+        try {
+          await waitForNavigation(wc, () => wc.reloadIgnoringCache
+            ? wc.reloadIgnoringCache() : wc.reload(), 20000);
+        } catch (err) {
+          DBG.log('task', '侧栏主动重新加载失败，沿用首次加载结果', {
+            error: String(err && err.message || err)
+          });
+        }
+      }
+      /* 等 React 把卡片渲染出来；保存页 / 真机都适用 */
+      for (let i = 0; i < 12; i++) {
+        const n = await wc.executeJavaScript("document.querySelectorAll('a[href]').length", true).catch(() => 0);
+        if (Number(n) > 5) break;
+        await new Promise(r => setTimeout(r, 400));
+      }
+      await new Promise(r => setTimeout(r, 700));
+      return true;
+    } catch (err) {
+      DBG.log('task', '侧栏页面加载失败，尝试下一个入口', {
+        url: u, error: String(err && err.message || err)
+      });
+    }
+  }
+  return false;
+}
+
+/** 点击流程结束：把侧栏任务页面真正关掉（导航到空白页并收起视图）。 */
+async function closeSidebarTaskPage(view) {
+  if (view && view.webContents && !view.webContents.isDestroyed()) {
+    try { await view.webContents.loadURL('about:blank'); } catch {}
+  }
+  hideTaskView();
+}
+
+async function scanSidebarCards(webContents) {
+  for (let i = 0; i < 6; i++) {
+    const res = await webContents.executeJavaScript(SidebarCards.SIDEBAR_SCAN_SOURCE, true).catch(() => null);
+    if (res && Array.isArray(res.cards) && res.cards.length) return res;
+    await new Promise(r => setTimeout(r, 700));
+  }
+  return null;
+}
+
 ipcMain.handle('chrome:task:clickAll', async (_event, clickIndex, options) => {
   if (taskClickRunning) return { ok: false, reason: 'busy' };
   taskClickRunning = true;
   const pages = [];
   let totalClicked = 0, totalOpened = 0, totalFailed = 0, totalScanned = 0, totalUnconfirmed = 0;
   let debuggerAttachedHere = false;
-<<<<<<< HEAD
-  let tv = null, dbg = null;
-  try {
-    const index = clickIndex && clickIndex.schemaVersion === 1 ? clickIndex : null;
-    if (!index || !Array.isArray(index.items)) {
-      return { ok: false, reason: 'task-click-index-missing', pages, clicked: 0, failed: 1 };
-    }
-    if (!Number.isFinite(index.updatedAt) || Date.now() - index.updatedAt > 30 * 60 * 1000) {
-      return { ok: false, reason: 'task-click-index-stale', pages, clicked: 0, failed: 1 };
-    }
-    const indexedEntries = index.items.filter(x => x && (x.page === '/dashboard' || x.page === '/earn'));
-    const skipCompletedCards = !!(options && options.skipCompletedCards);
-=======
   let lastPhysicalClickAt = 0;
   let tv = null, dbg = null;
   try {
@@ -1349,18 +1420,11 @@ ipcMain.handle('chrome:task:clickAll', async (_event, clickIndex, options) => {
       }
       return !!state.running;
     };
->>>>>>> fb5efdd15db37cf18e87c9be2597e688bc7a03cf
     // Match the browser extension: default=false clicks all scored cards;
     // enabling the setting filters completed cards at the last responsible moment.
     const entries = indexedEntries.filter(x => !skipCompletedCards || !x.completed);
     const skippedCompleted = indexedEntries.length - entries.length;
-<<<<<<< HEAD
-    if (!entries.length) {
-      return { ok: true, reason: 'no-pending-indexed-tasks', pages, clicked: 0, scanned: 0, opened: 0, failed: 0, skipped: skippedCompleted };
-    }
-=======
     /* HSA_TASK_LOCATOR_REPAIR_20261109: an empty RSC index does not imply the real page has no clickable task cards. */
->>>>>>> fb5efdd15db37cf18e87c9be2597e688bc7a03cf
 
     /* 自动运行时保证任务侧栏有可见视口；索引只包含受信任的两个 Rewards 页面。 */
     if (!sideVisible) showSidePanel(null, 'run', false);
@@ -1372,6 +1436,154 @@ ipcMain.handle('chrome:task:clickAll', async (_event, clickIndex, options) => {
       dbg.attach('1.3');
       debuggerAttachedHere = true;
     }
+
+    /* ------------------------------------------------------------------
+     * 侧栏优先：开始时同步积分状态（todayTasks / taskClickIndex 已写入），
+     * 点击流程开启时**主动重新加载侧栏页面**，再按 DOM 顺序点击积分卡片。
+     *   · 点哪张只取决于主界面任务状态（同步结果），不看侧栏显示的完成标记
+     *   · skipCompletedCards=true  → 只真实点击未完成的积分卡（默认）
+     *   · skipCompletedCards=false → 点击所有积分卡（含已完成）
+     *   · 搜索配额、推荐、兑换、推广、0 分卡由识别模块直接排除
+     * ------------------------------------------------------------------ */
+    const wait = ms => new Promise(r => setTimeout(r, ms));
+    const sidebarUrls = process.env.HSA_SIDEBAR_TEST_FILE
+      ? [pathToFileURL(path.resolve(process.env.HSA_SIDEBAR_TEST_FILE)).href]
+      : SidebarCards.SIDEBAR_FLYOUT_URLS;
+    /* 流程开启：主动重新加载侧栏页面，不复用上一次运行残留的 DOM */
+    const sidebarReady = await loadSidebarFlyout(tv, sidebarUrls, true);
+    const scan = sidebarReady ? await scanSidebarCards(tv.webContents) : null;
+    /* 主界面任务状态：todayTasks 为主，taskClickIndex 为补充；二者都不是侧栏 DOM */
+    const syncSummary = (clickIndex && clickIndex.taskSummary) || state.todayTasks || null;
+    const merged = SidebarCards.mergeSidebarWithSync(
+      scan && Array.isArray(scan.cards) ? scan.cards : [], syncSummary, clickIndex);
+    const scored = merged.filter(c => c && c.scored);
+    const excluded = merged.filter(c => c && !c.scored);
+    /* 没有可用的主界面任务状态时绝不按侧栏显示自行判断，交给原来的双页索引回退 */
+    const matchedScored = scored.filter(c => c.syncMatched).length;
+    if (scored.length && matchedScored > 0) {
+      const plan = SidebarCards.planSidebarClicks(merged, skipCompletedCards);
+      const skippedBySetting = scored.length - plan.length;
+      const page = {
+        url: tv.webContents.getURL(), found: scored.length, clicked: 0,
+        opened: 0, skipped: 0, failed: 0, source: 'sidebar-flyout'
+      };
+      totalScanned += scored.length;
+      desktopActivityPush({
+        state: 'syncing', page: page.url,
+        zh: '同步积分状态 · 侧栏识别 ' + scored.length + ' 张积分卡 · 待点击 '
+          + plan.length + ' 张' + (skipCompletedCards ? '（跳过已完成）' : '（含已完成）'),
+        en: 'Points synced · ' + scored.length + ' scored cards · '
+          + plan.length + ' to click' + (skipCompletedCards ? ' (skip completed)' : ' (include completed)')
+      });
+      DBG.log('task', '侧栏积分卡片识别（完成状态来自主界面任务状态）', {
+        total: merged.length, scored: scored.length, excluded: excluded.length,
+        matchedMainUi: matchedScored,
+        excludedKinds: excluded.reduce((m, c) => { m[c.kind] = (m[c.kind] || 0) + 1; return m; }, {}),
+        pending: plan.length, skippedBySetting: skippedBySetting,
+        skipCompletedCards: skipCompletedCards, source: 'main-ui-task-state + sidebar-flyout'
+      });
+
+      for (const card of plan) {
+        if (!state.running) break;
+        const aim = await tv.webContents.executeJavaScript(
+          SidebarCards.sidebarAimSource(card), true).catch(() => null);
+        if (!aim || !aim.ok) {
+          page.failed++; totalFailed++;
+          DBG.log('task', '侧栏卡片无法安全定位', {
+            name: card.name, reason: aim && aim.reason || 'no-aim', idx: card.idx
+          });
+          continue;
+        }
+        if (!(await waitClickSpacing())) break;
+        const targetBlank = String(aim.target || card.target || '').toLowerCase() === '_blank';
+        const samePageWatcher = !targetBlank ? watchMainFrameLoad(tv.webContents, 12000) : null;
+        taskResultLoadPromise = null;
+        try {
+          const cardName = String(card.name || '未命名任务').slice(0, 40);
+          desktopActivityPush({
+            state: 'clicking', page: page.url, card: cardName,
+            delayMs: TASK_CLICK_SETTLE_MS,
+            zh: '侧栏点击 ' + (page.clicked + 1) + '/' + plan.length + ' · ' + cardName
+              + ' +' + (Number(card.points) || 0)
+              + ' · 下一步：' + (orderHint(plan, card) || '搜索任务')
+              + ' · 等 ' + TASK_CLICK_SETTLE_MS + 'ms',
+            en: 'Sidebar click ' + (page.clicked + 1) + '/' + plan.length + ' · ' + cardName
+              + ' +' + (Number(card.points) || 0)
+              + ' · Next: ' + (orderHint(plan, card) || 'search')
+              + ' · wait ' + TASK_CLICK_SETTLE_MS + 'ms'
+          });
+          lastPhysicalClickAt = Date.now();
+          await dispatchTaskMouseClick(dbg, aim.x, aim.y);
+          page.clicked++;
+          totalClicked++;
+          await wait(100);
+        } catch (err) {
+          if (samePageWatcher) samePageWatcher.cancel();
+          page.failed++; totalFailed++;
+          DBG.log('task', '侧栏 CDP 鼠标点击失败', {
+            name: card.name, x: aim.x, y: aim.y,
+            error: String(err && err.message || err)
+          });
+          continue;
+        }
+
+        if (taskResultLoadPromise) {
+          if (samePageWatcher) samePageWatcher.cancel();
+          const opened = await taskResultLoadPromise;
+          if (opened && opened.ok) { page.opened++; totalOpened++; }
+          else {
+            totalUnconfirmed++;
+            DBG.log('task', '侧栏点击已发送，但任务结果页未完成加载', { name: card.name, result: opened });
+          }
+        } else if (samePageWatcher) {
+          const nav = await Promise.race([
+            samePageWatcher.promise,
+            new Promise(resolve => wait(900).then(() => resolve(null)))
+          ]);
+          if (nav && nav.ok) {
+            page.opened++; totalOpened++;
+            /* 同页导航会冲掉侧栏 DOM：重新加载并重建序号，后续卡片继续点 */
+            await loadSidebarFlyout(tv, sidebarUrls);
+            await scanSidebarCards(tv.webContents);
+          } else {
+            samePageWatcher.cancel();
+            totalUnconfirmed++;
+            await wait(TASK_CLICK_SETTLE_MS);
+          }
+        } else {
+          totalUnconfirmed++;
+          await wait(TASK_CLICK_SETTLE_MS);
+        }
+        DBG.log('task', '侧栏积分卡 CDP 鼠标点击完成', {
+          name: card.name, points: card.points, completed: !!card.completed,
+          x: aim.x, y: aim.y, href: aim.href, target: aim.target,
+          strategy: aim.strategy, opened: page.opened
+        });
+      }
+      pages.push(page);
+      desktopActivityPush({
+        state: 'clicking', page: page.url,
+        zh: '侧栏已点击 ' + page.clicked + ' 张积分卡 · 下一步：完成搜索任务',
+        en: 'Sidebar clicked ' + page.clicked + ' cards · Next: search tasks'
+      });
+      DBG.log('task', '侧栏点击汇总', {
+        clicked: totalClicked, opened: totalOpened, failed: totalFailed,
+        skippedCompleted: skippedBySetting, excludedNoPoints: excluded.length,
+        unconfirmed: totalUnconfirmed, skipCompletedCards: skipCompletedCards
+      });
+      return {
+        ok: true, pages, clicked: totalClicked, scanned: totalScanned,
+        opened: totalOpened, failed: totalFailed, skipped: skippedBySetting,
+        clickUnconfirmed: totalUnconfirmed, excludedNoPoints: excluded.length,
+        stateSource: 'main-ui-task-state',
+        method: 'sidebar-flyout + CDP Input.dispatchMouseEvent'
+      };
+    }
+    DBG.log('task', '侧栏无可依据的主界面任务状态，回退到 dashboard/earn 索引点击', {
+      sidebarReady: sidebarReady, scanned: merged.length,
+      scored: scored.length, matchedMainUi: matchedScored
+    });
+
     DBG.log('task', '任务卡片点击开始：消费同步阶段 taskClickIndex，不再全页扫描', {
       indexCount: entries.length, source: index.source || 'sync-index',
       method: 'indexed locator + CDP Input.dispatchMouseEvent'
@@ -1382,20 +1594,13 @@ ipcMain.handle('chrome:task:clickAll', async (_event, clickIndex, options) => {
       { page: '/earn', url: 'https://rewards.bing.com/earn' }
     ]) {
       if (!state.running) break;
-<<<<<<< HEAD
-      const pageEntries = entries.filter(x => x.page === pageDef.page);
-      if (!pageEntries.length) continue;
-=======
       let pageEntries = entries.filter(x => x.page === pageDef.page);
->>>>>>> fb5efdd15db37cf18e87c9be2597e688bc7a03cf
       desktopActivityPush({
         state: 'opening', page: pageDef.url,
         zh: '打开页面 · Rewards ' + pageDef.page + ' · 待点击 ' + pageEntries.length + ' 张卡片',
         en: 'Opening · Rewards ' + pageDef.page + ' · ' + pageEntries.length + ' cards to click'
       });
       await loadTaskPage(tv, pageDef.url);
-<<<<<<< HEAD
-=======
       desktopActivityPush({state:'opening', page:pageDef.url,
         zh:'页面加载后已等待 5 秒 · 正在慢速滚动扫描（不少于 5 秒）',
         en:'Loaded; waited 5s · slow-scanning page for at least 5s'});
@@ -1417,7 +1622,6 @@ ipcMain.handle('chrome:task:clickAll', async (_event, clickIndex, options) => {
         continue;
       }
       DBG.log('task', '同步索引和实时 DOM 合并', {page:pageDef.page, live:live.length, total:pageEntries.length});
->>>>>>> fb5efdd15db37cf18e87c9be2597e688bc7a03cf
       const page = {
         url: pageDef.url, found: pageEntries.length, clicked: 0,
         opened: 0, skipped: 0, failed: 0, source: 'sync-index'
@@ -1428,18 +1632,7 @@ ipcMain.handle('chrome:task:clickAll', async (_event, clickIndex, options) => {
         if (!state.running) break;
         let aim = null;
         try {
-<<<<<<< HEAD
-          for (let locateRound = 0; locateRound < 6 && (!aim || !aim.ok); locateRound++) {
-            if (locateRound > 0) {
-              const y = await tv.webContents.executeJavaScript('Math.min((window.scrollY || 0) + Math.max(240, Math.round((window.innerHeight || 800) * 0.72)), (document.scrollingElement || document.documentElement).scrollHeight)', true);
-              await tv.webContents.executeJavaScript('window.scrollTo(0, ' + Math.max(0, Number(y) || 0) + ')', true);
-              await new Promise(resolve => setTimeout(resolve, 220));
-            }
-            aim = await tv.webContents.executeJavaScript(taskAimIndexedSrc(entry), true);
-          }
-=======
           aim = await locateIndexedCardAcrossScroll(tv.webContents, entry);
->>>>>>> fb5efdd15db37cf18e87c9be2597e688bc7a03cf
         } catch (err) {
           DBG.log('task', '索引定位异常', {
             name: entry.name, error: String(err && err.message || err)
@@ -1454,10 +1647,7 @@ ipcMain.handle('chrome:task:clickAll', async (_event, clickIndex, options) => {
           continue;
         }
 
-<<<<<<< HEAD
-=======
         if (!(await waitClickSpacing())) break;
->>>>>>> fb5efdd15db37cf18e87c9be2597e688bc7a03cf
         taskResultLoadPromise = null;
         const targetBlank = String(aim.target || entry.target || '').toLowerCase() === '_blank';
         const samePageWatcher = !targetBlank ? watchMainFrameLoad(tv.webContents, 12000) : null;
@@ -1475,11 +1665,8 @@ ipcMain.handle('chrome:task:clickAll', async (_event, clickIndex, options) => {
               + ' · Next: ' + (orderHint(pageEntries, entry) || 'search')
               + ' · wait ' + TASK_CLICK_SETTLE_MS + 'ms'
           });
-<<<<<<< HEAD
-=======
           // Timestamp corresponds to the beginning of the CDP mouse action.
           lastPhysicalClickAt = Date.now();
->>>>>>> fb5efdd15db37cf18e87c9be2597e688bc7a03cf
           await dispatchTaskMouseClick(dbg, aim.x, aim.y);
           page.clicked++;
           totalClicked++;
@@ -1557,6 +1744,9 @@ ipcMain.handle('chrome:task:clickAll', async (_event, clickIndex, options) => {
     taskResultLoadPromise = null;
     taskClickRunning = false;
     hideTaskView();
+    /* 点击任务卡片流程结束：把侧栏页面真正关掉，不残留上次的 flyout DOM */
+    if (tv) await closeSidebarTaskPage(tv).catch(() => {});
+    DBG.log('task', '点击任务卡片流程结束：侧栏页面已关闭');
   }
 });
 
@@ -1718,19 +1908,15 @@ ipcMain.handle('chrome:rewards:readVisible', () => readVisibleNow());
 let loginPageSeen = false;
 let lastLoginSyncAt = 0;
 
-/* v1.3.1 · 官网侧栏快照只做「后台取数的数据源」，不再直接写业务键。
-   旧版在这里把 pointsSummary / todayTasks / loginStatus 写回，而可见面板
-   只认 +N 文本卡（/dashboard 每日活动），会把后台两页解析出的完整任务列表
-   覆盖成「只有每日活动」，还会因 /earn 单页登录文案把已登录判成未登录。
-   现在登录完成跳回 Rewards 时只发一条 syncRewards 消息，由后台
-   desktopSyncRewards 走与「点击自动完成任务 / 手动刷新」完全相同的逻辑，
-   一次抓取、一次原子写回。 */
+/* 官网侧栏快照只作为后台取数的数据源，不直接写业务键；登录跳回 Rewards
+   时只发一条 syncRewards，由 desktopSyncRewards 一次抓取、一次原子写回。 */
 async function pushVisibleSnapshot(reason) {
   const r = await readVisibleNow();
   if (!r || !r.html) return null;
   const snap = {
-    at: Date.now(), url: r.url, text: r.text || '',
-    html: String(r.html || ''),
+    at: Date.now(), url: r.url, text: String(r.text || '').slice(0, 64 * 1024),
+    /* 整页 outerHTML 可达数 MB；后台只用前 600KB 解析积分/任务。 */
+    html: String(r.html || '').slice(0, SNAPSHOT_HTML_LIMIT),
     points: r.points || {}, cards: Array.isArray(r.cards) ? r.cards : [],
     signedIn: !!r.signedIn, signedOut: !!r.signedOut,
     reason: reason || 'panel-loaded'
@@ -1740,11 +1926,7 @@ async function pushVisibleSnapshot(reason) {
   snap.pageKind = isEarn ? 'earn' : 'dashboard';
   const patch = { [isEarn ? 'visibleRewardsEarnSnapshot' : 'visibleRewardsSnapshot']: snap };
 
-  /* v1.3.2 · 用户要求「点击登录按键不要刷新积分和登录状态」：
-     · 点徽标 / 面板按钮展开官网 → 只保存 DOM 快照作为数据源，不发任何同步
-     · 只有「用户真的完成登录、从 Microsoft 登录页跳回 Rewards」才同步一次
-     · 运行态（running / 搜索中）一律不派发：搜索中间不做任何积分同步
-     同步仍由后台 desktopSyncRewards 一次抓取、一次原子写回（同一套逻辑）。 */
+  /* 仅「完成登录后跳回 Rewards」才同步；展开面板只存快照，运行态一律不派发。 */
   const url = String(snap.url || '');
   if (isLoginPageUrl(url)) loginPageSeen = true;
   const isRewards = /^https:\/\/rewards\.bing\.com\//i.test(url);
@@ -1932,20 +2114,11 @@ ipcMain.handle('chrome:runtime:getManifest', () => {
   catch { return {}; }
 });
 
-/* --------------------------------------------------------------------------
- * 会话同步：登录 Cookie 一写入就通知后台复检，不用等 30 秒轮询。
- * Windows 真 Electron 里 Cookie 异步落盘，旧版只有「导航回 Rewards」才复检，
- * 用户停在登录页或登录完没跳转时，徽标与积分会一直停在「未确认 / —」。
- * ------------------------------------------------------------------------ */
-/* --------------------------------------------------------------------------
- * v1.1.6 · 官网登录时输入框反复失焦的根因
- * 后台 refreshLogin / refreshPoints 会走 chrome.tabs.update(active) 与
- * chrome.windows.update(focused)，主进程对应 handler 里无条件 BrowserWindow.focus()；
- * 登录页（login.live.com）在输入过程中不断重定向、Cookie 不断变化，于是每来一次
- * 同步就把焦点从账号/密码输入框抢走，表现为「输入困难」。
- * 修法：自动路径统一走 safeAutoFocus()，侧栏停在登录域名时一律不抢焦点；
- * 用户显式动作（托盘 / 菜单 / 点徽标）仍正常激活窗口。
- * ------------------------------------------------------------------------ */
+/* 会话同步：登录 Cookie 一写入就通知后台复检，不依赖页面跳转（Windows 上
+   Cookie 异步落盘，用户可能停在登录页或登录完没跳转）。 */
+/* 自动路径统一走 safeAutoFocus()：登录页输入过程中不断重定向、Cookie 不断变化，
+   无条件 BrowserWindow.focus() 会反复抢走账号/密码输入框的焦点。
+   用户显式动作（托盘 / 菜单 / 点徽标）仍正常激活窗口。 */
 function isLoginPageUrl(u) {
   /* v1.3.1：/oauth2/v2.0/authorize 是正常登录跳转，不能当成「已登出」信号，
      否则官网已登录、主界面却显示未登录。 */
@@ -2046,12 +2219,8 @@ function attachSessionSync() {
   } catch { /* 无头验证替身没有 cookies.on，忽略 */ }
 }
 
-/* --------------------------------------------------------------------------
- * host 消息队列：host 页面要加载 250KB 的 background.js，真 Electron 冷启动
- * （尤其 Windows）常超过 5 秒。旧版等 5 秒就硬发，消息落到还没
- * 注册 chrome:runtime:dispatch 的窗口就永久丢失 —— 弹窗与后台从此不同步。
- * 现在未就绪时排队，host 明确回报 ready 后按序 flush。
- * ------------------------------------------------------------------------ */
+/* host 消息队列：host 加载 250KB 的 background.js，冷启动可能超过 5 秒。
+   未就绪时排队，等 host 明确回报 ready 后按序 flush，避免消息永久丢失。 */
 let msgSeq = 0;
 let hostReadyDone = false;
 let hostReadyResolve = null;
@@ -2123,7 +2292,125 @@ async function sendToHost(msg, timeoutMs = 15000) {
 ipcMain.handle('chrome:runtime:sendMessage', (_e, msg) => sendToHost(msg));
 
 /* ==========================================================================
- * 8. 窗口、托盘、菜单与生命周期
+ * 8. 托盘静默 / 内存治理
+ *
+ * 应用常驻托盘时，侧栏、任务视图、任务结果视图与两个后台取数视图原先会
+ * 一直保持完整官网页面 renderer（共 5 个），加上主界面与后台宿主共 7 个
+ * 渲染进程全速保活 —— 这是长期运行内存居高不下的主因。
+ *
+ * 规则：主窗口隐藏到托盘且没有任务在跑 → 延迟数秒进入静默态，销毁所有
+ * 空闲视图、允许 Chromium 节流、裁剪 storage 里的大 HTML 快照、触发一次 GC。
+ * 用户回到界面或任务启动 → 立即退出静默并恢复保活；所有 ensureXxx() 都是
+ * 惰性重建，不需要额外恢复代码。任务运行期间绝不释放视图。
+ * ========================================================================== */
+
+/** 销毁一个嵌入式视图并清掉全部登记，避免 Set / Map 持有已销毁对象。 */
+function destroyEmbeddedView(view, tabId) {
+  if (!view) return 0;
+  const wc = view.webContents;
+  cancelViewSnapshot(wc);
+  attachedViews.delete(view);          // 反复重建若不清理会持续累积
+  try {
+    if (popupWin && !popupWin.isDestroyed()) {
+      const cv = popupWin.contentView;
+      if (VIEW_API === 'WebContentsView' && cv && typeof cv.removeChildView === 'function')
+        cv.removeChildView(view);
+      else if (typeof popupWin.removeBrowserView === 'function') popupWin.removeBrowserView(view);
+    }
+  } catch {}
+  if (tabId != null) {
+    tabs.delete(tabId);
+    loginTabIds.delete(tabId);
+    if (activeTabId === tabId) activeTabId = null;
+  }
+  try {
+    if (wc && !wc.isDestroyed()) {
+      if (typeof wc.removeAllListeners === 'function') wc.removeAllListeners();
+      if (typeof wc.stop === 'function') wc.stop();
+      if (typeof wc.close === 'function') wc.close();
+      else if (typeof wc.destroy === 'function') wc.destroy();
+    }
+  } catch {}
+  return 1;
+}
+
+/** 释放所有空闲 renderer；返回销毁数量。任务运行中直接跳过。 */
+function releaseIdleViews() {
+  if (desktopQuietRun() || taskClickRunning) return 0;
+  let n = 0;
+  for (const [key, d] of [...dataViews]) {
+    n += destroyEmbeddedView(d && d.view, d && d.id);
+    dataViews.delete(key);
+  }
+  if (taskView && !taskClickRunning) {
+    n += destroyEmbeddedView(taskView, taskTabId);
+    taskView = null; taskTabId = null;
+  }
+  if (taskResultView) {
+    if (taskResultLoadWatcher) { try { taskResultLoadWatcher.cancel(); } catch {} }
+    taskResultLoadWatcher = null;
+    taskResultLoadPromise = null;
+    n += destroyEmbeddedView(taskResultView, null);
+    taskResultView = null;
+  }
+  /* 侧栏只在面板收起时释放；展开着说明用户正在看，不能销毁 */
+  if (sideView && !sideVisible) {
+    n += destroyEmbeddedView(sideView, sideTabId);
+    sideView = null; sideTabId = null;
+  }
+  return n;
+}
+
+/** 允许 / 关闭后台节流。Electron 版本若无该运行时 API 则静默忽略。 */
+function setAllThrottling(allow) {
+  const on = !!allow;
+  const applyWc = wc => {
+    if (!wc || wc.isDestroyed()) return;
+    try { if (typeof wc.setBackgroundThrottling === 'function') wc.setBackgroundThrottling(on); } catch {}
+  };
+  const applyWin = w => {
+    if (!w || w.isDestroyed()) return;
+    try { if (typeof w.setBackgroundThrottling === 'function') w.setBackgroundThrottling(on); } catch {}
+    applyWc(w.webContents);
+  };
+  applyWin(popupWin); applyWin(hostWin);
+  for (const d of dataViews.values()) applyWc(d && d.view && d.view.webContents);
+  for (const v of [sideView, taskView, taskResultView]) if (v) applyWc(v.webContents);
+}
+
+/** 把 storage 里的整页快照裁到上限；有裁剪才落盘，避免无谓 IO。 */
+function trimStateSnapshots() {
+  let cut = 0;
+  for (const k of ['visibleRewardsSnapshot', 'visibleRewardsEarnSnapshot']) {
+    const s = state[k];
+    if (s && typeof s === 'object') cut += trimSnapshotHtml(s, SNAPSHOT_HTML_LIMIT);
+  }
+  if (cut) saveState();
+  return cut;
+}
+
+function gcIfPossible() {
+  try { if (typeof global.gc === 'function') global.gc(); } catch {}
+}
+
+const memoryGovernor = new MemoryGovernor({
+  hooks: {
+    isBusy: () => !!(state && (state.running === true || desktopQuietRun() || taskClickRunning)),
+    isWindowHidden: () => !!(popupWin && !popupWin.isDestroyed() && !popupWin.isVisible()),
+    releaseIdleViews: () => releaseIdleViews(),
+    setThrottling: allow => setAllThrottling(allow),
+    trimState: () => trimStateSnapshots(),
+    gc: () => gcIfPossible(),
+    onLog: (scope, msg, data) => DBG.log(scope, msg, data)
+  }
+});
+function governMemory(reason) {
+  try { memoryGovernor.schedule(reason); } catch {}
+}
+ipcMain.handle('chrome:memory:stats', () => memoryGovernor.snapshot());
+
+/* ==========================================================================
+ * 9. 窗口、托盘、菜单与生命周期
  * ======================================================================== */
 /* v1.1.3 · 真机诊断：把 popup 页面里 window.chrome / __desktop / __hsaChrome
    的真实形状写进 environment.json。用户把调试包交回来，一眼就能看出
@@ -2186,11 +2473,14 @@ function createPopup() {
   });
   popupWin.on('close', e => {
     if (quitting) return;
-    if (tray) { e.preventDefault(); popupWin.hide(); return; }
+    if (tray) { e.preventDefault(); popupWin.hide(); governMemory('window:hide'); return; }
     // If the tray could not be initialized, do not hide an unrecoverable window.
     quitting = true;
     app.quit();
   });
+  /* 托盘静默：窗口隐藏才进入低占用态，重新显示立即恢复。 */
+  for (const ev of ['hide', 'minimize']) popupWin.on(ev, () => governMemory('window:' + ev));
+  for (const ev of ['show', 'restore']) popupWin.on(ev, () => governMemory('window:' + ev));
   popupWin.webContents.setWindowOpenHandler(({ url }) => {
     if (/^https?:\/\//i.test(url)) openInSidePanel(url, 'user');
     return { action: 'deny' };
@@ -2359,41 +2649,32 @@ app.whenReady().then(() => {
   DBG.log('startup', '窗口创建完成', { shimWindows: shimWindows.size,
     host: !!hostWin, popup: !!popupWin });
 
-  /* v1.1.8 · 启动零抓取
-     旧版启动 1.8 秒后无条件派发 refreshLogin / refreshPoints / refreshTasks，
-     未登录时也会反复请求 /dashboard 与 /earn（用户提交的登录页现场即由此产生）。
-     现在初始化只渲染 storage 里已有的数据，不主动请求任何官网页面；
-     积分与任务列表只在「点击开始自动完成任务」和「每轮搜索完成后」刷新。 */
-  DBG.log('startup', 'v1.1.8 启动零抓取：不派发 refreshLogin / refreshPoints / refreshTasks');
+  /* 启动零抓取：初始化只渲染 storage 里已有的数据，不主动请求官网页面。
+     积分与任务列表只在开始时同步、收尾同步时刷新。 */
+  DBG.log('startup', '启动零抓取：不派发 refreshLogin / refreshPoints / refreshTasks');
 
-  /* ------------------------------------------------------------------------
-   * v1.0.4 卡死根因（保留结论）：popup 失焦时渲染进程定时器被节流到分钟级，
-   * 自愈逻辑失效。v1.1.8 起自愈改由后台流程超时 + storage 结果写回事件承担，
-   * UI 不再依赖任何渲染进程周期定时器；三类后台节流开关继续兜底。
-   * ---------------------------------------------------------------------- */
-  // 图标在 makeWindow 构造时已通过 APP_ICON 指定；这里再用 nativeImage 兜一次，
-  // 兼容部分平台上 BrowserWindow 构造参数不生效的情况。
+  // 图标在 makeWindow 构造时已指定；这里再用 nativeImage 兜一次，兼容部分平台。
   for (const w of [hostWin, popupWin]) {
     if (!w || w.isDestroyed() || !fs.existsSync(APP_ICON)) continue;
     try { w.setIcon(nativeImage.createFromPath(APP_ICON)); } catch {}
   }
 
-  /* v1.1.8 · 禁止任何监控：主进程不再有任何 setInterval。
-     旧版曾有 1 秒 UI 心跳 → 30 秒静默积分监控 → 5 秒状态看门狗，本轮全部删除。
-     空闲（尤其未登录）时：零定时器、零官网请求、零界面刷新。
-     防卡死改由「后台流程自身的超时 + storage 结果写回事件」承担：
-     点击开始后无论成功/失败/全完成都会写 autoResult / running，popup 通过
-     storage.onChanged 立即重绘，不再需要主进程轮询复位。 */
+  /* 主进程不做轮询：界面重绘只由 storage.onChanged 驱动，防卡死靠后台流程
+     自身超时 + 结果写回。唯一的周期定时器是托盘静默期的低频内存巡检
+     （10 分钟、unref），活跃态与任务运行期都不存在。 */
 
   app.on('activate', () => {
     if (popupWin) { popupWin.show(); popupWin.focus(); }
     else createPopup();
+    governMemory('app:activate');
   });
 });
 
-/* 必须在 app ready 之前注册：彻底关闭三类窗口失焦节流。
-   backgroundThrottling:false 只覆盖 webPreferences，遮挡窗口仍会被 Chromium
-   降频，这里从进程开关层面兜住。 */
+/* 必须在 app ready 之前注册。
+   · 三个保活开关保证定时任务与离屏视图不被降频（业务流程依赖，不能删）。
+   · 内存治理：给 V8 堆设上限，让渲染进程更积极回收；同时暴露 gc 供
+     托盘静默态主动触发。降低常驻内存靠 memory-governor 销毁空闲视图，
+     而不是削弱保活开关（那会让任务页面在后台加载不全）。 */
 try {
   const switches = [
     'disable-background-timer-throttling',
@@ -2401,14 +2682,20 @@ try {
     'disable-backgrounding-occluded-windows'
   ];
   for (const s of switches) if (E.app && typeof E.app.commandLine?.appendSwitch === 'function') E.app.commandLine.appendSwitch(s);
+  if (E.app && typeof E.app.commandLine?.appendSwitch === 'function') {
+    E.app.commandLine.appendSwitch('js-flags', '--max-old-space-size=384 --expose-gc');
+  }
 } catch {}
 
 // 桌面常驻：监听但从不调用 app.quit()，关闭所有窗口后由托盘 / 菜单退出
 app.on('window-all-closed', () => {});
 app.on('before-quit', () => { quitting = true; });
 app.on('will-quit', () => {
+  try { memoryGovernor.dispose(); } catch {}
   try { if (tray && typeof tray.destroy === 'function') tray.destroy(); tray = null; } catch {}
   for (const k of [...alarmTimers.keys()]) clearAlarm(k);
+  for (const c of fetchControllers.values()) { try { c.abort && c.abort(); } catch {} }
+  fetchControllers.clear();
   try { if (taskResultLoadWatcher) taskResultLoadWatcher.cancel(); } catch {}
   try { if (DBG && typeof DBG.close === 'function') DBG.close(); } catch {}
   saveState();

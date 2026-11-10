@@ -1,192 +1,186 @@
-# 拟人搜索助手 · Ubuntu 桌面版
+# 拟人搜索助手 · 桌面版
 
-**版本：1.3.8｜运行时：Electron 45.2.3｜目标平台：Ubuntu / Debian x86_64**
+**版本 1.3.8｜Electron 45.2.3｜electron-builder 26.18.1｜Ubuntu / Debian x86_64、Windows x64**
 
-项目主页与源码仓库：[github.com/khtao/human-search-assistant](https://github.com/khtao/human-search-assistant)。该地址同时写入 `package.json` 的 `homepage` 字段，供 Debian DEB 包元数据使用。
+一个本地运行的 Electron 桌面应用，用于查看 Bing Rewards 的积分、今日任务与登录状态，并按设定自动完成任务卡片与搜索。所有窗口、官网页面与后台逻辑都跑在应用内置的 Chromium 中，不依赖系统浏览器，也不需要 Playwright。
 
-完整交付包同时包含 `desktop-app/` 与 `edge-extension/` 两个目录。应用使用 Electron 原生窗口与内置 Chromium，不依赖系统浏览器，也不需要单独安装 Playwright。运行桌面版回归测试时请保留两个目录的相对位置。
+> 非官方个人辅助工具，与 Microsoft 无隶属关系。请遵守相关网站的服务条款及当地法律法规。
+
+---
+
+## 快速开始
+
+需要 Node.js ≥ 22.12.0。
+
+```bash
+npm run ci       # 按 package-lock 精确安装依赖（含 Electron 运行时，走国内镜像）
+npm run setup    # 安装锁定依赖 → 自检 → 启动
+npm run doctor   # 只做环境与 Electron 安装自检
+npm start        # 已装好依赖时直接启动
+```
+
+首次启动后，在主界面点登录徽标打开内置官网侧栏完成登录；登录状态保存在 Electron 持久化会话中，所有窗口共享同一份 Cookie。
+
+### 安装 DEB 后的沙箱权限
+
+DEB 安装脚本会把 `chrome-sandbox` 设为 `root:root` / `4755`。若手动安装后启动时提示沙箱权限错误，可执行：
+
+```bash
+sudo chown root:root /opt/拟人搜索助手/chrome-sandbox
+sudo chmod 4755 /opt/拟人搜索助手/chrome-sandbox
+```
+
+容器或 CI 中可设 `HSA_NO_SANDBOX=1` 允许降级启动；`HSA_STRICT_SANDBOX=1` 则拒绝任何降级。
+
+---
 
 ## 功能
 
-- 在桌面窗口中查看 Rewards 登录状态、积分和今日任务。
-- 内置官方页面侧栏，可在应用内完成登录和页面交互。
-- 主界面与内置页面共享 Electron 持久化会话。
-- 提供任务面板、拟人搜索流程、状态同步和系统托盘入口。
-- 默认不启用调试现场采集；用户数据保存在本机。
+- **积分与任务**：三项积分、今日任务列表、登录徽标；数据只在「开始时同步」与「收尾同步」时刷新，空闲时零官网请求。
+- **内置官网侧栏**：应用内完成登录、浏览 Rewards 页面，与主界面共享会话。
+- **自动完成任务**：同步积分 → 侧栏点击积分卡片 → 拟人搜索 → 收尾同步。
+- **积分日历**：设置页按日 / 周 / 月查看积分赚取记录，最多保留 400 天。
+- **运行详情**：进度圆圈下方的状态行实时显示同步、点击第几张卡片、下一步动作、搜索关键词与倒计时。
+- **系统托盘**：关闭窗口后驻留托盘，托盘菜单可显示主界面或退出。
+- **桌面专属设置**：开机自动启动、静默完成任务（任务运行时把页面放到离屏视口，不抢焦点）。
 
-> 本软件为非官方个人辅助工具，与 Microsoft 无隶属关系。请遵守相关网站的服务条款及当地法律法规。
+---
 
-## v1.3.8 升级内容
+## 自动完成任务
 
-- **积分赚取日历**：设置页新增日历，按日历网格排布，格子内只显示当日积分、不显示具体日期数字；提供「日 / 周 / 月」三种汇总粒度与上/下周期翻页。后台每次同步把当日积分写入 `pointsHistory[YYYY-MM-DD]`，历史从升级后第一次同步开始积累（最多保留 400 天）。
-  - **支付宝收益日历风格**：顶部一个大数字「本月 / 本年累计积分」，下面是三种视图统一的无边框圆角正方形格子（纯色、扁平、无阴影）；过去无积分浅灰、未来不显示方块、有积分淡蓝、今日细描边。格子只显示积分，日期与当日明细放在**悬停提示**里；周 / 月格用极简角标。
-- **设置页无小字注释**：所有 `<small>` 说明、`calendar.note`、`auto-disabled-hint` 全部移除，改为跟随语言切换的**自定义悬停浮层**（不用原生黑色 title 框）；日历容器悬停可看配色与排布说明，操作反馈小字 4 秒后自动收起。
-- **语言顺序**：中文 → 英文 → 跟随系统；桌面版与浏览器插件的共有设置完全一致。
-- **进度详情**：**不新增文本框**，直接复用进度圆圈下方原有的状态行（即原来显示绿色小字的位置）。文案保持单行但比上一版稍详细：同步进度 + 读取页面、今日 / 可用积分、打开哪个页面、点击第几张卡片与卡片名、下一步动作、搜索序号与关键词、收尾任务状态；延迟动作把 `{s}` 替换为**剩余秒数倒计时**。长句省略时悬停状态行可读全文，空闲 12 秒后回落为常规状态文字。
-- **桌面版专属功能**（仅桌面版「设置 → 桌面版」显示，插件端不含此组）：
-  - 开机自动启动：调用 Electron `app.setLoginItemSettings`，默认关闭。
-  - 静默完成任务：默认关闭；**仅隐藏页面过程**（官网侧栏、任务视图、搜索窗口留在离屏视口渲染），不展开主界面、不抢系统焦点。同步、点击、搜索、积分历史与**全部运行详情**都走与正常模式完全相同的链路，后台不感知该开关。
+### 执行顺序
 
-`npm run verify` 已包含 `verify-v138.js` 专项。真实账号下的官网交互未在本次交付中实测。
+1. 点击「自动开始」后**先同步积分与任务状态**。
+2. 若积分与任务**全部完成**，默认零动作返回：不重载页面、不点卡片、不搜索。
+3. 点击流程开启时**主动重新加载** Bing Rewards 侧栏页面，按 DOM 顺序点击积分卡片。
+4. 点击流程结束**关闭侧栏页面**。
+5. 按开始时锁定的剩余搜索分数跑拟人搜索。
+6. 收尾同步一次，把最终结果显示到界面。
 
-## 任务卡片点击（v1.3.7）
+侧栏读不到积分卡或没有可用的主界面任务状态时，回退到 `rewards.bing.com/dashboard`、`/earn` 两页的索引点击。
 
-浏览器插件与桌面版在同步积分和今日任务列表时，同步建立 `taskClickIndex`。索引随积分和任务列表在同一批 storage 写入，避免点击阶段再次下载/解析两页 HTML 或重新扫描整页卡片。
+### 「不跳过已完成任务卡」
 
-每个任务索引保存：
+设置项默认**关闭**，即默认跳过已完成的任务卡，只真实点击未完成卡片；开启后点击所有积分卡（含已完成），并且**即使积分与任务全部完成也照常发起点击流程**（搜索配额已满时不会重复搜索）。
 
-- 任务身份：名称、描述、积分、所属分类、完成状态。
-- 页面来源：`/dashboard` 或 `/earn`。
-- 链接信息：完整 href、目标窗口类型及稳定 URL 指纹。
-- DOM 特征：`data-bi-id`、`data-offer-id`、`data-testid`、`id`、`aria-label`、标题、页面内锚点序号。
-- 索引更新时间与待办数量。索引不保存坐标或 DOM 节点引用，避免页面滚动或重新渲染后使用过期位置。
+| 设置 | 点击清单（以上传的测试侧栏为例） |
+| --- | --- |
+| 默认关闭 | 即将举行的体育赛事 → 古代印加奇迹 |
+| 开启 | 即将举行的体育赛事 → 曼谷凉爽微风旱季 → 古代印加奇迹 → 探险火星 → 古代建筑 → 你是否知道答案？ → 完成此拼图 |
 
-自动点击时直接读取索引，优先按 href 和稳定属性定位；仅在未命中时才进行有限的懒加载滚动，并继续按同一任务索引查找。定位成功后重新计算实时坐标，通过 `elementFromPoint` 检查点击位置，再使用 `Input.dispatchMouseEvent` 发送 `mouseMoved`、`mousePressed`、`mouseReleased`。
+### 判定规则
 
-任务卡片流程不使用 `HTMLElement.click()`、合成 `MouseEvent` 或直接打开任务 URL 代替鼠标点击。点击事件发送成功、任务页面打开和积分到账分别记录；无法定位或无法确认响应时不会伪报任务已完成。索引超过 30 分钟会拒绝使用，自动任务开始时会先执行新一轮同步。
+- **点哪张只看主界面任务状态**：完成与否由同步得到的 `todayTasks.items` 与 `taskClickIndex.items` 决定，**不以下拉侧栏上显示的「已完成 / 未完成」为依据**。侧栏 DOM 的完成标记只作诊断，同步里查不到的卡片按未完成处理。
+- **智能排除不给分卡片**：搜索配额、推荐 / 邀请、兑换 / 奖品、推广活动、签到进度条以及 0 分卡片都不会进入点击计划。
+- **真鼠标点击**：统一走 CDP `Input.dispatchMouseEvent`，点击前重算坐标并做遮挡检查，不使用 `el.click()` 或直接导航任务 URL。
 
-## v1.3.7 稳定性修复
+`HSA_SIDEBAR_TEST_FILE=<保存页路径>` 可让应用直接加载本地侧栏页面做人工验证。
 
-- 登录按钮展开官网时，普通 Cookie 变化不再清空已有积分；仅识别已知认证 Cookie 删除或明确退出登录。
-- 任务进度只有在已获得积分达到总积分时才显示 100%；确认全部完成后，自动任务不再打开任何任务卡片。
-- 桌面设置页面与 Edge 插件设置控件保持一致，并支持「跳过已完成任务卡」。
-- 调试缓冲、任务页监听器、消息超时和 WebContentsView 标签引用均增加生命周期上限或清理逻辑。
+---
 
-完整修改说明见项目根目录的 `CHANGELOG_V1.3.7.md` 与 `TASK_CLICK_INDEX_V1.3.7.md`。
+## 内存与长期运行
 
-<<<<<<< HEAD
-=======
-## R4：Windows CMD 安全打包与慢速扫描
+应用常驻托盘时，原先侧栏、任务视图、任务结果视图与两个后台取数视图会一直保持完整的官网页面渲染进程。现在由 `lib/memory-governor.js` 管理一个**托盘静默低占用状态**：
 
-- `npm run dist:win` 和 `build-win-local.cmd` 现在调用 `scripts/build-win-safe.js`：优先恢复本机缓存中的 Electron 二进制，并将每次构建输出到 `dist/windows-builds/win-...` 独立目录，避免旧版 `dist/win-unpacked` 被占用造成 EBUSY。
-- `npm run ci` 后无 `node_modules/electron/dist` 时，安全脚本会自动调用官方 Electron installer，失败时再用项目镜像修复脚本。
-- 桌面与插件打开 `/dashboard`、`/earn` 后各等待至少 5 秒，再做不少于 5 秒的慢速分段扫描；点击间隔仍可在设置中调节，默认 10 秒。
-- 完整说明见项目根目录 `R4-慢速滚动与Windows编译修复说明.md`。
+- **进入条件**：主窗口隐藏到托盘、且没有任务运行，延迟 4 秒生效（避免短暂切窗）。
+- **进入动作**：销毁 5 个空闲视图的渲染进程、清理 `attachedViews` / `tabs` / `loginTabIds` 登记、允许 Chromium 对隐藏渲染进程节流、裁剪 storage 中的大 HTML 快照、尽力触发一次 V8 GC。
+- **退出条件**：窗口重新显示、从托盘恢复、或任务启动 —— 立即恢复保活。所有 `ensureXxx()` 都是惰性重建，无需额外恢复逻辑。
+- **任务运行期间绝不释放视图**：`isBusy()` 同时检查 `running`、`phase` 与点击流程标志。
+- 静默期有一个 10 分钟、已 `unref` 的低频巡检定时器；活跃态与任务运行期主进程没有任何周期定时器。
 
-CMD 示例：
+配套修复的长期运行泄漏：
 
-```cmd
-cd /d C:\Users\86155\Downloads\human-search-assistant-main\desktop-app
-npm run ci
-npm run verify
-npm run dist:win
-```
+| 问题 | 处理 |
+| --- | --- |
+| fetch 超时后底层请求仍在下载响应体 | 携带 `AbortSignal`，超时 / 主动取消时真正 `abort()` 并注销控制器 |
+| 视图反复重建但 `attachedViews` 不清 | 销毁时同步摘挂载、清登记、停加载 |
+| 每次导航都 `setTimeout(900)` 推快照 | 每个 `webContents` 只保留一个可取消定时器 |
+| 整页 `outerHTML` 无上限写进 `storage.json` | 写入即截到 600 KB，`text` 截到 64 KB |
+| 调试采集缓冲无界 | 日志 / 事件 / 索引全部有界，关闭时释放 |
+| 渲染进程 V8 堆无约束 | 启动时设 `--max-old-space-size=384 --expose-gc` |
 
-Windows 构建输出位于新建的 `dist/windows-builds/win-*` 目录中；不会自动覆盖原来的 `dist/win-unpacked`。
+保活开关（`disable-background-timer-throttling` 等三个）保持不变 —— 削弱它们会让后台任务页面加载不全；降内存靠销毁空闲视图而非削弱保活。
 
->>>>>>> fb5efdd15db37cf18e87c9be2597e688bc7a03cf
-## Ubuntu 编译为 DEB
+主进程暴露 `chrome:memory:stats`，可查看进入 / 退出次数、已释放视图数、裁剪字节数与 GC 次数。
 
-### 环境要求
+---
 
-- Ubuntu 22.04 / 24.04，或兼容的 Debian x86_64。
-- Node.js **22.12.0 或更高版本**（建议 Node.js 24 LTS）。
-- npm、`dpkg-deb`、`fakeroot`。
-- 可访问 npm registry 和 Electron 二进制镜像的网络。
+## 调试采集
 
-安装系统工具：
+默认**关闭**，日常运行零开销。需要抓取现场时：
 
 ```bash
-sudo apt update
-sudo apt install -y build-essential dpkg-dev fakeroot
+npm run start:debug      # 等价于 HSA_DEBUG=1 npm start
+npm run debug:pack       # 把最近一次会话打包成 zip
+npm run debug:dir        # 查看现场目录
 ```
 
-### 一键构建
+采集内容写入 `debug-captures/session-<时间戳>/`：环境信息、主进程运行日志、结构化事件、脱敏后的页面 HTML 与索引。默认脱敏邮箱与 token，`HSA_DEBUG_REDACT=0` 可关闭；`HSA_DEBUG_MAX_HTML` 控制单次会话 HTML 上限（默认 120），只保留最近 5 个会话。提交前请自行检查页面里可能包含的用户名与积分。
 
-在项目根目录执行：
+---
+
+## 项目结构
+
+```
+main.js                     Electron 主进程：窗口 / 托盘 / IPC / 视图 / 内存治理
+preload.js                  chrome.* API 兼容层
+host.html                   后台逻辑宿主窗口
+lib/core.js                 通用工具（storage 差异、tab 对象、alarm 延时）
+lib/debug-capture.js        调试现场采集
+lib/sidebar-task-cards.js   侧栏卡片识别与点击计划
+lib/memory-governor.js      托盘静默 / 内存治理状态机
+src/background.js           后台业务流程（同步、点击、搜索、积分日历）
+src/popup.*                 主界面
+scripts/                    启动、自检、构建、验证、修补工具
+tests/                      上传的测试侧栏页面（离线验证用）
+```
+
+---
+
+## 打包
 
 ```bash
-npm run build:linux
+npm run build:linux      # 完整流程：依赖 → 自检 → 验证 → DEB → SHA256SUMS
+npm run dist:linux       # 只打 DEB
+npm run dist:appimage    # AppImage
+npm run pack:linux       # 只生成 dist/linux-unpacked 目录（最快）
+npm run dist:win         # Windows 需在 Windows CMD 下执行
 ```
 
-脚本会依次完成：
+`electron-builder.yml`（Linux）与 `electron-builder.win.yml`（Windows）都启用了 `asar`，并用 `files` 白名单精确列出主进程顶层 `require` 的 `lib/` 模块。`npm run verify:packaged` 会扫描所有 `require('./lib/*')` 并核对两个清单，漏列会直接校验失败。
 
-1. 检查 Linux x86_64、Node.js 和打包工具版本。
-2. 检查本地依赖；缺失时运行 `npm run ci` 安装锁定版本。
-3. 检查 Electron 二进制及其安装状态。
-4. 运行桌面版回归验证。
-5. 使用 electron-builder 生成 `.deb`，并输出 SHA-256 校验文件。
+### 启动报 `Cannot find module './lib/xxx'`
 
-构建产物位于 `dist/`。文件名以 `HumanSearchAssistant-Ubuntu-1.3.7-` 开头。
+说明手上这份 `app.asar` 是用旧清单打出来的（曾漏列 `lib/sidebar-task-cards.js`）。堆栈后面的 Wayland / Vulkan 提示只是 GPU 日志，不是崩溃原因。
 
-如果只想直接调用 electron-builder：
+不重新构建也能立刻修好，零依赖、不用装包：
 
 ```bash
-npm run ci
-npm run dist:deb
+npm run fix:asar
+# 或指定路径
+node scripts/fix-existing-asar.js /path/to/dist/linux-unpacked/resources/app.asar
 ```
 
-Linux 与 Windows 使用独立的 electron-builder 配置文件，避免在 Linux 构建时校验 Windows 专属选项。Windows 构建入口仍保留：`npm run dist:win`（需在 Windows 环境执行）。
+脚本自动备份为 `app.asar.bak-<时间戳>`，写回前逐字节自检，原有节点偏移与 integrity 全部保留；`--check` 只检查不修改。若提示归档里的 `main.js` 是旧版本，说明这份产物早于侧栏改造，请用修好的配置重新打包。
 
-如需在已知测试环境中跳过回归验证，可执行 `HSA_SKIP_VERIFY=1 npm run build:linux`；正常交付建议不要跳过。
-
-### 安装与卸载
-
-```bash
-sudo apt install ./dist/*.deb
-```
-
-也可以双击 `.deb`，通过系统软件安装器完成安装。启动方式：
-
-```bash
-human-search-assistant
-```
-
-或从桌面应用菜单打开“拟人搜索助手”。卸载：
-
-```bash
-sudo apt remove human-search-assistant
-```
-
-安装脚本会检查 Electron `chrome-sandbox` 并设置其标准 root 所有权与 4755 权限，避免普通解压安装时常见的 SUID sandbox 启动错误。
-
-## 从源码运行
-
-```bash
-npm run ci
-npm run doctor
-npm start
-```
-
-首次启动后，通过应用菜单或内置页面登录。登录状态保存在 Electron 的持久化会话中。
+---
 
 ## 验证
 
 ```bash
-npm run verify          # 默认回归验证链
+npm run verify          # 完整回归链，只依赖 desktop-app/ 目录
+npm run verify:desktop  # 同上（保留的兼容别名）
+npm run verify:memory   # 内存治理：接线静态断言 + 状态机动态模拟
+npm run verify:sidebar  # 侧栏点击：上传测试侧栏实测两份点击清单
+npm run verify:packaged # 打包清单防呆
+npm run verify:main     # 主进程 IPC 集成（Electron API 替身）
+npm run verify:sync     # 启动 / 状态同步链路
+npm run verify:install  # 安装与依赖自检
+npm run verify:deps     # 版本、锁文件、构建配置
 npm run verify:launch   # Linux / Electron 启动链
-npm run verify:browser  # Playwright + Chromium 浏览器集成验证（需额外安装测试环境）
-npm run verify:e2e      # 已登录场景端到端验证（需额外安装测试环境）
+npm run verify:debug    # 调试采集
 ```
 
-## 项目结构
+`npm run verify` 依次运行 8 个专项，约 280 项断言，全部离线完成。`verify:sidebar` 会用 `tests/必应任务侧栏 · 拟人搜索助手_files/panelflyout.html` 跑真实 DOM 识别，并故意把侧栏的完成标记反转，验证点击清单只看主界面任务状态；环境缺少 Chromium 时它会跳过动态部分并明确提示，不影响退出码。
 
-```text
-.
-├── main.js                    # Electron 主进程与窗口/会话/IPC 管理
-├── preload.js                 # 安全桥接与桌面 API 适配
-├── host.html                  # 后台扩展逻辑承载页
-├── src/                       # 桌面版实际使用的 UI、任务逻辑和图标
-├── lib/core.js                # 公共核心逻辑
-├── lib/debug-capture.js       # 用户主动开启时的调试现场采集
-├── scripts/                   # 构建、启动、自检和回归验证脚本
-├── tests/fixtures/            # 官网页面测试快照
-├── tests/github-upload/       # 单份上传版基准，仅用于源码回归验证
-├── build/                     # 应用图标
-├── electron-builder.yml       # Ubuntu / Debian 专用配置
-├── electron-builder.win.yml   # Windows 专用配置
-└── package.json
-```
-
-`src/` 是桌面版加载的实际运行代码，不是需要删除的独立浏览器插件副本。`tests/github-upload/` 仅用于验证关键任务逻辑与原始基准的差异，不会进入安装包。真实浏览器验证需要额外准备 Playwright 和 Chromium；常规 `npm run verify` 不依赖这两项。
-
-## 数据与隐私
-
-应用状态文件默认位于 Electron `userData` 目录下的 `storage.json`；登录 Cookie 由 Electron 持久化会话管理。调试采集默认关闭；仅在显式调试模式下生成 `debug-captures/` 现场目录。请勿将个人登录数据或调试现场包公开分享。
-
-## 版本与依赖
-
-- Electron：`45.2.3`
-- electron-builder：`26.18.1`
-- Node.js：`>=22.12.0`
-- 运行时 npm 依赖：无（Electron 由安装包内置）
+真实账号下的官网交互未在离线验证中覆盖，请用 `HSA_SIDEBAR_TEST_FILE` 或手动启动做人工确认。

@@ -197,27 +197,20 @@
         <div id="cal-weekdays" class="cal-weekdays" aria-hidden="true"></div>
         <div id="cal-grid" class="cal-grid" role="grid" aria-label="积分日历"
              data-i18n-title="calendar.hoverTip" data-tip-role="hint"
-<<<<<<< HEAD
-             title="按日历排布 · 格子只显示积分，不显示日期 · 淡蓝为有积分、灰色为无积分、未来留空。悬停方格查看当日详情"></div>
-=======
              title="日视图显示每日积分，周/月视图显示汇总 · 淡蓝为有积分、灰色为无积分、未来留空。悬停查看详情"></div>
         <div class="cal-legend" aria-hidden="true"><span><i class="cal-legend-dot earned"></i><span data-i18n="calendar.legendHas">已获得</span></span><span><i class="cal-legend-dot empty"></i><span data-i18n="calendar.legendNone">无积分</span></span></div>
->>>>>>> fb5efdd15db37cf18e87c9be2597e688bc7a03cf
         <p id="cal-summary" class="cal-summary"></p>
       </div>
       <!-- 原 Daily reminders → 自动完成任务设置 -->
       <div class="set-group" id="auto-group" style="--g:3">
         <h3 class="set-title" data-i18n="auto.title">自动完成任务</h3>
-<<<<<<< HEAD
-=======
         <label class="set-row" data-i18n-title="auto.cardIntervalHint" data-tip-role="hint" title="两张任务卡片的 CDP 点击至少间隔 10 秒，可修改为 1～60 秒">
           <span class="set-label" data-i18n="auto.cardInterval">卡片点击间隔</span>
           <span class="set-inline-number"><input type="number" id="set-card-interval" min="1" max="60" step="1" value="10" aria-label="卡片点击间隔（秒）"><span class="set-unit" data-i18n="settings.seconds">秒</span></span>
         </label>
->>>>>>> fb5efdd15db37cf18e87c9be2597e688bc7a03cf
-        <label class="set-row" data-i18n-title="auto.skipCompletedHint" data-tip-role="hint" title="默认不跳过：点击所有包含积分的卡片">
-          <span class="set-label"><span data-i18n="auto.skipCompleted">跳过已完成任务卡</span></span>
-          <input type="checkbox" id="set-skip-completed" class="switch">
+        <label class="set-row" data-i18n-title="auto.notSkipCompletedHint" data-tip-role="hint" title="默认关闭：跳过已完成的任务卡，只点击未完成卡片；开启后点击所有积分卡，即使积分和任务已全部完成也会重新点一遍">
+          <span class="set-label"><span data-i18n="auto.notSkipCompleted">不跳过已完成任务卡</span></span>
+          <input type="checkbox" id="set-not-skip-completed" class="switch">
         </label>
         <label class="set-row" data-i18n-title="auto.enableHint" data-tip-role="hint" title="到点自动点击未完成任务卡片，并按剩余分数搜索">
           <span class="set-label"><span data-i18n="auto.enable">定时自动运行</span></span>

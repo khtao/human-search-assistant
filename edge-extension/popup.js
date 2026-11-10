@@ -5,10 +5,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const main = $('main');
   const btnAction = $('btn-action');
   const actionLabel = $('btn-action-label');
-  // 首页「搜索次数」输入已移除；次数由今日 Bing 搜索剩余分数自动决定
   const countInput = { value: '30', disabled: false, addEventListener() {} };
-  /* v1.1.5：顶端主题按钮已移除（设置页里仍有主题三态切换）。
-     保留一个空壳对象，避免 applyI18n / applyTheme 里的旧代码抛 TypeError。 */
   const themeBtn = { setAttribute() {}, addEventListener() {}, title: '' };
   const ring = document.querySelector('.progress-ring');
   const arc = $('progress-arc');
@@ -20,7 +17,6 @@ document.addEventListener('DOMContentLoaded', () => {
   const currentEl = $('end-points');
   const earnedEl = $('earned-points');
   const earnedLabel = $('earned-label');
-  // 「今日搜索积分已领完」提示与「今日 Bing 搜索」进度条模块已整体删除
   const daily = { hidden: true };
   const notice = { hidden: true, className: '' };
   const noticeTitle = { textContent: '' };
@@ -34,45 +30,43 @@ document.addEventListener('DOMContentLoaded', () => {
 
   const ARC_LENGTH = 2 * Math.PI * 52;
   const POINTS_PER_SEARCH = 3;
-  const TODAY_REFRESH_MS = 5 * 60 * 1000;
   const KEYS = [
     'phase', 'running', 'currentSearch', 'totalSearch', 'startPoints', 'startKnown',
     'endPoints', 'finalEarned', 'earnedIsEstimate', 'todaySearch', 'error', 'warning', 'stopRequested',
     'diag', 'diagLimit', 'todayStart', 'liveCheck', 'stoppedEarly', 'currentQuery', 'todayActivities',
     'cooldownUntil', 'cooldownWaitMs', 'cooldownCycles', 'cooldownGaveUp', 'searchMaxedAtStart',
     'runAuto', 'runAutoTime', 'runLevel', 'todayTasks', 'pointsSummary',
-    'loginStatus', 'loginCheckedAt', 'autoResult', 'activityDetail', 'pointsHistory'
+    'loginStatus', 'loginCheckedAt', 'autoResult'
   ];
   const DEFAULTS = {
     defaultCount: 30,
     pace: 'normal',
     autoStop: true,
     reduceMotion: false,
-    cardClickIntervalSec: 10,
-    skipCompletedCards: false,
+    dontSkipCompletedCards: false,   
+    cardClickIntervalSec: 5,
   };
   const AUTO_DEFAULTS = { enabled: false, times: [], count: 30, level: 3 };
   const AUTO_MAX_TIMES = 10;
   const MAX_COOLDOWNS = 6;
 
-  /* --------------------------------------------------------------- 双语字典 */
   const I18N = {
     zh: {
       'app.title': '拟人搜索助手',
-      'login.checking': '未确认', 'login.in': '已登录', 'login.out': '未登录',
-      'login.action': '登录',
-      'login.hint': '点击展开右侧官方登录页；积分与今日任务从同一个官网页面读取，登录后自动复检',
+       'login.in': '已登录', 'login.out': '未登录',
+      
+      
       'ring.tipTitle': '今日进度速览', 'ring.tipHint': '鼠标移入显示 · 点击主按钮开始执行',
       'a11y.login': '登录状态提示（不可点击）',
-      'a11y.panel': '展开或收起右侧官网页面', 'a11y.panelClose': '收起右侧官网页面',
-      'panel.open': '官网', 'panel.close': '收起',
-      'a11y.language': '切换语言', 'a11y.settings': '打开设置', 'a11y.theme': '切换主题',
+       
+       
+       'a11y.settings': '打开设置', 
       'a11y.progress': '今日任务进度', 'a11y.points': '积分概览', 'a11y.dismiss': '关闭',
       'a11y.back': '返回', 'a11y.customCount': '自定义搜索次数', 'a11y.autoTime': '启动时间',
       'theme.light': '浅色', 'theme.dark': '深色', 'theme.system': '跟随系统',
       'theme.toLight': '切换到浅色主题', 'theme.toDark': '切换到深色主题',
-      'progress.searches': '次搜索', 'progress.tasks': '今日任务', 'progress.ptsToday': '今日积分', 'progress.cooldown': '冷却中',
-      'progress.pleaseWait': '请稍候', 'progress.cooldownLeft': '冷却中 · {t} 后继续',
+       'progress.tasks': '今日任务',  
+       'progress.cooldownLeft': '冷却中 · {t} 后继续',
       'status.ready': '就绪', 'status.reading': '读取积分', 'status.checking': '检查今日进度',
       'status.searching': '搜索中', 'status.cooldown': 'Bing 冷却', 'status.finalizing': '收尾中',
       'status.completed': '已完成', 'status.limit': '已达上限', 'status.error': '出错',
@@ -85,31 +79,31 @@ document.addEventListener('DOMContentLoaded', () => {
       'status.stopping': '正在停止', 'status.of': '第 {a} / {b} 次',
       'status.searchingTitle': '正在搜索：{q}',
       'points.start': '可用积分', 'points.current': '今日积分', 'points.earned': '可领取',
-      'daily.title': '今日 Bing 搜索', 'daily.maxed': '今日已满，继续搜索不再计分。',
-      'daily.remaining': '约还需 {n} 次搜索达到今日上限',
+       
+      
       'tip.startTitle': '可用积分', 'tip.available': 'Rewards 面板余额',
       'tip.currentTitle': '今日积分', 'tip.todayPoints': '今日已获积分',
-      'tip.earnedTitle': '可领取', 'tip.claimable': '待领取积分',
+      'tip.earnedTitle': '可领取', 
       'tip.loading': '读取中…', 'tip.signedOut': '请先登录',
       'notice.copy': '复制详情', 'notice.copied': '已复制 ✓', 'notice.copyFailed': '复制失败',
-      'notice.cooldownTitle': '等待 Bing 冷却',
-      'notice.cooldownBody': 'Bing 暂时停止计分，将在 {time} 自动继续（第 {n} / {max} 次等待）。',
-      'notice.limitTitle': '今日搜索积分已领完',
-      'notice.limitBody': '今日 Bing 搜索：{p}/{m} 分。继续搜索不会再加分，明天再来。',
-      'notice.earlyTitle': '已达每日搜索上限',
-      'notice.earlyBody': '完成 {n} 次搜索后停止 — 今日 Bing 搜索：{p}/{m} 分。',
-      'notice.gaveUpTitle': 'Bing 持续冷却中',
-      'notice.gaveUpBody': '等待 {max} 次后积分仍未恢复，本次已提前结束，请稍后再试。',
-      'notice.headsUp': '提示',
-      'controls.searches': '搜索次数', 'controls.start': '自动完成任务', 'controls.stop': '停止',
+      
+      
+      
+      
+      
+      
+      
+      
+      
+       'controls.start': '自动完成任务', 'controls.stop': '停止',
       'controls.starting': '正在启动…', 'controls.stopping': '正在停止…', 'controls.finishing': '正在收尾…',
-      'tasks.title': '自动完成任务', 'tasks.add': '+ 添加时间',
-      'tasks.empty': '还没有任务，去「设置 → 自动完成任务」添加启动时间。',
-      'tasks.meta': '{n} 次 · 强度{lv}', 'tasks.level1': '低', 'tasks.level2': '中', 'tasks.level3': '高',
-      'tasks.pending': '待执行', 'tasks.running': '运行中', 'tasks.done': '今日已执行',
-      'tasks.skipped': '今日已跳过', 'tasks.off': '已停用', 'tasks.runNow': '立即运行',
-      'tasks.remove': '删除该时间点', 'tasks.runningBusy': '已有任务在运行中，请稍后再试。',
-      'tasks.started': '任务已启动，可在上方进度环查看。',
+       
+      
+         
+        
+        
+      'tasks.remove': '删除该时间点', 
+      
       'tasks.added': '已添加 {time}', 'tasks.autoAdded': '已自动添加 {time}',
       'tasks.removed': '已删除 {time}',
       'tasks.duplicate': '该时间点已存在。', 'tasks.limit': '最多只能添加 10 个时间点。',
@@ -119,16 +113,29 @@ document.addEventListener('DOMContentLoaded', () => {
       'lang.system': '跟随系统', 'points.earnedOpen': '打开 Rewards 领取积分',
       'tip.claimOpen': '点击前往 Rewards 领取积分',
       'settings.theme': '主题', 'settings.reduce': '减少动画', 'settings.reduceHint': '关闭动效',
-      'settings.searches': '搜索', 'settings.defaultCount': '默认搜索次数', 'settings.other': '其他',
-      'settings.pace': '节奏', 'settings.paceHint': '每次结果停留时长',
-      'pace.normal': '标准', 'pace.relaxed': '舒缓',
-      'settings.autostop': '到达每日上限即停止', 'settings.autostopHint': 'Bing 搜索计满后提前结束',
-      'settings.automation': '自动化',
-      'settings.seconds': '秒', 'auto.cardInterval': '卡片点击间隔', 'auto.cardIntervalHint': '相邻两张卡片的 CDP 鼠标点击至少间隔设定秒数（1–60 秒）',
-      'auto.skipCompleted': '跳过已完成任务卡', 'auto.skipCompletedHint': '默认不跳过：点击所有包含积分的卡片',
+        'settings.other': '其他',
+       
+       
+       
+      
+      'settings.seconds': '秒', 'auto.cardInterval': '卡片点击间隔',
+      'auto.cardIntervalHint': '相邻两张任务卡片的点击至少间隔设定秒数（1–60 秒）',
+      'calendar.title': '积分赚取日历', 'calendar.day': '日', 'calendar.week': '周', 'calendar.month': '月',
+      'calendar.prev': '上一周期', 'calendar.next': '下一周期', 'calendar.unit': '分',
+      'calendar.weekLabel': '{n}周', 'calendar.monthLabel': '{n}月',
+      'calendar.totalLabel': '本月累计积分', 'calendar.yearLabel': '本年累计积分',
+      'calendar.summary': '日均 {avg} · 最高 {max} · {n} 天有积分',
+      'calendar.empty': '暂无历史数据，同步后自动记录',
+      'calendar.earnedDays': '{n} 天有积分',  
+      'calendar.navEmpty': '该周期暂无积分（仍可查看）',
+      'calendar.hoverTip': '日视图显示每日积分，周/月视图显示汇总 · 淡蓝为有积分、灰色为无积分、未来留空。悬停查看详情',
+      'calendar.cellTip': '{date} · 积分 {points} 分',
+      'calendar.noPointsTip': '{date} · 无积分记录',
+      'auto.dontSkipCompleted': '不跳过已完成任务卡',
+      'auto.dontSkipCompletedHint': '默认关闭：只点击主界面显示未完成的任务卡。开启后即使积分和任务都已全完成，也会逐张点击所有任务卡',
       
       'auto.title': '自动完成任务', 'auto.enable': '定时自动运行',
-      'auto.enableHint': '到点自动点击积分任务卡片，并按剩余分数搜索；关闭总开关时仍可配置时间点',
+      'auto.enableHint': '到点自动点击未完成任务卡片，并按剩余分数搜索，最多 10 个时间点',
       'auto.count': '搜索次数上限', 'auto.countHint': '按今日 Bing 搜索剩余分数自动决定，不超过此值', 'auto.times': '启动时间',
       'auto.timesHint': '留空直接点「添加」：首个默认 08:00，之后比最晚时间顺延 30 分钟，自动去重排序', 'auto.addTime': '添加',
       'auto.level': '拟人强度', 'auto.levelHint': '影响鼠标轨迹、滚动与每轮时长',
@@ -147,55 +154,32 @@ document.addEventListener('DOMContentLoaded', () => {
       'todayTasks.noData': '暂时读不到任务数据，点「刷新」重试',
       'todayTasks.emptyLogin': '未登录 Microsoft Rewards，请先登录后点「刷新」。',
       'todayTasks.summary': '今日任务 {p}%（{a} / {b} 分）', 'todayTasks.approx': '估算',
-      'todayTasks.refreshed': '今日任务与积分已刷新', 'todayTasks.refreshing': '正在刷新…',
-      'todayTasks.refreshFailed': '刷新失败，请稍后重试',
+       
+      
       'todayTasks.onlyPoints': '仅显示带积分的任务',
       'todayTasks.sectionSearch': '搜索', 'todayTasks.sectionDaily': '每日活动',
       'todayTasks.sectionPromo': '日常任务', 'todayTasks.sectionOther': '其他任务',
       'todayTasks.groupTotal': '{a} / {b} 分',
       'todayTasks.done': '已完成', 'todayTasks.pending': '待完成',
-      'todayTasks.points': '{p} 分', 'todayTasks.open': '打开任务',
-      'lang.zh': '中文', 'lang.en': '英文',
-      'calendar.title': '积分赚取日历', 'calendar.day': '日', 'calendar.week': '周', 'calendar.month': '月',
-      'calendar.prev': '上一周期', 'calendar.next': '下一周期', 'calendar.unit': '分',
-      'calendar.weekLabel': '{n}周', 'calendar.monthLabel': '{n}月',
-      'calendar.totalLabel': '本月累计积分', 'calendar.yearLabel': '本年累计积分',
-      'calendar.summary': '日均 {avg} · 最高 {max} · {n} 天有积分',
-      'calendar.empty': '暂无历史数据，同步后自动记录',
-<<<<<<< HEAD
-      'calendar.hoverTip': '按日历排布 · 格子只显示积分，不显示日期 · 淡蓝为有积分、灰色为无积分、未来留空。悬停方格查看当日详情',
-=======
-      'calendar.earnedDays': '{n} 天有积分', 'calendar.legendHas': '已获得', 'calendar.legendNone': '无积分',
-      'calendar.navEmpty': '该周期暂无积分（仍可查看）',
-      'calendar.hoverTip': '日视图显示每日积分，周/月视图显示汇总 · 淡蓝为有积分、灰色为无积分、未来留空。悬停查看详情',
->>>>>>> fb5efdd15db37cf18e87c9be2597e688bc7a03cf
-      'calendar.cellTip': '{date} · 积分 {points} 分',
-      'calendar.noPointsTip': '{date} · 无积分记录',
-      'desktop.title': '桌面版', 'desktop.autoLaunch': '开机自动启动',
-      'desktop.autoLaunchHint': '登录系统后自动运行桌面版', 'desktop.silent': '静默完成任务',
-      'desktop.silentHint': '仅隐藏页面过程；流程、进度与运行详情和正常模式一致',
-      'desktop.onlyDesktop': '以上两项仅桌面版可用，浏览器插件中不可设置',
-      'desktop.autoLaunchOn': '已开启开机自动启动', 'desktop.autoLaunchOff': '已关闭开机自动启动',
-      'desktop.silentOn': '已开启静默完成任务（隐藏页面执行）',
-      'desktop.silentOff': '已关闭静默完成任务'
+       
     },
     en: {
       'app.title': 'Human Search Assistant',
-      'login.checking': 'Not verified', 'login.in': 'Signed in', 'login.out': 'Not signed in',
-      'login.action': 'Sign in',
-      'login.hint': "Open the official sign-in page on the right; points and tasks are read from that same page",
+       'login.in': 'Signed in', 'login.out': 'Not signed in',
+      
+      
       'ring.tipTitle': "Today at a glance", 'ring.tipHint': 'Hover to show · press the main button to start',
       'a11y.login': 'Sign-in status indicator (not clickable)',
-      'a11y.panel': 'Show or hide the official Rewards page on the right',
-      'a11y.panelClose': 'Hide the official Rewards page',
-      'panel.open': 'Site', 'panel.close': 'Hide',
-      'a11y.language': 'Switch language', 'a11y.settings': 'Open settings', 'a11y.theme': 'Switch theme',
+      
+      
+       
+       'a11y.settings': 'Open settings', 
       'a11y.progress': 'Today\'s tasks progress', 'a11y.points': 'Points summary', 'a11y.dismiss': 'Dismiss',
       'a11y.back': 'Back', 'a11y.customCount': 'Custom number of searches', 'a11y.autoTime': 'Start time',
       'theme.light': 'Light', 'theme.dark': 'Dark', 'theme.system': 'System',
       'theme.toLight': 'Switch to light theme', 'theme.toDark': 'Switch to dark theme',
-      'progress.searches': 'searches', 'progress.tasks': 'Today\'s tasks', 'progress.ptsToday': 'pts today', 'progress.cooldown': 'cooldown',
-      'progress.pleaseWait': 'please wait', 'progress.cooldownLeft': 'Cooldown · resume in {t}',
+       'progress.tasks': 'Today\'s tasks',  
+       'progress.cooldownLeft': 'Cooldown · resume in {t}',
       'status.ready': 'Ready', 'status.reading': 'Reading points', 'status.checking': 'Checking today',
       'status.searching': 'Searching', 'status.cooldown': 'Bing cooldown', 'status.finalizing': 'Finalizing',
       'status.completed': 'Completed', 'status.limit': 'Limit reached', 'status.error': 'Error',
@@ -208,31 +192,31 @@ document.addEventListener('DOMContentLoaded', () => {
       'status.stopping': 'Stopping', 'status.of': 'Search {a} of {b}',
       'status.searchingTitle': 'Searching: {q}',
       'points.start': 'Available', 'points.current': "Today's points", 'points.earned': 'Claimable',
-      'daily.title': "Today's Bing search", 'daily.maxed': 'Maxed for today — searches won’t earn more.',
-      'daily.remaining': '~{n} more searches to max today',
+       
+      
       'tip.startTitle': 'Available', 'tip.available': 'Rewards balance',
       'tip.currentTitle': "Today's points", 'tip.todayPoints': 'Points earned today',
-      'tip.earnedTitle': 'Claimable', 'tip.claimable': 'Points to claim',
+      'tip.earnedTitle': 'Claimable', 
       'tip.loading': 'Loading…', 'tip.signedOut': 'Sign in first',
       'notice.copy': 'Copy details', 'notice.copied': 'Copied ✓', 'notice.copyFailed': 'Copy failed',
-      'notice.cooldownTitle': 'Waiting out Bing cooldown',
-      'notice.cooldownBody': 'Bing stopped counting points for a while. Searching resumes by itself at {time} (round {n} of {max}).',
-      'notice.limitTitle': 'Daily search points already earned',
-      'notice.limitBody': 'Bing search today: {p}/{m} pts. More searches won’t add points — come back tomorrow.',
-      'notice.earlyTitle': 'Daily search limit reached',
-      'notice.earlyBody': 'Stopped after {n} searches — Bing search today: {p}/{m} pts.',
-      'notice.gaveUpTitle': 'Bing kept the cooldown on',
-      'notice.gaveUpBody': 'Points stayed paused after {max} waits, so the run ended early. Try again later today.',
-      'notice.headsUp': 'Heads up',
-      'controls.searches': 'Searches', 'controls.start': 'Auto-complete Tasks', 'controls.stop': 'Stop',
+      
+      
+      
+      
+      
+      
+      
+      
+      
+       'controls.start': 'Auto-complete Tasks', 'controls.stop': 'Stop',
       'controls.starting': 'Starting…', 'controls.stopping': 'Stopping…', 'controls.finishing': 'Finishing…',
-      'tasks.title': 'Auto-complete tasks', 'tasks.add': '+ Add time',
-      'tasks.empty': 'No tasks yet. Add a start time in Settings → Auto-complete tasks.',
-      'tasks.meta': '{n} searches · Level {lv}', 'tasks.level1': 'Low', 'tasks.level2': 'Medium', 'tasks.level3': 'High',
-      'tasks.pending': 'Pending', 'tasks.running': 'Running', 'tasks.done': 'Ran today',
-      'tasks.skipped': 'Skipped today', 'tasks.off': 'Disabled', 'tasks.runNow': 'Run now',
-      'tasks.remove': 'Remove this time', 'tasks.runningBusy': 'A task is already running. Please try again later.',
-      'tasks.started': 'Task started — watch the progress ring above.',
+       
+      
+         
+        
+        
+      'tasks.remove': 'Remove this time', 
+      
       'tasks.added': 'Added {time}', 'tasks.autoAdded': 'Added {time} automatically',
       'tasks.removed': 'Removed {time}',
       'tasks.duplicate': 'That time is already in the list.', 'tasks.limit': 'You can add up to 10 times.',
@@ -242,16 +226,29 @@ document.addEventListener('DOMContentLoaded', () => {
       'lang.system': 'System', 'points.earnedOpen': 'Open Rewards to claim points',
       'tip.claimOpen': 'Click to open Rewards and claim',
       'settings.theme': 'Theme', 'settings.reduce': 'Reduce animations', 'settings.reduceHint': 'Turn off motion effects',
-      'settings.searches': 'Searches', 'settings.defaultCount': 'Default searches', 'settings.other': 'Other',
-      'settings.pace': 'Pace', 'settings.paceHint': 'Time spent on each result',
-      'pace.normal': 'Normal', 'pace.relaxed': 'Relaxed',
-      'settings.autostop': 'Stop at daily limit', 'settings.autostopHint': 'End early once Bing search is maxed',
-      'settings.automation': 'Automation',
-      'settings.seconds': 'sec', 'auto.cardInterval': 'Card click interval', 'auto.cardIntervalHint': 'Minimum time between CDP mouse clicks on cards (1–60 seconds)',
-      'auto.skipCompleted': 'Skip completed cards', 'auto.skipCompletedHint': 'Off by default: click every card with points',
+        'settings.other': 'Other',
+       
+       
+       
+      
+      'settings.seconds': 'sec', 'auto.cardInterval': 'Card click interval',
+      'auto.cardIntervalHint': 'Minimum time between clicks on task cards (1–60 seconds)',
+      'calendar.title': 'Points earning calendar', 'calendar.day': 'Day', 'calendar.week': 'Week', 'calendar.month': 'Month',
+      'calendar.prev': 'Previous period', 'calendar.next': 'Next period', 'calendar.unit': 'pts',
+      'calendar.weekLabel': 'W{n}', 'calendar.monthLabel': 'M{n}',
+      'calendar.totalLabel': 'Points this month', 'calendar.yearLabel': 'Points this year',
+      'calendar.summary': 'Avg {avg} · Best {max} · {n} days with points',
+      'calendar.empty': 'No history yet — recorded after the next sync',
+      'calendar.earnedDays': '{n} days earned',  
+      'calendar.navEmpty': 'No points in this period (still viewable)',
+      'calendar.hoverTip': 'Daily points with weekly/monthly summaries · blue = earned, grey = none, future = blank. Hover for details',
+      'calendar.cellTip': '{date} · {points} pts',
+      'calendar.noPointsTip': '{date} · no points recorded',
+      'auto.dontSkipCompleted': "Don't skip completed cards",
+      'auto.dontSkipCompletedHint': 'Off by default: only click cards the main UI shows as pending. When on, click every task card even if points and tasks are already complete',
       
       'auto.title': 'Auto-complete tasks', 'auto.enable': 'Scheduled runs',
-      'auto.enableHint': 'Click scored cards and search at the set times; times stay editable when the switch is off',
+      'auto.enableHint': 'Click unfinished cards, then search as needed, up to 10 start times',
       'auto.count': 'Search cap', 'auto.countHint': 'Decided from remaining Bing search points, capped here', 'auto.times': 'Start times',
       'auto.timesHint': 'Leave empty and tap Add: first defaults to 08:00, then +30 min from the latest time; auto-sorted and deduped', 'auto.addTime': 'Add',
       'auto.level': 'Human-like intensity', 'auto.levelHint': 'Affects mouse path, scrolling and round length',
@@ -270,42 +267,17 @@ document.addEventListener('DOMContentLoaded', () => {
       'todayTasks.noData': 'Could not load tasks. Tap Refresh to retry.',
       'todayTasks.emptyLogin': 'Not signed in to Microsoft Rewards. Sign in, then tap Refresh.',
       'todayTasks.summary': "Today's tasks {p}% ({a} / {b} pts)", 'todayTasks.approx': 'estimated',
-      'todayTasks.refreshed': 'Tasks and points refreshed', 'todayTasks.refreshing': 'Refreshing…',
-      'todayTasks.refreshFailed': 'Refresh failed. Try again in a moment.',
+       
+      
       'todayTasks.onlyPoints': 'Only tasks with points are listed',
       'todayTasks.sectionSearch': 'Search', 'todayTasks.sectionDaily': 'Daily activities',
       'todayTasks.sectionPromo': 'Daily tasks', 'todayTasks.sectionOther': 'Other',
       'todayTasks.groupTotal': '{a} / {b} pts',
       'todayTasks.done': 'Done', 'todayTasks.pending': 'Pending',
-      'todayTasks.points': '{p} pts', 'todayTasks.open': 'Open task',
-      'lang.zh': 'Chinese', 'lang.en': 'English',
-      'calendar.title': 'Points earning calendar', 'calendar.day': 'Day', 'calendar.week': 'Week', 'calendar.month': 'Month',
-      'calendar.prev': 'Previous period', 'calendar.next': 'Next period', 'calendar.unit': 'pts',
-      'calendar.weekLabel': 'W{n}', 'calendar.monthLabel': 'M{n}',
-      'calendar.totalLabel': 'Points this month', 'calendar.yearLabel': 'Points this year',
-      'calendar.summary': 'Avg {avg} · Best {max} · {n} days with points',
-      'calendar.empty': 'No history yet — recorded after the next sync',
-<<<<<<< HEAD
-      'calendar.hoverTip': 'Calendar layout · points only, no dates · light blue = earned, grey = none, future = blank. Hover a cell for details',
-=======
-      'calendar.earnedDays': '{n} days earned', 'calendar.legendHas': 'Earned', 'calendar.legendNone': 'No points',
-      'calendar.navEmpty': 'No points in this period (still viewable)',
-      'calendar.hoverTip': 'Daily points with weekly/monthly summaries · blue = earned, grey = none, future = blank. Hover for details',
->>>>>>> fb5efdd15db37cf18e87c9be2597e688bc7a03cf
-      'calendar.cellTip': '{date} · {points} pts',
-      'calendar.noPointsTip': '{date} · no points recorded',
-      'desktop.title': 'Desktop', 'desktop.autoLaunch': 'Launch at login',
-      'desktop.autoLaunchHint': 'Start the desktop app after signing in to the system',
-      'desktop.silent': 'Silent task completion',
-      'desktop.silentHint': 'Hides page views only; flow and progress stay the same',
-      'desktop.onlyDesktop': 'These two options are desktop-only and disabled in the extension',
-      'desktop.autoLaunchOn': 'Launch at login enabled', 'desktop.autoLaunchOff': 'Launch at login disabled',
-      'desktop.silentOn': 'Silent completion enabled (hidden pages)',
-      'desktop.silentOff': 'Silent completion disabled'
+       
     }
   };
 
-  /* 语言模式：system（默认，跟随浏览器/系统语言）| zh | en */
   const normalizeLangMode = v => (v === 'zh' || v === 'en' ? v : 'system');
   const systemLang = () => {
     let nav = '';
@@ -348,7 +320,6 @@ document.addEventListener('DOMContentLoaded', () => {
     refresh();
   }
 
-  /** 后台写进 storage.error 的英文/中文消息，统一按当前语言显示。 */
   function localizeError(msg) {
     const s = String(msg || '');
     const map = [
@@ -384,8 +355,6 @@ document.addEventListener('DOMContentLoaded', () => {
     el.classList.add(cls);
   };
 
-  /* v1.3.1：刷新时不做逐位滚动 / 错峰过渡。数据完整到达后一次静态替换，
-     避免「先清空再转半天」的观感；dataset.odo 仍保留供界面验证读取。 */
   function setOdometer(el, value) {
     const text = String(value);
     if (el.dataset.odo === text) return;
@@ -410,8 +379,6 @@ document.addEventListener('DOMContentLoaded', () => {
     chrome.storage.local.set({ error: null });
   });
 
-  /* v1.2 · 「可领取」卡片专用的官网标签页桥。
-     登录徽标已改为纯状态提示，不再触发任何面板动作。 */
   const CLAIM_URL = 'https://rewards.bing.com/dashboard';
   const claimCard = $('claim-card');
   const panelMessage = (type, url) => new Promise(resolve => {
@@ -422,7 +389,6 @@ document.addEventListener('DOMContentLoaded', () => {
         return;
       }
     } catch (err) {}
-    /* 二级兜底：后台暂时不可用时，popup 自己开标签页（不记录面板状态） */
     try {
       if (type === 'openOfficial' && chrome.tabs && chrome.tabs.create) {
         chrome.tabs.create({ url: url || CLAIM_URL, active: true })
@@ -442,8 +408,6 @@ document.addEventListener('DOMContentLoaded', () => {
     if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openClaimPage(); }
   });
 
-  /* v1.2 · 登录徽标只是状态提示：不注册 click / dblclick，
-     不打开官网、不切换面板、不在登录成功后自动收起任何页面。 */
 
   noticeCopy.addEventListener('click', async () => {
     try {
@@ -496,7 +460,6 @@ document.addEventListener('DOMContentLoaded', () => {
   themeBtn.addEventListener('click', () => {
     applyTheme(root.getAttribute('data-theme') === 'dark' ? 'light' : 'dark');
   });
-  /* 系统语言变化时，跟随系统模式下自动刷新界面文案 */
   window.addEventListener('languagechange', () => {
     if (langMode !== 'system') return;
     lang = systemLang();
@@ -539,15 +502,10 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   let pendingStartUntil = 0;
-  /* v2.9：全完成时在圆圈下方显示绿色小字的时长（毫秒） */
   let allDoneNoticeUntil = 0;
-  /* v1.3.3：手动刷新完成后，圆圈下方显示 8 秒绿字「已同步积分」 */
+  let lastRunningSeen = false;   
   let syncedNoticeUntil = 0;
   let lastAutoResultAt = 0;
-  /* v1.1.8 · 零监控、零自动刷新界面。
-     重绘唯一入口：storage.onChanged（业务数据真的写回时）+ 用户交互回调。
-     下面两个一次性定时器只用于「用户点击后」收尾临时文案，不读取官网、
-     不抓积分、不周期运行；空闲时完全没有定时器在跑。 */
   const uiBootAt = Date.now();
   let uiStartAt = 0;
   const oneShotTimers = new Set();
@@ -557,14 +515,12 @@ document.addEventListener('DOMContentLoaded', () => {
     return id;
   }
   let cooldownRefreshAt = 0;
-  /* 启动看门狗（保留作二次保险） */
   let startWatchdogTimer = null;
 
   function setAction(mode, label, disabled) {
     btnAction.classList.toggle('is-stop', mode === 'stop');
     btnAction.dataset.mode = mode;
     if (actionLabel.textContent !== label) {
-      /* v1.3.1：状态切换直接替换文字，不再做弹跳动画 */
       actionLabel.textContent = label;
     }
     btnAction.disabled = !!disabled;
@@ -590,9 +546,8 @@ document.addEventListener('DOMContentLoaded', () => {
     if (btnAction.dataset.mode === 'start') {
       pendingStartUntil = Date.now() + 3000;
       uiStartAt = Date.now();
-      oneShotRefresh(3100);              // 到点收尾「正在启动…」，不引入周期刷新
+      oneShotRefresh(3100);              
       setAction('stop', t('controls.starting'), true);
-      // 看门狗：8 秒内后台没把 running 置 true，就恢复按钮，绝不永久卡在「正在启动…」
       clearTimeout(startWatchdogTimer);
       startWatchdogTimer = setTimeout(async () => {
         try {
@@ -604,8 +559,6 @@ document.addEventListener('DOMContentLoaded', () => {
         } catch {}
       }, 8000);
       const res = await send('autoComplete', { level: autoTasks.level });
-      // v2.9：后台确认全完成 → 零动作，只在圆圈下方显示绿色小字。
-      // 注意：正常流程返回的是 skippedCards（跳过的不给分卡片数），不能当成整轮跳过。
       if (res && res.reason === 'signedOut') {
         clearTimeout(startWatchdogTimer);
         pendingStartUntil = 0;
@@ -615,12 +568,10 @@ document.addEventListener('DOMContentLoaded', () => {
         clearTimeout(startWatchdogTimer);
         showAllDoneNotice();
       } else if (!res) {
-        // 后台无响应：错误横幅已由 send() 显示，按钮别一直卡在「启动中」
         clearTimeout(startWatchdogTimer);
         pendingStartUntil = 0;
         setAction('start', t('controls.start'), false);
       } else {
-        // 立即应答只表示「已受理」：保留看门狗，后台异常未写 running 时仍能复位按钮
       }
     } else {
       setAction('stop', t('controls.stopping'), true);
@@ -628,20 +579,15 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
-  /* v2.9：圆圈下面那行小字用绿色提示「任务已完成，无需任何动作」。
-     不新建元素、不弹窗、不改圆环、不启动任何流程。 */
   function showAllDoneNotice() {
     pendingStartUntil = 0;
     allDoneNoticeUntil = Date.now() + 8000;
-    oneShotRefresh(8100);               // 8 秒后收回绿字，替代每秒渲染
+    oneShotRefresh(8100);               
     setStatus(t('status.allDone'), 'completed all-done', false);
     setAction('start', t('controls.start'), false);
-    // 让读屏软件也读得到
     statusEl.setAttribute('aria-label', t('status.allDone'));
   }
 
-  /* v1.3.3：刷新积分/任务列表完成后的一次性绿色反馈。
-     不弹窗、不改圆环、不启动流程，8 秒后由 oneShotRefresh 收回。 */
   function showSyncedNotice() {
     syncedNoticeUntil = Date.now() + 8000;
     oneShotRefresh(8100);
@@ -652,7 +598,6 @@ document.addEventListener('DOMContentLoaded', () => {
   function setStatus(text, cls, isQuery, title) {
     const key = `${cls}|${isQuery ? 'q' : ''}|${text}|${lang}`;
     if (statusEl.dataset.key === key) return;
-    /* v1.3.1：状态文字直接替换，不做宽度补间 / 文字弹跳，刷新时界面更安静 */
     statusEl.dataset.key = key;
     statusEl.style.width = '';
     statusEl.className = 'status ' + cls + (isQuery ? ' show-query' : '');
@@ -697,7 +642,7 @@ document.addEventListener('DOMContentLoaded', () => {
     ring.setAttribute('aria-valuenow', Math.round(p * 100));
   }
 
-  function setNotice() { /* 提示模块已移除，不再显示任何积分/冷却提示 */ }
+  function setNotice() {  }
 
   const STATUS = () => ({
     idle: [t('status.ready'), 'stopped'],
@@ -713,8 +658,6 @@ document.addEventListener('DOMContentLoaded', () => {
     error: [t('status.error'), 'error']
   });
 
-  /* v1.2 · 登录状态提示（纯展示，不可点击）：
-     能解析出 pointsSummary.available 就是已登录，否则显示未登录。 */
   function renderLoginBadge(d) {
     const ps = d.pointsSummary || {};
     const signedIn = Number.isFinite(ps.available);
@@ -746,47 +689,32 @@ document.addEventListener('DOMContentLoaded', () => {
     const cooldownLeft = phase === 'cooldown' ? Math.max(0, (d.cooldownUntil || 0) - Date.now()) : 0;
     const [label, cls] = statusMap[phase];
     const showQuery = phase === 'searching' && !d.stopRequested && !!d.currentQuery;
-    // 全完成提示优先：storage 变化触发的 render 不能把绿色小字冲掉
-    if (running) { allDoneNoticeUntil = 0; syncedNoticeUntil = 0; }
+    if (running && !lastRunningSeen) { allDoneNoticeUntil = 0; syncedNoticeUntil = 0; }
+    lastRunningSeen = running;
     const noticeActive = !running && Date.now() < allDoneNoticeUntil;
     const syncedActive = !running && Date.now() < syncedNoticeUntil;
-    /* v1.3.8：运行详情直接复用这个状态行（原绿色小字所在位置），不新增文本框 */
-    const act = activityLine(d, cls);
-    if (act) {
-      setStatus(act.text, act.cls, false);
-      statusEl.setAttribute('aria-label', act.text);
-      statusEl.title = act.text; // 长句被省略时，悬停仍可读到全文
-      if (act.until) scheduleCountdown(act.until, act.template, act.cls);
-      else stopCountdown();
+    if (noticeActive) {
+      setStatus(t('status.allDone'), 'completed all-done', false);
+    } else if (syncedActive) {
+      setStatus(t('status.synced'), 'completed all-done', false);
+    } else if (d.cooldownGaveUp && !running) {
+      setStatus(t('status.gaveUp'), 'completed all-done', false);
+    } else if (phase === 'cooldown') {
+      const n = clampInt(d.cooldownCycles || 1, 1, MAX_COOLDOWNS);
+      setStatus(t('status.cooldownRound', { n, max: MAX_COOLDOWNS }), 'cooldown', false);
+    } else if (showQuery) {
+      setStatus(d.currentQuery, cls, true, t('status.searchingTitle', { q: d.currentQuery }));
+    } else if (phase === 'searching') {
+      setStatus(d.stopRequested ? t('status.stopping') : t('status.of', { a: current, b: total }), cls, false);
     } else {
-      stopCountdown();
-      if (noticeActive) {
-        setStatus(t('status.allDone'), 'completed all-done', false);
-      } else if (syncedActive) {
-        setStatus(t('status.synced'), 'completed all-done', false);
-      } else if (d.cooldownGaveUp && !running) {
-        // 等待次数用尽仍无法增加积分：明确告知已提前结束
-        setStatus(t('status.gaveUp'), 'completed all-done', false);
-      } else if (phase === 'cooldown') {
-        const n = clampInt(d.cooldownCycles || 1, 1, MAX_COOLDOWNS);
-        setStatus(t('status.cooldownRound', { n, max: MAX_COOLDOWNS }), 'cooldown', false);
-      } else if (showQuery) {
-        setStatus(d.currentQuery, cls, true, t('status.searchingTitle', { q: d.currentQuery }));
-      } else if (phase === 'searching') {
-        setStatus(d.stopRequested ? t('status.stopping') : t('status.of', { a: current, b: total }), cls, false);
-      } else {
-        setStatus(label, cls, false);
-      }
+      setStatus(label, cls, false);
     }
 
-    // 圆环与下方「今日任务」汇总保持一致：只显示百分比，不显示积分/搜索次数
     const tt = d.todayTasks || {};
     const hasTasks = Array.isArray(tt.items) && tt.items.length > 0;
     const taskPct = hasTasks ? Math.max(0, Math.min(100, Number(tt.percent) || 0)) : 0;
     ring.classList.remove('spinning');
     setOdometer(progressText, hasTasks ? `${taskPct}%` : '—');
-    // v1.1.8：不再逐秒重绘，也不再安排等待结束的自动刷新。
-    // 冷却结束时后台会写 phase / 积分，storage.onChanged 自然触发一次重绘。
     if (phase === 'cooldown' && cooldownLeft > 0) {
       const mins = Math.max(1, Math.ceil(cooldownLeft / 60000));
       progressSub.textContent = t('progress.cooldownLeft',
@@ -800,7 +728,6 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     setRing(hasTasks ? taskPct / 100 : 0);
 
-    // 三张卡固定取 dashboard / earn 页面解析出的值，不再随运行状态估算
     const ps = d.pointsSummary || {};
     const panelVal = v => Number.isFinite(v) ? fmt(v) : '—';
     setOdometer(startEl, panelVal(ps.available));
@@ -819,7 +746,6 @@ document.addEventListener('DOMContentLoaded', () => {
     setTip('tip-current', t('tip.currentTitle'), [], panelNote || t('tip.todayPoints'));
     setTip('tip-earned', t('tip.earnedTitle'), [], panelNote || t('tip.claimOpen'));
 
-    // 「今日搜索积分已领完」等提示与「今日 Bing 搜索」进度条已从界面移除
     setNotice(null);
     daily.hidden = true;
     renderTodayTasks(d.todayTasks);
@@ -828,8 +754,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
     if (d.error) showError(d.error);
 
-    /* 后台把长流程结果写进 autoResult：未登录/数据不可用时立刻复位按钮并复检，
-       全完成时显示绿色小字，不必等 8 秒看门狗。 */
     if (d.autoResult && d.autoResult.at && d.autoResult.at !== lastAutoResultAt) {
       lastAutoResultAt = d.autoResult.at;
       const r = d.autoResult;
@@ -838,7 +762,6 @@ document.addEventListener('DOMContentLoaded', () => {
         pendingStartUntil = 0;
         if (r.reason === 'allDone' || r.skipped === true) showAllDoneNotice();
         else setAction('start', t('controls.start'), false);
-        /* v1.1.8：不再启动登录轮询，避免空闲时反复探测登录态 */
       }
     }
 
@@ -858,11 +781,10 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   let pending = false;
+  let uiDirty = false;
   function refresh() {
     if (pending) return;
     pending = true;
-    // 必须用微任务：失焦窗口的 setTimeout(0) 会被 Chromium 节流到分钟级，
-    // 旧版就是因此让「正在启动… / 正在读取今日任务…」永远不更新。
     Promise.resolve().then(async () => {
       pending = false;
       try {
@@ -873,7 +795,6 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  /* ------------------------------------------------------- 自动完成任务设置状态 */
   function normalizeAutoTasks(raw) {
     const src = raw && typeof raw === 'object' ? raw : {};
     const times = [...new Set(
@@ -919,8 +840,6 @@ document.addEventListener('DOMContentLoaded', () => {
     $('set-auto').checked = !!autoTasks.enabled;
     const opts = $('auto-opts');
     opts.classList.toggle('off', !autoTasks.enabled);
-    // 关闭总开关时仍可配置时间点；说明写进页内提示，不再用原生 title
-    // （原生 title 是鼠标悬停时的黑色系统提示框，观感像「只有黑圈提示」）
     const hint = $('auto-disabled-hint');
     if (hint) { hint.hidden = !!autoTasks.enabled; hint.textContent = t('tasks.disabledTip'); }
     opts.removeAttribute('title');
@@ -949,7 +868,6 @@ document.addEventListener('DOMContentLoaded', () => {
     $('set-lang') && setSegment('set-lang', langMode);
   }
 
-  /* ------------------------------------------------------- 今日任务列表（首页） */
   const SECTION_TITLES = {
     search: 'todayTasks.sectionSearch', daily: 'todayTasks.sectionDaily',
     promo: 'todayTasks.sectionPromo', other: 'todayTasks.sectionOther'
@@ -962,7 +880,6 @@ document.addEventListener('DOMContentLoaded', () => {
     const groups = $('today-tasks-groups');
     const empty = $('today-tasks-empty');
     const note = $('today-tasks-note');
-    // 只显示有积分的任务：后台已过滤，这里再兜一次，避免旧缓存混入推广卡片
     const items = (data && Array.isArray(data.items) ? data.items : [])
       .filter(it => Number(it.points) > 0 || Number(it.total) > 0);
 
@@ -982,7 +899,6 @@ document.addEventListener('DOMContentLoaded', () => {
     empty.hidden = true;
     note.hidden = false;
     const pct = Math.max(0, Math.min(100, Number(data.percent) || 0));
-    // 任务积分合计与「今日积分」不一致是正常现象（周任务、额外奖励分），二者互不换算、不比较
     summary.textContent = t('todayTasks.summary', { p: pct, a: fmt(data.earned), b: fmt(data.total) })
       + (data.approx ? ' · ' + t('todayTasks.approx') : '');
     fill.style.width = pct + '%';
@@ -1044,9 +960,6 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   $('today-tasks-refresh').addEventListener('click', async () => {
-    /* v1.3.1：刷新期间界面完全不动（不清空、不显示「正在刷新…」）。
-       后台 syncRewardsUnified 拿到完整两页数据后一次原子写回，
-       storage.onChanged 只重绘一次，没有中间态与动画。 */
     const btn = $('today-tasks-refresh');
     if (btn.disabled) return;
     btn.disabled = true;
@@ -1059,7 +972,6 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
-  /* ------------------------------------------------------------- 设置面板 */
   const panel = $('settings');
   const openBtn = $('settings-open');
 
@@ -1108,33 +1020,30 @@ document.addEventListener('DOMContentLoaded', () => {
     setSegment('set-theme', savedThemeMode());
     setSegment('set-lang', langMode);
     $('set-reduce').checked = !!settings.reduceMotion;
-    $('set-skip-completed').checked = !!settings.skipCompletedCards;
-    $('set-card-interval').value = Number.isFinite(Number(settings.cardClickIntervalSec))
-      ? Math.max(1, Math.min(60, Math.round(Number(settings.cardClickIntervalSec)))) : 10;
-    /* v1.2：「默认搜索次数 / 节奏 / 到达每日上限即停止 / 等待 Bing 冷却 /
-       积分暂停时等待后继续 / 等待时长」设置项已全部删除，不再有 UI 入口。 */
+    $('set-dont-skip-completed').checked = !!settings.dontSkipCompletedCards;
+    const ci = $('set-card-interval');
+    if (ci) ci.value = Number.isFinite(Number(settings.cardClickIntervalSec))
+      ? Math.max(1, Math.min(60, Math.round(Number(settings.cardClickIntervalSec)))) : 5;
     syncAutoUI();
     renderPointsCalendar();
   }
 
   onSegment('set-lang', v => setLang(v));
-  onSegment('cal-mode', v => { calMode = v; renderPointsCalendar(); });
-  $('cal-prev').addEventListener('click', () => moveCalendar(-1));
-  $('cal-next').addEventListener('click', () => moveCalendar(1));
   onSegment('set-theme', mode => applyTheme(mode));
   $('set-reduce').addEventListener('change', e => {
     setReduceMotion(e.target.checked);
     saveSettings({ reduceMotion: e.target.checked });
   });
-  $('set-skip-completed').addEventListener('change', e =>
-    saveSettings({ skipCompletedCards: e.target.checked }));
-  $('set-card-interval').addEventListener('change', e => {
+  $('set-dont-skip-completed').addEventListener('change', e =>
+    saveSettings({ dontSkipCompletedCards: e.target.checked }));
+  const cardIntervalInput = $('set-card-interval');
+  if (cardIntervalInput) cardIntervalInput.addEventListener('change', e => {
     const n = Number(e.target.value);
-    const interval = Number.isFinite(n) ? Math.max(1, Math.min(60, Math.round(n))) : 10;
-    saveSettings({ cardClickIntervalSec: interval });
+    const sec = Number.isFinite(n) ? Math.max(1, Math.min(60, Math.round(n))) : 5;
+    e.target.value = sec;
+    saveSettings({ cardClickIntervalSec: sec });
   });
 
-  /* 自动完成任务设置 */
   $('set-auto').addEventListener('change', e => saveAutoTasks({ enabled: e.target.checked }));
   onSegment('set-auto-count-chips', v => saveAutoTasks({ count: v }));
   $('set-auto-count').addEventListener('change', e => {
@@ -1142,9 +1051,6 @@ document.addEventListener('DOMContentLoaded', () => {
   });
   onSegment('set-auto-level', v => saveAutoTasks({ level: Number(v) }));
 
-  /* 启动时间：不手动输入时按默认规则生成
-     · 第一个时间点 = 当地时间 08:00
-     · 之后 = 当前最晚时间点 + 30 分钟（跨天取模，撞上已有时间就继续顺延） */
   const toMinutes = hhmm => {
     const [h, m] = hhmm.split(':').map(Number);
     return h * 60 + m;
@@ -1223,60 +1129,10 @@ document.addEventListener('DOMContentLoaded', () => {
     refresh();
   });
 
-  /* ------------------------------------------------------------------
-   * v1.3.8 · 运行详情（单行、稍详细）
-   * 不新增文本框：写进进度圆圈下方原有状态行 #status-text（原绿色小字位置）。
-   * 等待类动作把 {s} 换成剩余秒数倒计时；到点即停，不写 storage。
-   * ---------------------------------------------------------------- */
-  let countdownTimer = null;
-  function stopCountdown() {
-    if (countdownTimer) { clearTimeout(countdownTimer); countdownTimer = null; }
-  }
-  function scheduleCountdown(until, template, cls) {
-    stopCountdown();
-    const step = () => {
-      countdownTimer = null;
-      const left = Math.max(0, Math.ceil((until - Date.now()) / 1000));
-      const text = template.split('{s}').join(String(left));
-      if (statusText.textContent !== text) {
-        statusText.textContent = text;
-        statusEl.dataset.key = cls + '||' + text + '|' + lang;
-      }
-      if (until <= Date.now()) return;
-      const nextTick = Math.min(1000, Math.max(120, (until - Date.now()) - (left - 1) * 1000));
-      countdownTimer = setTimeout(step, nextTick);
-    };
-    step();
-  }
-  function activityLine(d, phaseCls) {
-    const a = d && d.activityDetail;
-    if (!a || !a.at) return null;
-    if (!d.running && Date.now() - a.at > 12000) return null;
-    const tpl = (lang === 'en' ? a.en : a.zh) || '';
-    if (!tpl) return null;
-    const green = a.state === 'synced' || a.state === 'allDone' || a.state === 'done';
-    const cls = green ? 'completed all-done'
-      : (a.state === 'syncFailed' ? 'error' : phaseCls);
-    const until = a.state === 'waiting' && Number(a.until) > Date.now()
-      ? Number(a.until) : 0;
-    const text = tpl.split('{s}').join(
-      String(until ? Math.max(0, Math.ceil((until - Date.now()) / 1000)) : 0));
-    return { text: text, cls: cls + ' activity', green: green,
-             until: until, template: tpl };
-  }
 
-  /* ------------------------------------------------------------------
-   * v1.3.8 · 积分日历（支付宝收益日历风格）
-   *  · 日 / 周 / 月三种汇总，统一圆角正方形格子
-   *  · 格子只显示积分，不显示日期数字；日期放在悬停提示里
-   *  · 过去无积分 = 浅灰；未来 = 不显示方块；有积分 = 淡蓝；今日 = 细描边
-   * ---------------------------------------------------------------- */
   let calMode = 'day';
   let calCursor = new Date();
-<<<<<<< HEAD
-=======
   let calRenderId = 0;
->>>>>>> fb5efdd15db37cf18e87c9be2597e688bc7a03cf
   const pad2 = n => String(n).padStart(2, '0');
   const dkey = d => d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate());
   const addDays = (d, n) => {
@@ -1313,21 +1169,9 @@ document.addEventListener('DOMContentLoaded', () => {
   }
   function dayClass(k, value, todayK) {
     if (k > todayK) return 'cal-day cal-blank';
-<<<<<<< HEAD
-    return 'cal-day ' + (value != null ? 'cal-has' : 'cal-past-empty')
-      + (k === todayK ? ' cal-today' : '');
-  }
-  function periodCell(value, cls, tag, tip) {
-    return calCell(value, cls, tip, tag);
-  }
-
-  async function renderPointsCalendar() {
-=======
     return 'cal-day ' + (value > 0 ? 'cal-has' : 'cal-past-empty')
       + (k === todayK ? ' cal-today' : '');
   }
-  // Week: spacious horizontal cards with a 7-day activity strip. Month:
-  // twelve balanced summary cards. Both are real DOM, not canvas snapshots.
   function periodCell(value, cls, tag, tip, detail) {
     const cell = document.createElement('div');
     cell.className = 'cal-cell ' + cls;
@@ -1360,15 +1204,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
   async function renderPointsCalendar() {
     const renderId = ++calRenderId;
->>>>>>> fb5efdd15db37cf18e87c9be2597e688bc7a03cf
     const grid = $('cal-grid');
     if (!grid) return;
     let s = {};
     try { s = await chrome.storage.local.get(['pointsHistory', 'pointsSummary']); } catch {}
-<<<<<<< HEAD
-=======
     if (renderId !== calRenderId) return;
->>>>>>> fb5efdd15db37cf18e87c9be2597e688bc7a03cf
     const hist = Object.assign({}, (s && s.pointsHistory) || {});
     const ps = (s && s.pointsSummary) || {};
     const now = new Date();
@@ -1395,14 +1235,8 @@ document.addEventListener('DOMContentLoaded', () => {
     grid.className = 'cal-grid cal-' + calMode;
     grid.textContent = '';
     const y = calCursor.getFullYear(), m = calCursor.getMonth();
-<<<<<<< HEAD
-    const vals = [];
-=======
-    // Period values determine which cards are highlighted; daily values determine
-    // the true day-average, day-maximum, and number of earning days in every view.
     const vals = [];
     const earningDays = [];
->>>>>>> fb5efdd15db37cf18e87c9be2597e688bc7a03cf
     if (calMode === 'day') {
       if (range) range.textContent = y + ' / ' + pad2(m + 1);
       const start = mondayOf(new Date(y, m, 1));
@@ -1412,19 +1246,11 @@ document.addEventListener('DOMContentLoaded', () => {
         const k = dkey(d);
         const v = inMonth ? histValue(hist, k) : null;
         const blank = !inMonth || k > todayK;
-<<<<<<< HEAD
-        if (inMonth && v != null && k <= todayK) vals.push(v);
-        const tip = blank ? '' : (v != null
-          ? t('calendar.cellTip', { date: calDateLabel(d), points: ptsText(v) })
-          : t('calendar.noPointsTip', { date: calDateLabel(d) }));
-        grid.appendChild(calCell(blank ? null : v,
-=======
         if (inMonth && v > 0 && k <= todayK) { vals.push(v); earningDays.push(v); }
         const tip = blank ? '' : (v > 0
           ? t('calendar.cellTip', { date: calDateLabel(d), points: ptsText(v) })
           : t('calendar.noPointsTip', { date: calDateLabel(d) }));
         grid.appendChild(calCell(blank ? null : (v > 0 ? v : null),
->>>>>>> fb5efdd15db37cf18e87c9be2597e688bc7a03cf
           blank ? 'cal-day cal-blank' : dayClass(k, v, todayK), tip));
       }
     } else if (calMode === 'week') {
@@ -1433,27 +1259,6 @@ document.addEventListener('DOMContentLoaded', () => {
       const start = mondayOf(first);
       const daysInMonth = new Date(y, m + 1, 0).getDate();
       const weeks = Math.ceil((((first.getDay() + 6) % 7) + daysInMonth) / 7);
-<<<<<<< HEAD
-      const cells = Math.ceil(weeks / 7) * 7;
-      for (let w = 0; w < cells; w++) {
-        if (w >= weeks) { grid.appendChild(calCell(null, 'cal-week cal-blank')); continue; }
-        let total = 0, hit = 0;
-        const weekStart = addDays(start, w * 7);
-        for (let i = 0; i < 7; i++) {
-          const d = addDays(weekStart, i);
-          const v = d.getMonth() === m && dkey(d) <= todayK ? histValue(hist, dkey(d)) : null;
-          if (v != null) { total += v; hit++; }
-        }
-        if (hit) vals.push(total);
-        const tag = t('calendar.weekLabel', { n: w + 1 });
-        const future = dkey(weekStart) > todayK;
-        const cls = future ? 'cal-week cal-blank'
-          : 'cal-week ' + (hit ? 'cal-has' : 'cal-past-empty');
-        const tip = future ? '' : (hit
-          ? t('calendar.cellTip', { date: tag, points: ptsText(total) })
-          : t('calendar.noPointsTip', { date: tag }));
-        grid.appendChild(periodCell(future || !hit ? null : total, cls, tag, tip));
-=======
       for (let w = 0; w < weeks; w++) {
         let total = 0, hit = 0;
         const weekStart = addDays(start, w * 7);
@@ -1477,7 +1282,6 @@ document.addEventListener('DOMContentLoaded', () => {
           : t('calendar.noPointsTip', {date:tag}));
         const details = {daily:daily, subtext:t('calendar.earnedDays', {n:hit})};
         grid.appendChild(periodCell(future ? null : total, cls, tag, tip, details));
->>>>>>> fb5efdd15db37cf18e87c9be2597e688bc7a03cf
       }
     } else {
       if (range) range.textContent = String(y);
@@ -1488,23 +1292,6 @@ document.addEventListener('DOMContentLoaded', () => {
         for (const k of Object.keys(hist)) {
           if (k.slice(0, 7) !== prefix || k > todayK) continue;
           const v = histValue(hist, k);
-<<<<<<< HEAD
-          if (v != null) { total += v; hit++; }
-        }
-        if (hit) vals.push(total);
-        const tag = t('calendar.monthLabel', { n: mm + 1 });
-        const cls = future ? 'cal-month cal-blank'
-          : 'cal-month ' + (hit ? 'cal-has' : 'cal-past-empty');
-        const tip = future ? '' : (hit
-          ? t('calendar.cellTip', { date: tag, points: ptsText(total) })
-          : t('calendar.noPointsTip', { date: tag }));
-        grid.appendChild(periodCell(future || !hit ? null : total, cls, tag, tip));
-      }
-    }
-    const total = vals.reduce((a, b) => a + b, 0);
-    const avg = vals.length ? Math.round(total / vals.length) : 0;
-    const max = vals.length ? Math.max.apply(null, vals) : 0;
-=======
           if (v > 0) { total += v; hit++; earningDays.push(v); }
         }
         if (hit) vals.push(total);
@@ -1518,28 +1305,17 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     }
     const total = vals.reduce((a, b) => a + b, 0);
-    // A week/month contains multiple earning days: report actual daily
-    // averages and daily peaks instead of averaging whole period totals.
     const avg = earningDays.length ? Math.round(total / earningDays.length) : 0;
     const max = earningDays.length ? Math.max.apply(null, earningDays) : 0;
->>>>>>> fb5efdd15db37cf18e87c9be2597e688bc7a03cf
     if (heroTotal) heroTotal.textContent = ptsText(total);
     if (heroLabel) heroLabel.textContent = t(calMode === 'month'
       ? 'calendar.yearLabel' : 'calendar.totalLabel');
     if (sum) {
       sum.textContent = t('calendar.summary', {
-<<<<<<< HEAD
-        total: ptsText(total), avg: ptsText(avg), max: ptsText(max), n: vals.length
-      }) + (vals.length ? '' : ' · ' + t('calendar.empty'));
-    }
-    setSegment('cal-mode', calMode);
-=======
         total: ptsText(total), avg: ptsText(avg), max: ptsText(max), n: earningDays.length
       }) + (earningDays.length ? '' : ' · ' + t('calendar.empty'));
     }
     setSegment('cal-mode', calMode);
-    // Do not imply available history outside the recorded range. The arrows
-    // stay operable for navigating gaps, but both become grey on empty pages.
     const hasPointsIn = step => {
       const base = calMode === 'month'
         ? new Date(y + step, 0, 1) : new Date(y, m + step, 1);
@@ -1556,7 +1332,6 @@ document.addEventListener('DOMContentLoaded', () => {
       btn.setAttribute('data-empty', String(empty));
       btn.setAttribute('aria-description', empty ? t('calendar.navEmpty') : '');
     }
->>>>>>> fb5efdd15db37cf18e87c9be2597e688bc7a03cf
   }
 
   function moveCalendar(step) {
@@ -1566,48 +1341,6 @@ document.addEventListener('DOMContentLoaded', () => {
       : new Date(y, m + step, 1);
     renderPointsCalendar();
   }
-
-  /* 桌面版专有设置：扩展端没有这组 DOM，直接返回。 */
-  function setDesktopMsg(text) {
-    const el = $('desktop-msg');
-    if (!el) return;
-    if (!text) { el.hidden = true; el.textContent = ''; return; }
-    el.hidden = false;
-    el.textContent = text;
-    setTimeout(() => { if (el.textContent === text) el.hidden = true; }, 4000);
-  }
-  async function loadDesktopPrefs() {
-    const auto = $('set-auto-launch'), silent = $('set-silent-run');
-    if (!auto || !silent) return;
-    const api = (typeof chrome !== 'undefined' && chrome.desktopApp) || null;
-    if (!api || typeof api.setAutoLaunch !== 'function') return;
-    let on = false;
-    try { on = !!(await api.getAutoLaunch()); } catch {}
-    auto.checked = on;
-    try {
-      const s = await chrome.storage.local.get(['silentRun']);
-      silent.checked = !!s.silentRun;
-    } catch {}
-    auto.addEventListener('change', async e => {
-      const v = !!e.target.checked;
-      try { await api.setAutoLaunch(v); } catch {}
-      chrome.storage.local.set({ launchAtLogin: v });
-      setDesktopMsg(t(v ? 'desktop.autoLaunchOn' : 'desktop.autoLaunchOff'));
-    });
-    silent.addEventListener('change', e => {
-      const v = !!e.target.checked;
-      chrome.storage.local.set({ silentRun: v });
-      setDesktopMsg(t(v ? 'desktop.silentOn' : 'desktop.silentOff'));
-    });
-  }
-
-  /* ------------------------------------------------------------------
-   * v1.3.8 · 悬停提示：设置页不再放小字注释，全部改为轻量浮层
-   *  · applyI18n 会把 [data-i18n-title] 的 title 按当前语言重设；
-   *    这里用 MutationObserver 把新 title 同步到 data-tip，并移除原生
-   *    黑色系统提示框，改由挂在 body 上的 fixed 浮层显示（不受滚动裁剪）。
-   *  · 日历格子动态写 data-tip，同一个委托即可覆盖。
-   * ---------------------------------------------------------------- */
   function initHoverTips() {
     if ($('hover-tip')) return;
     const tip = document.createElement('div');
@@ -1622,7 +1355,6 @@ document.addEventListener('DOMContentLoaded', () => {
       el.dataset.tip = v;
       el.removeAttribute('title');
       if (!el.hasAttribute('data-i18n-aria')) {
-        /* applyI18n 先更新可见文本、再更新 title，观察者回调里已是新语言 */
         const label = (el.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 40);
         if (label) el.setAttribute('aria-label', label + ' — ' + v);
       }
@@ -1663,7 +1395,10 @@ document.addEventListener('DOMContentLoaded', () => {
   }
   initHoverTips();
 
-  /* ------------------------------------------------------------------ 启动 */
+  onSegment('cal-mode', v => { calMode = v; renderPointsCalendar(); });
+  if ($('cal-prev')) $('cal-prev').addEventListener('click', () => moveCalendar(-1));
+  if ($('cal-next')) $('cal-next').addEventListener('click', () => moveCalendar(1));
+
   async function loadUiLang() {
     const { uiLang } = await chrome.storage.local.get(['uiLang']);
     langMode = normalizeLangMode(uiLang);
@@ -1682,18 +1417,30 @@ document.addEventListener('DOMContentLoaded', () => {
   applyI18n();
   syncThemeControls();
   renderPointsCalendar();
-  loadDesktopPrefs();
   chrome.storage.local.set({ uiTheme: savedThemeMode() === 'system' ? null : savedThemeMode() });
   loadUiLang();
   loadSettings();
   loadAutoTasks();
-  /* v1.1.8 · 初始化零抓取：删掉旧版「数据过期就 send refreshToday /
-     refreshTasks / refreshPoints」的整段逻辑。未登录时空闲就安静地显示
-     storage 里已有的值，不请求任何官网页面。 */
   refresh();
+  const scheduleRefresh = () => {
+    if (document.hidden) { uiDirty = true; return; }
+    uiDirty = false;
+    refresh();
+  };
+
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden || !uiDirty) return;
+    uiDirty = false;
+    loadUiLang();
+    loadSettings();
+    loadAutoTasks();
+    renderPointsCalendar();
+    refresh();
+  });
+
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== 'local') return;
-    if (Object.keys(changes).every(key => key === 'taskClickIndex')) return;
+    if (document.hidden) { uiDirty = true; return; }
     if (changes.uiLang) {
       langMode = normalizeLangMode(changes.uiLang.newValue);
       lang = resolveLang(langMode);
@@ -1701,27 +1448,22 @@ document.addEventListener('DOMContentLoaded', () => {
       setSegment('set-lang', langMode);
     }
     if (changes.autoTasks) {
-      // 外部写回可能带回写盘前的旧快照；本地刚保存过就以本地为准，
-      // 否则用户会看到「点了最大次数 / 添加时间却又跳回去」，观感即设置无效。
       if (Date.now() - autoSavedAt > 1500) {
         autoTasks = normalizeAutoTasks(changes.autoTasks.newValue);
         syncAutoUI();
       }
     }
-    /* v1.3.3：后台统一同步完成后才写这个键，绿字一定出现在「刷新之后」 */
     if (changes.syncNotice && changes.syncNotice.newValue &&
         Number.isFinite(changes.syncNotice.newValue.at)) {
       showSyncedNotice();
     }
     if (changes.pointsHistory || changes.pointsSummary) renderPointsCalendar();
-    refresh();
+    scheduleRefresh();
   });
-  /* v1.1.8 · 重绘入口只剩 storage.onChanged（见上方 addListener）。
-     onTick / onSync 专用刷新事件已删除，启动时的 6.2 秒自动刷新也删除：
-     空闲时不会有任何定时器触发渲染。 */
   window.addEventListener('pagehide', () => {
+    uiDirty = false;
+    pending = false;
     for (const id of oneShotTimers) clearTimeout(id);
     oneShotTimers.clear();
-    stopCountdown();
   });
 });
