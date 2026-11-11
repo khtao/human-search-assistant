@@ -10,7 +10,7 @@ electronDist: node_modules/electron/dist
 
 directories:
   buildResources: build
-  output: dist
+  output: ../release
 
 files:
   - main.js
@@ -51,7 +51,7 @@ win:
       arch: [x64]
     - target: portable
       arch: [x64]
-  artifactName: HumanSearchAssistant-Windows-${version}-${arch}.${ext}
+  artifactName: HumanSearchAssistant-Windows.${ext}
   signtoolOptions:
     signingHashAlgorithms: [sha256]
 
@@ -65,7 +65,7 @@ nsis:
   deleteAppDataOnUninstall: false
 
 portable:
-  artifactName: HumanSearchAssistant-Windows-Portable-${version}.${ext}
+  artifactName: HumanSearchAssistant-Windows-Portable.${ext}
 
 compression: maximum
 asar: true

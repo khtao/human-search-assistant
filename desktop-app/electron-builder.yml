@@ -6,7 +6,7 @@ copyright: Local personal tool · 非 Microsoft 官方产品
 # 避免 electron-builder 在 Linux 目标构建时将非目标平台配置纳入校验。
 directories:
   buildResources: build
-  output: dist
+  output: ../release
 
 files:
   - main.js
@@ -40,7 +40,7 @@ linux:
   target:
     - target: deb
       arch: [x64]
-  artifactName: HumanSearchAssistant-Ubuntu-${version}-${arch}.${ext}
+  artifactName: HumanSearchAssistant-Ubuntu.${ext}
   desktop:
     entry:
       Name: 拟人搜索助手

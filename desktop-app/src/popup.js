@@ -1,5 +1,6 @@
 document.addEventListener('DOMContentLoaded', () => {
   const HSA_CORE = globalThis.HSA_CORE;
+  let uiRunning = false;
   const $ = id => document.getElementById(id);
   const root = document.documentElement;
   const body = document.body;
@@ -57,6 +58,7 @@ document.addEventListener('DOMContentLoaded', () => {
     autoStop: true,
     reduceMotion: false,
     cardClickIntervalSec: HSA_CORE.DEFAULTS.cardClickIntervalSec,
+    runLogEnabled: true,
     notSkipCompletedCards: false
   };
   const AUTO_DEFAULTS = { enabled: false, times: [], count: 30, level: 3 };
@@ -142,6 +144,20 @@ document.addEventListener('DOMContentLoaded', () => {
       'auto.level': '拟人强度', 'auto.levelHint': '影响鼠标轨迹、滚动与每轮时长',
       'level.low': '低', 'level.mid': '中', 'level.high': '高',
       'settings.reset': '恢复默认设置', 'settings.resetConfirm': '再点一次确认重置',
+      'calendar.navBlocked': '该周期没有积分记录，不能跳转',
+      'pull.idle': '下拉刷新', 'pull.pull': '下拉刷新',
+      'pull.armed': '释放刷新', 'pull.refreshing': '加载中...',
+      'pull.done': '刷新成功', 'pull.error': '刷新失败',
+      'pull.blocked': '自动运行中：刷新已禁用',
+      'diag.title': '运行日志与网页抓取',
+      'diag.logEnabled': '记录运行日志',
+      'diag.logHint': '日志含系统时间、用户操作、运行过程、结果与错误；网页 HTML 不写进日志',
+      'diag.note': '日常运行只有运行日志；关键网页按需实时抓取 /dashboard、/earn 与 Bing 侧边栏，导出 HTML 的 zip 包，不复用缓存或旧快照。',
+      'diag.exportLog': '导出运行日志', 'diag.capturePages': '抓取关键网页（HTML zip）',
+      'diag.exporting': '正在准备运行日志…', 'diag.capturing': '正在实时抓取 /dashboard、/earn 与 Bing 侧边栏…',
+      'diag.exportOk': '已导出运行日志（{count} 条）',
+      'diag.captureOk': '已实时抓取并导出 {count} 个关键网页（HTML zip 包）',
+      'diag.empty': '暂无运行日志', 'diag.fail': '操作失败：{msg}',
       'error.extension': '扩展异常：{msg}',
       'error.signIn': '请先在浏览器中登录 Microsoft Rewards（rewards.bing.com），然后重新开始。',
       'error.topics': '所有热搜源均不可用，请检查网络后重试（不使用本地词库）。',
@@ -176,12 +192,9 @@ document.addEventListener('DOMContentLoaded', () => {
       'calendar.cellTip': '{date} · 积分 {points} 分',
       'calendar.noPointsTip': '{date} · 无积分记录',
       'desktop.title': '桌面版', 'desktop.autoLaunch': '开机自动启动',
-      'desktop.autoLaunchHint': '登录系统后自动运行桌面版', 'desktop.silent': '静默完成任务',
-      'desktop.silentHint': '仅隐藏页面过程；流程、进度与运行详情和正常模式一致',
-      'desktop.onlyDesktop': '以上两项仅桌面版可用，浏览器插件中不可设置',
-      'desktop.autoLaunchOn': '已开启开机自动启动', 'desktop.autoLaunchOff': '已关闭开机自动启动',
-      'desktop.silentOn': '已开启静默完成任务（隐藏页面执行）',
-      'desktop.silentOff': '已关闭静默完成任务'
+      'desktop.autoLaunchHint': '登录系统后自动运行桌面版',
+      'desktop.onlyDesktop': '该设置仅桌面版可用，浏览器插件中不可设置',
+      'desktop.autoLaunchOn': '已开启开机自动启动', 'desktop.autoLaunchOff': '已关闭开机自动启动'
     },
     en: {
       'app.title': 'Human Search Assistant',
@@ -260,6 +273,20 @@ document.addEventListener('DOMContentLoaded', () => {
       'auto.level': 'Human-like intensity', 'auto.levelHint': 'Affects mouse path, scrolling and round length',
       'level.low': 'Low', 'level.mid': 'Medium', 'level.high': 'High',
       'settings.reset': 'Reset to defaults', 'settings.resetConfirm': 'Tap again to reset',
+      'calendar.navBlocked': 'No points recorded in that period — navigation blocked',
+      'pull.idle': 'Pull down to refresh', 'pull.pull': 'Pull down to refresh',
+      'pull.armed': 'Release to refresh', 'pull.refreshing': 'Loading…',
+      'pull.done': 'Refreshed', 'pull.error': 'Refresh failed',
+      'pull.blocked': 'Strict run active — refresh disabled',
+      'diag.title': 'Run log & page capture',
+      'diag.logEnabled': 'Record run log',
+      'diag.logHint': 'System time, user actions, run steps, results and errors; page HTML is never stored',
+      'diag.note': 'Daily runs keep a run log only. Capture /dashboard, /earn and the Bing sidebar live on demand and export them as an HTML zip — never a cached page or an old snapshot.',
+      'diag.exportLog': 'Export run log', 'diag.capturePages': 'Capture key pages (HTML zip)',
+      'diag.exporting': 'Preparing run log…', 'diag.capturing': 'Fetching /dashboard, /earn and Bing sidebar live…',
+      'diag.exportOk': 'Run log exported ({count} entries)',
+      'diag.captureOk': 'Captured and exported {count} key pages as an HTML zip',
+      'diag.empty': 'No run log entries yet', 'diag.fail': 'Operation failed: {msg}',
       'error.extension': 'Extension error: {msg}',
       'error.signIn': 'Sign in to Microsoft Rewards (rewards.bing.com) in this browser, then press Start again.',
       'error.topics': 'All trending sources are unavailable. Check your connection (no local word list).',
@@ -295,12 +322,8 @@ document.addEventListener('DOMContentLoaded', () => {
       'calendar.noPointsTip': '{date} · no points recorded',
       'desktop.title': 'Desktop', 'desktop.autoLaunch': 'Launch at login',
       'desktop.autoLaunchHint': 'Start the desktop app after signing in to the system',
-      'desktop.silent': 'Silent task completion',
-      'desktop.silentHint': 'Hides page views only; flow and progress stay the same',
-      'desktop.onlyDesktop': 'These two options are desktop-only and disabled in the extension',
-      'desktop.autoLaunchOn': 'Launch at login enabled', 'desktop.autoLaunchOff': 'Launch at login disabled',
-      'desktop.silentOn': 'Silent completion enabled (hidden pages)',
-      'desktop.silentOff': 'Silent completion disabled'
+      'desktop.onlyDesktop': 'This option is desktop-only and disabled in the extension',
+      'desktop.autoLaunchOn': 'Launch at login enabled', 'desktop.autoLaunchOff': 'Launch at login disabled'
     }
   };
 
@@ -407,7 +430,28 @@ document.addEventListener('DOMContentLoaded', () => {
     errorBanner.hidden = false;
   }
 
+  /* 详细运行日志：所有用户操作都记一条（严格运行期白名单放行，只读不改运行）。 */
+  function logUserAction(action, detail) {
+    try {
+      chrome.runtime.sendMessage({
+        type: 'logUserAction', actor: 'user', action: String(action || ''),
+        detail: String(detail || '')
+      }).catch(() => {});
+    } catch (err) {}
+  }
+  function summarize(extra) {
+    if (!extra || typeof extra !== 'object') return '';
+    try {
+      return Object.keys(extra).slice(0, 8).map(k => {
+        const v = extra[k];
+        return k + '=' + (v == null || typeof v !== 'object' ? String(v) : '[object]');
+      }).join(', ').slice(0, 200);
+    } catch (err) { return ''; }
+  }
   function send(type, extra) {
+    if (type !== 'logUserAction' && type !== 'panelState') {
+      logUserAction(type, summarize(extra));
+    }
     return chrome.runtime.sendMessage(Object.assign({ type }, extra)).catch(err => {
       showError(t('error.extension', { msg: err.message }));
     });
@@ -632,7 +676,17 @@ document.addEventListener('DOMContentLoaded', () => {
     refresh();
   });
 
+  /* 严格运行模式：自动运行期间禁止改设置、改定时配置、手动刷新等影响运行的操作。 */
+  function strictRunGuard(type) {
+    if (!uiRunning || !HSA_CORE.strictBlockedMessage(type || 'saveSettings', true)) return false;
+    const msg = lang === 'en' ? HSA_CORE.TEXT.strictRunBlockedEn : HSA_CORE.TEXT.strictRunBlocked;
+    setStatus(msg, 'completed all-done', false);
+    try { statusEl.setAttribute('aria-label', msg); } catch (err) {}
+    return true;
+  }
+
   function saveSettings(patch) {
+    if (strictRunGuard('saveSettings')) return;
     settings = Object.assign({}, settings, patch);
     chrome.storage.local.set({ settings });
     syncSettingsUI();
@@ -896,6 +950,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const statusMap = STATUS();
     const phase = statusMap[d.phase] ? d.phase : 'idle';
     const running = !!d.running;
+    uiRunning = running;
     const current = d.currentSearch || 0;
     const total = d.totalSearch || 0;
     const start = d.startPoints || 0;
@@ -1061,6 +1116,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   let autoSavedAt = 0;
   function saveAutoTasks(patch) {
+    if (strictRunGuard('saveAutoTasks')) return;
     autoTasks = normalizeAutoTasks(Object.assign({}, autoTasks, patch));
     autoSavedAt = Date.now();
     chrome.storage.local.set({ autoTasks });
@@ -1219,6 +1275,7 @@ document.addEventListener('DOMContentLoaded', () => {
        storage.onChanged 只重绘一次，没有中间态与动画。 */
     const btn = $('today-tasks-refresh');
     if (btn.disabled) return;
+    if (strictRunGuard('refreshTasks')) return;
     btn.disabled = true;
     try {
       await send('refreshTasks');
@@ -1234,7 +1291,12 @@ document.addEventListener('DOMContentLoaded', () => {
   const openBtn = $('settings-open');
 
   function openSettings() {
+    /* v2.4：主界面与设置共用一根滚动条，切换时统一复位到顶部。 */
+    const scroller = $('scroll-root');
+    if (scroller) scroller.scrollTop = 0;
     syncSettingsUI();
+    resetCalendar();
+    logUserAction('openSettings', 'settings panel opened');
     body.classList.add('settings-open');
     panel.inert = false;
     main.inert = true;
@@ -1243,6 +1305,9 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function closeSettings() {
+    const scroller = $('scroll-root');
+    if (scroller) scroller.scrollTop = 0;
+    logUserAction('closeSettings', 'settings panel closed');
     panel.classList.remove('open');
     panel.inert = true;
     main.inert = false;
@@ -1278,6 +1343,7 @@ document.addEventListener('DOMContentLoaded', () => {
     setSegment('set-theme', savedThemeMode());
     setSegment('set-lang', langMode);
     $('set-reduce').checked = !!settings.reduceMotion;
+    $('set-run-log').checked = settings.runLogEnabled !== false;
     $('set-not-skip-completed').checked = !!settings.notSkipCompletedCards;
     $('set-card-interval').value = HSA_CORE.clampIntervalSec(settings.cardClickIntervalSec);
     /* 搜索次数 / 节奏 / 每日上限使用自动任务设置；桌面和插件 UI 保持一致。 */
@@ -1294,6 +1360,13 @@ document.addEventListener('DOMContentLoaded', () => {
     setReduceMotion(e.target.checked);
     saveSettings({ reduceMotion: e.target.checked });
   });
+  $('set-run-log').addEventListener('change', e => {
+    if (strictRunGuard('saveSettings')) {
+      e.target.checked = settings.runLogEnabled !== false;
+      return;
+    }
+    saveSettings({ runLogEnabled: e.target.checked });
+  });
 
   $('set-not-skip-completed').addEventListener('change', e =>
     saveSettings({ notSkipCompletedCards: e.target.checked }));
@@ -1304,6 +1377,73 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   /* 自动完成任务设置 */
+  /* 诊断数据：导出运行日志 / 实时抓取关键网页（设置页操作）。
+     桌面优先走系统保存对话框，插件走 Blob 下载；都不经过运行链路。 */
+  function setDiagStatus(text, warn) {
+    const el = $('diag-status');
+    if (!el) return;
+    el.textContent = String(text || '');
+    el.classList.toggle('warn', !!warn);
+    el.hidden = false;
+  }
+  function exportDiagFile(fileName, content, encoding) {
+    /* 后台 captureKeyPages 返回 base64 编码的 zip；导出日志是纯文本 JSON。 */
+    const isBin = String(encoding || '') === 'base64';
+    const d = typeof window !== 'undefined' && window.__desktop;
+    if (d && typeof d.saveExport === 'function') {
+      return d.saveExport(fileName, content, isBin ? 'base64' : '').then(r => {
+        if (!r || !r.ok) throw new Error((r && (r.message || r.reason)) || 'save failed');
+        return r;
+      });
+    }
+    let blob;
+    if (isBin) {
+      /* 关键网页导出：base64 → 二进制 → HTML zip 包，绝不当成文本写坏。 */
+      const raw = String(content || '');
+      const bytes = (globalThis.HSA_ZIP && typeof HSA_ZIP.fromBase64 === 'function')
+        ? HSA_ZIP.fromBase64(raw)
+        : Uint8Array.from(atob(raw), c => c.charCodeAt(0));
+      blob = new Blob([bytes], { type: 'application/zip' });
+    } else {
+      blob = new Blob([String(content || '')], { type: 'application/json;charset=utf-8' });
+    }
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = String(fileName || (isBin ? 'hsa-export.zip' : 'hsa-export.json'));
+    a.style.display = 'none';
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => { try { URL.revokeObjectURL(url); } catch (err) {} }, 2000);
+    return Promise.resolve({ ok: true });
+  }
+  async function runDiagAction(type, button, busyText) {
+    if (button.disabled) return;
+    if (type === 'captureKeyPages' && strictRunGuard('captureKeyPages')) return;
+    button.disabled = true;
+    setDiagStatus(busyText);
+    try {
+      const r = await send(type);
+      if (!r || !r.ok) throw new Error((r && (r.message || r.reason)) || 'no response');
+      if (type === 'exportRunLog' && !r.count) {
+        setDiagStatus(t('diag.empty'), true);
+        return;
+      }
+      logUserAction(type, (r.fileName || '') + ' · ' + (r.count || 0) + ' 项');
+      const isBin = r.encoding === 'base64' || r.binary === true;
+      const payload = isBin ? (r.base64 || r.content) : r.content;
+      await exportDiagFile(r.fileName, payload, isBin ? 'base64' : '');
+      setDiagStatus(t(type === 'exportRunLog' ? 'diag.exportOk' : 'diag.captureOk',
+        { count: r.count || 0 }));
+    } catch (err) {
+      setDiagStatus(t('diag.fail', { msg: (err && err.message) || String(err) }), true);
+    } finally {
+      button.disabled = false;
+    }
+  }
+  $('btn-export-runlog').addEventListener('click', () =>
+    runDiagAction('exportRunLog', $('btn-export-runlog'), t('diag.exporting')));
+  $('btn-capture-keypages').addEventListener('click', () =>
+    runDiagAction('captureKeyPages', $('btn-capture-keypages'), t('diag.capturing')));
+
   $('set-auto').addEventListener('change', e => saveAutoTasks({ enabled: e.target.checked }));
   onSegment('set-auto-count-chips', v => saveAutoTasks({ count: v }));
   $('set-auto-count').addEventListener('change', e => {
@@ -1439,6 +1579,8 @@ document.addEventListener('DOMContentLoaded', () => {
    * ---------------------------------------------------------------- */
   let calMode = 'day';
   let calCursor = new Date();
+  let lastCalHist = {};
+  let calNavTimer = null;
   let calRenderId = 0;
   const pad2 = n => String(n).padStart(2, '0');
   const dkey = d => d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate());
@@ -1519,6 +1661,7 @@ document.addEventListener('DOMContentLoaded', () => {
     try { s = await chrome.storage.local.get(['pointsHistory', 'pointsSummary']); } catch {}
     if (renderId !== calRenderId) return;
     const hist = Object.assign({}, (s && s.pointsHistory) || {});
+    lastCalHist = Object.assign({}, hist);
     const ps = (s && s.pointsSummary) || {};
     const now = new Date();
     const todayK = dkey(now);
@@ -1629,28 +1772,43 @@ document.addEventListener('DOMContentLoaded', () => {
       }) + (earningDays.length ? '' : ' · ' + t('calendar.empty'));
     }
     setSegment('cal-mode', calMode);
-    // Do not imply available history outside the recorded range. The arrows
-    // stay operable for navigating gaps, but both become grey on empty pages.
-    const hasPointsIn = step => {
-      const base = calMode === 'month'
-        ? new Date(y + step, 0, 1) : new Date(y, m + step, 1);
-      const prefix = calMode === 'month'
-        ? String(base.getFullYear()) : base.getFullYear() + '-' + pad2(base.getMonth() + 1);
-      return Object.keys(hist).some(k => k.startsWith(prefix)
-        && k > '0000-00-00' && k <= todayK && histValue(hist, k) > 0);
-    };
+    /* 禁止跳转到完全没有积分记录的周期：按钮禁用 + moveCalendar 二次校验。 */
+    const hasPointsIn = step =>
+      HSA_CORE.calendarNavAllowed(hist, calMode, y, m, step, todayK);
     for (const [id, step] of [['cal-prev', -1], ['cal-next', 1]]) {
       const btn = $(id);
       if (!btn) continue;
-      const empty = vals.length === 0 || !hasPointsIn(step);
+      const empty = !hasPointsIn(step);
+      btn.disabled = empty;
       btn.classList.toggle('cal-nav-empty', empty);
       btn.setAttribute('data-empty', String(empty));
       btn.setAttribute('aria-description', empty ? t('calendar.navEmpty') : '');
     }
   }
 
+  /* 每次打开设置：积分日历自动复位到当天 / 日视图（两版一致）。 */
+  function resetCalendar() {
+    const r = HSA_CORE.calendarReset();
+    calCursor = r.cursor;
+    calMode = r.mode;
+    renderPointsCalendar();
+  }
+  function calNavNotice() {
+    const el = $('cal-nav-msg');
+    if (!el) return;
+    el.textContent = t('calendar.navBlocked');
+    el.hidden = false;
+    clearTimeout(calNavTimer);
+    calNavTimer = setTimeout(() => { el.hidden = true; }, 2600);
+  }
   function moveCalendar(step) {
     const y = calCursor.getFullYear(), m = calCursor.getMonth();
+    /* 禁止跳转到完全没有积分记录的日期 / 周期（共享纯逻辑，两端口径一致）。 */
+    if (!HSA_CORE.calendarNavAllowed(lastCalHist, calMode, y, m, step, dkey(new Date()))) {
+      calNavNotice();
+      logUserAction('calendar-nav-blocked', calMode + ' step=' + step);
+      return;
+    }
     calCursor = calMode === 'month'
       ? new Date(y + step, m, 1)
       : new Date(y, m + step, 1);
@@ -1667,27 +1825,20 @@ document.addEventListener('DOMContentLoaded', () => {
     setTimeout(() => { if (el.textContent === text) el.hidden = true; }, 4000);
   }
   async function loadDesktopPrefs() {
-    const auto = $('set-auto-launch'), silent = $('set-silent-run');
-    if (!auto || !silent) return;
+    /* v2.6：「静默完成任务」与「侧栏在独立窗口显示」均已移除，
+       桌面专有设置只剩「开机自动启动」，侧栏固定内嵌在主窗口右侧。 */
+    const auto = $('set-auto-launch');
+    if (!auto) return;
     const api = (typeof chrome !== 'undefined' && chrome.desktopApp) || null;
     if (!api || typeof api.setAutoLaunch !== 'function') return;
     let on = false;
     try { on = !!(await api.getAutoLaunch()); } catch {}
     auto.checked = on;
-    try {
-      const s = await chrome.storage.local.get(['silentRun']);
-      silent.checked = !!s.silentRun;
-    } catch {}
     auto.addEventListener('change', async e => {
       const v = !!e.target.checked;
       try { await api.setAutoLaunch(v); } catch {}
       chrome.storage.local.set({ launchAtLogin: v });
       setDesktopMsg(t(v ? 'desktop.autoLaunchOn' : 'desktop.autoLaunchOff'));
-    });
-    silent.addEventListener('change', e => {
-      const v = !!e.target.checked;
-      chrome.storage.local.set({ silentRun: v });
-      setDesktopMsg(t(v ? 'desktop.silentOn' : 'desktop.silentOff'));
     });
   }
 
@@ -1698,62 +1849,33 @@ document.addEventListener('DOMContentLoaded', () => {
    *    黑色系统提示框，改由挂在 body 上的 fixed 浮层显示（不受滚动裁剪）。
    *  · 日历格子动态写 data-tip，同一个委托即可覆盖。
    * ---------------------------------------------------------------- */
-  function initHoverTips() {
-    if ($('hover-tip')) return;
-    const tip = document.createElement('div');
-    tip.id = 'hover-tip';
-    tip.className = 'hover-tip';
-    tip.setAttribute('role', 'tooltip');
-    tip.hidden = true;
-    document.body.appendChild(tip);
-    const sync = el => {
-      const v = el.getAttribute('title') || '';
-      if (!v) return;
-      el.dataset.tip = v;
-      el.removeAttribute('title');
-      if (!el.hasAttribute('data-i18n-aria')) {
-        /* applyI18n 先更新可见文本、再更新 title，观察者回调里已是新语言 */
-        const label = (el.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 40);
-        if (label) el.setAttribute('aria-label', label + ' — ' + v);
+  /* 与插件版完全一致的共享悬浮提示：挂在 <html> 末尾、z-index 最高，始终在最上层。 */
+  if (globalThis.HSA_HOVER_TIP) globalThis.HSA_HOVER_TIP.install(document);
+
+  /* v2.5 · 下拉刷新页面：两端共用共享手势模块（触摸 / 鼠标拖拽 / 顶部滚轮）。
+     运行期由严格模式守卫拦截；设置面板打开时不接管手势；刷新复用 refreshTasks。 */
+  if (globalThis.HSA_PULL_REFRESH) {
+    globalThis.HSA_PULL_REFRESH.install({
+      scroller: () => $('scroll-root') || document.scrollingElement,
+      wrap: () => $('main') || $('scroll-root') || document.scrollingElement,
+      indicator: $('pull-refresh'),
+      enabled: () => !body.classList.contains('settings-open'),
+      blocked: () => strictRunGuard('refreshTasks'),
+      labels: () => ({
+        idle: t('pull.idle'), pull: t('pull.pull'), armed: t('pull.armed'),
+        refreshing: t('pull.refreshing'), done: t('pull.done'),
+        error: t('pull.error'), blocked: t('pull.blocked')
+      }),
+      onRefresh: async () => {
+        await send('refreshTasks');
+        refresh();
+        logUserAction('pull-refresh', '下拉刷新页面（手势触发）');
+      },
+      onLog: (phase, detail) => {
+        if (phase === 'trigger') logUserAction('pull-refresh-trigger', detail);
       }
-    };
-    document.querySelectorAll('[data-tip-role="hint"]').forEach(sync);
-    const mo = new MutationObserver(list => {
-      for (const x of list) {
-        const el = x.target;
-        if (el.nodeType === 1 && el.matches && el.matches('[data-tip-role="hint"]')) sync(el);
-      }
     });
-    mo.observe(document.body, { subtree: true, attributes: true, attributeFilter: ['title'] });
-    const place = host => {
-      const r = host.getBoundingClientRect();
-      const w = tip.offsetWidth, h = tip.offsetHeight;
-      const left = Math.min(Math.max(8, r.left + r.width / 2 - w / 2),
-                            Math.max(8, window.innerWidth - w - 8));
-      let top = r.top - h - 8;
-      if (top < 8) top = Math.min(window.innerHeight - h - 8, r.bottom + 8);
-      tip.style.left = left + 'px';
-      tip.style.top = Math.max(8, top) + 'px';
-    };
-    const closestTip = node => node && node.closest ? node.closest('[data-tip]') : null;
-    document.addEventListener('mouseover', e => {
-      const host = closestTip(e.target);
-      if (!host || !host.dataset.tip) return;
-      tip.textContent = host.dataset.tip;
-      /* U08=D：短提示单行，长提示自动换行且全文可读。 */
-      tip.dataset.short = String(host.dataset.tip || '').length <= 40 ? '1' : '';
-      tip.hidden = false;
-      place(host);
-    });
-    document.addEventListener('mouseout', e => {
-      const host = closestTip(e.target);
-      if (!host) return;
-      if (e.relatedTarget && host.contains(e.relatedTarget)) return;
-      tip.hidden = true;
-    });
-    window.addEventListener('scroll', () => { tip.hidden = true; }, true);
   }
-  initHoverTips();
 
   /* ------------------------------------------------------------------ 启动 */
   async function loadUiLang() {

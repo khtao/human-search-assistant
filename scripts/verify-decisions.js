@@ -32,7 +32,16 @@ const P = {
   dm: 'desktop-app/main.js',
   host: 'desktop-app/host.html',
   sharedCss: 'shared/hsa-shared.css',
-  recovery: 'shared/hsa-recovery.js'
+  recovery: 'shared/hsa-recovery.js',
+  hoverTip: 'shared/hsa-hover-tip.js',
+  zipLib: 'shared/hsa-zip.js',
+  pullLib: 'shared/hsa-pull-refresh.js',
+  preload: 'desktop-app/preload.js',
+  sidebarLib: 'desktop-app/lib/sidebar-task-cards.js',
+  winBuild: 'desktop-app/scripts/build-win-safe.js',
+  linuxBuild: 'desktop-app/scripts/build-linux.sh',
+  ymlLinux: 'desktop-app/electron-builder.yml',
+  ymlWin: 'desktop-app/electron-builder.win.yml'
 };
 const F = {};
 for (const k of Object.keys(P)) F[k] = fs.readFileSync(path.join(ROOT, P[k]), 'utf8');
@@ -330,8 +339,11 @@ const CHECKS = [
     has('sharedCss', /overflow-wrap:\s*anywhere/);
     has('sharedCss', /max-height/);
     has('sharedCss', /hover-tip\[data-short="1"\]/);
-    has('ep', /dataset\.short/);
-    has('dp', /dataset\.short/);
+    has('hoverTip', /dataset\.short/);
+    has('hoverTip', /documentElement\.appendChild\(tip\)/);
+    has('hoverTip', /2147483647/, 'important');
+    has('sharedCss', /z-index: 2147483647 !important/);
+    for (const k of ['ep', 'dp']) has(k, /HSA_HOVER_TIP\.install\(document\)/);
     assert.equal(CORE.UI.hoverTipWrap, true);
   }],
   ['U09 · A 关闭定时自动运行时保留页面内解释', () => {
@@ -353,7 +365,481 @@ const CHECKS = [
     has('db', /htmlCacheMaxBytes/);
     has('dm', /manualLinks\.length\s*<\s*20|triggerMethods\.length\s*<\s*64/);
     assert.ok(CORE.DEFAULTS.htmlCacheMaxEntries > 0 && CORE.DEFAULTS.htmlCacheMaxBytes > 0);
+  }],
+
+  ['严格模式 · 共享配置：≥5 字、当日热搜、禁用清单与安全护栏', () => {
+    assert.equal(CORE.STRICT_RUN.minKeywordChars, 5);
+    assert.equal(CORE.STRICT_RUN.requireSameDayHot, true);
+    assert.equal(CORE.STRICT_RUN.allowFallbackWords, false);
+    assert.equal(CORE.STRICT_RUN.allowRepeatWords, false);
+    assert.ok(CORE.STRICT_RUN.disabledFeatures.length >= 15);
+    assert.ok(CORE.STRICT_RUN.keptGuardrails.includes('stop'));
+    assert.ok(CORE.STRICT_RUN.keptGuardrails.includes('page-stable-wait'));
+    assert.equal(CORE.strictBlockedMessage('stop', true), false);
+  }],
+  ['严格模式 · 两端词长校验与当日热搜选词', () => {
+    for (const k of ['eb', 'db']) {
+      has(k, /HSA_CORE\.isStrictKeyword\(/);
+      has(k, /HSA_CORE\.strictQueries\(/);
+      has(k, /at: Date\.now\(\)/);
+      has(k, /HOT_SOURCES\.slice\(\)/);
+      absent(k, /items: shuffle\(unique\)/);
+      absent(k, /s\.length >= 2/);
+    }
+    assert.equal(CORE.strictQueries(3, [{ text: '四字', at: Date.now() }], Date.now()).queries.length, 0);
+  }],
+  ['严格模式 · 两端禁用改词 / 回首页 / 拟人随机', () => {
+    for (const k of ['eb', 'db']) {
+      absent(k, /Math\.random\(\) < RELATED_RATE/);
+      absent(k, /Math\.random\(\) < GO_HOME_RATE/);
+      absent(k, /Math\.random\(\) < ENTER_RATE/);
+      absent(k, /await nap\(rand\(/);
+      absent(k, /await cdpClickPlan\(tabId, plan\)/);
+      absent(k, /for \(const step of scrollPlan/);
+      has(k, /strictClickPlan\(/);
+      has(k, /STRICT\.fixedNapMs/);
+      has(k, /STRICT\.fixedRoundIntervalMs/);
+      has(k, /STRICT_POLICY\.pageStableWaitMs/);
+      has(k, /strictNoWords/);
+    }
+  }],
+  ['严格模式 · 运行期消息 / 闹钟 / 恢复拦截', () => {
+    for (const k of ['eb', 'db']) {
+      has(k, /strictRunActive/);
+      has(k, /load\(\['running'\]\)\.then\(s => \{ strictRunActive = !!s\.running; \}\)/);
+      has(k, /HSA_CORE\.strictBlockedMessage\(msg\.type/);
+      has(k, /HSA_CORE\.strictAlarmAllowed\(/);
+    }
+    assert.equal(CORE.strictRuntimeFeatureAllowed('watchdog-resume', true), false);
+    assert.equal(CORE.strictAlarmAllowed('watchdog', true), false);
+    assert.equal(CORE.strictAlarmAllowed('cooldownEnd', true), true);
+  }],
+  ['严格模式 · 两端 popup 运行期禁止改设置 / 定时 / 刷新', () => {
+    for (const k of ['ep', 'dp']) {
+      has(k, /uiRunning/);
+      has(k, /function strictRunGuard\(/);
+      has(k, /strictRunGuard\('saveSettings'\)/);
+      has(k, /strictRunGuard\('saveAutoTasks'\)/);
+      has(k, /strictRunGuard\('refreshTasks'\)/);
+      has(k, /HSA_CORE\.TEXT\.strictRunBlocked/);
+    }
+  }],
+  ['严格模式 · 保留停止 / 超时 / 失败上限等护栏', () => {
+    for (const k of ['eb', 'db']) {
+      has(k, /msg\.type === 'stop'/);
+      has(k, /MAX_FAILURES/);
+      has(k, /PAGE_TIMEOUT/);
+    }
+    assert.deepEqual(CORE.STRICT_RUN.keptGuardrails,
+      ['stop', 'timeout', 'max-failures', 'page-stable-wait', 'result-counting']);
+  }],
+
+  ['诊断 · 共享规则：日志上限 / 字段裁剪 / 实时抓取策略', () => {
+    assert.equal(CORE.RUNLOG.maxEntries, 600);
+    assert.equal(CORE.VERSION, '2.3.0');
+    const l = CORE.runLogAppend([], { event: 'search', zh: 'x', html: '<html/>' }, Date.now());
+    assert.equal(Object.prototype.hasOwnProperty.call(l[0], 'html'), false);
+    assert.equal(CORE.runLogExport([], { now: 1 }).includes('<html/>'), false);
+    const p = CORE.keyPagePolicy();
+    assert.equal(p.fresh, true);
+    assert.equal(p.cacheAllowed, false);
+    assert.equal(p.snapshotAllowed, false);
+    assert.equal(p.panelAllowed, false);
+    assert.equal(p.dataViewAllowed, false);
+    assert.deepEqual(p.pages.map(x => x.path), ['/dashboard', '/earn', '/rewards/panelflyout']);
+    assert.equal(p.format, 'zip/html');
+    assert.match(CORE.runLogFileName(Date.UTC(2026, 10, 11, 4, 0, 0)), /^hsa-runlog-\d{8}-\d{6}\.json$/);
+    assert.match(CORE.keyPageFileName(Date.UTC(2026, 10, 11, 4, 0, 0)), /^hsa-keypages-\d{8}-\d{6}\.zip$/);
+    const log = CORE.runLogAppend([], { event: 'user-action', actor: 'user', zh: 'x' }, 1)[0];
+    assert.ok(log.ts && log.iso, '每条日志自动带系统时间');
+    assert.equal(log.actor, 'user');
+    assert.equal(CORE.runLogExport([], { now: 1 }).includes('hsa-runlog/2'), true);
+  }],
+  ['诊断 · 两端后台：日常只写运行日志，搜索 / 错误 / 抓取均有事件', () => {
+    for (const k of ['eb', 'db']) {
+      has(k, /const HSA_PLATFORM =/);
+      has(k, /runLogEnabled = v !== false/);
+      has(k, /function hsaRunLog\(/);
+      has(k, /HSA_CORE\.runLogAppend/);
+      has(k, /hsaRunLog\('search'/);
+      has(k, /hsaRunLog\('error'/);
+      has(k, /hsaRunLog\('key-pages'/);
+      has(k, /msg\.type === 'exportRunLog'/);
+      has(k, /msg\.type === 'captureKeyPages'/);
+      has(k, /HSA_CORE\.runLogExport\(/);
+      has(k, /HSA_CORE\.keyPageZipFiles\(/);
+      has(k, /HSA_ZIP\.buildZip|globalThis\.HSA_ZIP/);
+      has(k, /msg\.type === 'logUserAction'/);
+    }
+  }],
+  ['诊断 · 关键网页实时抓取：直连 no-store，不复用缓存 / 快照 / 面板', () => {
+    for (const k of ['eb', 'db']) {
+      has(k, /async function hsaCaptureKeyPages\(/);
+      has(k, /credentials: 'include', cache: 'no-store', signal: ctrl\.signal/);
+      has(k, /source: p\.source/);
+      has(k, /HSA_CORE\.keyPagePolicy\(\)/);
+      const start = F[k].indexOf('async function hsaCaptureKeyPages');
+      const body = F[k].slice(start, start + 1800);
+      assert.ok(!/hsaHtmlCache|desktopFetchFromSnapshot|desktopFetchFromPanel|desktopFetchFromDataView|readVisibleRewardsSnapshot/.test(body),
+        '抓取函数体不应复用缓存 / 快照 / 面板 @ ' + P[k]);
+    }
+  }],
+  ['诊断 · 两端设置页：开关、两个按钮、双语文案与导出接线', () => {
+    for (const k of ['eh', 'dh']) {
+      has(k, /id="diag-group"/);
+      has(k, /id="set-run-log"/);
+      has(k, /id="btn-export-runlog"/);
+      has(k, /id="btn-capture-keypages"/);
+      has(k, /id="diag-status"/);
+      has(k, /data-i18n="diag\.note"/);
+      has(k, /data-i18n="diag\.capturePages"/);
+    }
+    for (const k of ['ep', 'dp']) {
+      has(k, /runLogEnabled: true/);
+      has(k, /'diag\.captureOk'/);
+      has(k, /'diag\.empty'/);
+      has(k, /function exportDiagFile/);
+      has(k, /function runDiagAction/);
+      has(k, /runDiagAction\('exportRunLog'/);
+      has(k, /runDiagAction\('captureKeyPages'/);
+      has(k, /strictRunGuard\('captureKeyPages'\)/);
+      has(k, /saveSettings\(\{ runLogEnabled: e\.target\.checked \}\)/);
+    }
+    has('sharedCss', /\.diag-actions/);
+    has('sharedCss', /\.diag-note/);
+  }],
+  ['诊断 · 桌面导出通道：系统保存对话框写盘', () => {
+    const pre = fs.readFileSync(path.join(ROOT, 'desktop-app', 'preload.js'), 'utf8');
+    assert.match(pre, /saveExport: \(fileName, content, encoding\) => invoke\('chrome:diag:export'/);
+    has('dm', /ipcMain\.handle\('chrome:diag:export'/);
+    has('dm', /dlg\.showSaveDialog/);
+    has('dm', /fs\.writeFileSync\(res\.filePath/);
+    has('dm', /typeof dlg\.showSaveDialog !== 'function'/);
+  }],
+  ['诊断 · 严格模式白名单：日志导出放行，运行期抓取网页禁用', () => {
+    assert.equal(CORE.strictBlockedMessage('exportRunLog', true), false);
+    assert.equal(CORE.strictBlockedMessage('captureKeyPages', true), true);
+    assert.ok(CORE.STRICT_RUN.allowedMessages.includes('exportRunLog'));
+    assert.ok(CORE.STRICT_RUN.blockedMessages.includes('captureKeyPages'));
+    assert.ok(CORE.STRICT_RUN.disabledFeatures.includes('key-page-capture'));
+  }],
+
+  ['v2.3 · 悬浮框统一：两端同一份共享实现且始终最上层', () => {
+    for (const k of ['eh', 'dh']) {
+      has(k, /hsa-hover-tip\.js/);
+      has(k, /hsa-zip\.js/);
+      before(k, 'hsa-hover-tip.js', 'popup.js');
+    }
+    absent('ep', /function initHoverTips/);
+    absent('dp', /function initHoverTips/);
+    has('hoverTip', /z-index', '2147483647', 'important'/);
+    has('hoverTip', /position', 'fixed', 'important'/);
+    assert.equal(CORE.VERSION, '2.3.0');
+  }],
+  ['v2.3 · 日历禁止跳转到完全没有积分记录的日期', () => {
+    for (const k of ['ep', 'dp']) {
+      has(k, /HSA_CORE\.calendarNavAllowed\(/);
+      has(k, /calendar-nav-blocked/);
+      has(k, /id="cal-nav-msg"|cal-nav-msg/);
+      has(k, /'calendar\.navBlocked'/);
+    }
+    for (const k of ['eh', 'dh']) has(k, /id="cal-nav-msg"/);
+    const hist = { '2026-11-01': { today: 12 }, '2026-10-03': 15 };
+    assert.equal(CORE.calendarNavAllowed(hist, 'day', 2026, 10, -1, '2026-11-11'), true);
+    assert.equal(CORE.calendarNavAllowed(hist, 'day', 2026, 10, 1, '2026-11-11'), false);
+    assert.equal(CORE.calendarNavAllowed(hist, 'day', 2026, 10, -2, '2026-11-11'), false);
+    assert.equal(CORE.calendarNavAllowed(hist, 'month', 2025, 0, 1, '2026-11-11'), true);
+  }],
+  ['v2.3 · 每次打开设置积分日历自动复位', () => {
+    for (const k of ['ep', 'dp']) {
+      has(k, /function resetCalendar\(\)/);
+      has(k, /HSA_CORE\.calendarReset\(\)/);
+      has(k, /function openSettings\(\)[\s\S]{0,220}resetCalendar\(\)/);
+    }
+    const r = CORE.calendarReset();
+    assert.equal(r.mode, 'day');
+    assert.ok(r.cursor instanceof Date);
+  }],
+  ['v2.3 · 关键网页导出为 HTML 的 zip 包（含 Bing 侧边栏）', () => {
+    assert.equal(CORE.keyPagePolicy().pages.length, 3);
+    assert.equal(CORE.keyPagePolicy().format, 'zip/html');
+    const zipSrc = fs.readFileSync(path.join(ROOT, 'shared', 'hsa-zip.js'), 'utf8');
+    assert.match(zipSrc, /0x04034B50/);
+    assert.match(zipSrc, /0x06054B50/);
+    for (const k of ['eb', 'db']) {
+      has(k, /keyPageZipFiles\(/);
+      has(k, /buildZip\(built\.files, now\)/);
+      has(k, /encoding: 'base64'/);
+      has(k, /page\.url \|\| \(p\.origin \+ page\.path\)/);
+    }
+    for (const k of ['ep', 'dp']) {
+      has(k, /r\.encoding === 'base64'/);
+      has(k, /HSA_ZIP\.fromBase64/);
+      has(k, /application\/zip/);
+    }
+    has('dm', /Buffer\.from\(String\(content \|\| ''\), 'base64'\)/);
+    has('preload', /saveExport: \(fileName, content, encoding\)/);
+    assert.match(CORE.keyPageFileName(1), /\.zip$/);
+  }],
+  ['v2.3 · 日志含系统时间、用户操作、运行过程、结果与错误', () => {
+    const now = Date.UTC(2026, 10, 10, 17, 52, 7, 321);
+    const l = CORE.runLogAppend([], {
+      event: 'user-action', actor: 'user', category: 'user-action',
+      action: 'start', detail: 'count=30', result: 'ok', error: '', zh: '用户开始'
+    }, now)[0];
+    assert.ok(l.ts && l.iso, '缺系统时间');
+    assert.equal(l.actor, 'user');
+    assert.equal(l.category, 'user-action');
+    assert.equal(l.detail, 'count=30');
+    assert.equal(l.result, 'ok');
+    assert.equal(Object.prototype.hasOwnProperty.call(l, 'html'), false);
+    const out = JSON.parse(CORE.runLogExport([l], { now: now }));
+    assert.equal(out.schema, 'hsa-runlog/2');
+    assert.ok(out.fields.some(f => /系统时间/.test(f)));
+    assert.ok(out.fields.some(f => /用户操作/.test(f)));
+    assert.ok(out.fields.some(f => /错误信息/.test(f)));
+    for (const k of ['eb', 'db']) {
+      has(k, /msg\.type === 'logUserAction'/);
+      has(k, /hsaRunLog\('run-state'|hsaRunLog\('activity'/);
+      has(k, /category: 'error'|category: 'result'/);
+    }
+    for (const k of ['ep', 'dp']) {
+      has(k, /function logUserAction\(/);
+      has(k, /logUserAction\(type, summarize\(extra\)\)/);
+    }
+    assert.equal(CORE.strictBlockedMessage('logUserAction', true), false);
+  }],
+  ['v2.3 · Windows 与 Ubuntu 编译结果同目录并直接覆盖', () => {
+    for (const k of ['ymlLinux', 'ymlWin']) {
+      has(k, /output: \.\.\/release/);
+      absent(k, /\$\{version\}/);
+      assert.match(F[k], /artifactName: HumanSearchAssistant-(Ubuntu|Windows)[^\n]*\.\$\{ext\}/);
+    }
+    has('winBuild', /const outputRel = '\.\.\/release'/);
+    absent('winBuild', /win-\$\{stamp\}-\$\{process\.pid\}/);
+    absent('winBuild', /windows-builds/);
+    has('linuxBuild', /release/);
+    for (const k of ['ymlLinux', 'ymlWin']) has(k, /shared\/\*\*\/\*/);
+  }],
+  ['v2.3 · 任务卡严格按任务列表顺序依次执行', () => {
+    has('dm', /HSA_CORE\.taskListOrder\(/);
+    has('dm', /HSA_CORE\.taskListNames\(/);
+    has('sidebarLib', /domOrder/);
+    const cards = [{ name: 'C', idx: 9 }, { name: 'A', idx: 1 }, { name: 'B', idx: 5 }];
+    const ordered = CORE.taskListOrder(cards);
+    assert.deepEqual(ordered.map(c => c.name), ['A', 'B', 'C']);
+    const stable = CORE.taskListOrder([{ name: 'X', domOrder: 2 }, { name: 'Y', domOrder: 1 }]);
+    assert.deepEqual(stable.map(c => c.name), ['Y', 'X']);
+    assert.equal(CORE.taskListNames(cards).join(' → '), 'A → B → C');
+    has('db', /HSA_CORE\.taskListNames|taskListNames/);
+  }],
+  ['v2.4 · 桌面积分卡悬浮框对齐插件版并始终最上层', () => {
+    has('dc', /\.tip \{[\s\S]{0,220}z-index: 2147483647/);
+    has('dc', /\.point-card:hover,[\s\S]{0,260}z-index: 2147483647/);
+    has('ec', /\.tip \{[\s\S]{0,220}z-index: 2147483647/);
+    has('hoverTip', /documentElement\.appendChild\(tip\)/);
+    has('sharedCss', /z-index: 2147483647 !important/);
+    for (const k of ['dp', 'ep']) has(k, /HSA_HOVER_TIP\.install\(document\)/);
+    /* 只对积分卡 .tip 规则块断言，避免误伤页面其它元素的 z-index: 30 */
+    const tipAt = F.dc.indexOf('.tip {');
+    const tipBlock = F.dc.slice(tipAt, tipAt + 400);
+    assert.match(tipBlock, /z-index: 2147483647/);
+    assert.doesNotMatch(tipBlock, /z-index: 30\b/);
+  }],
+  ['v2.4 · 桌面版移除「静默完成任务」开关', () => {
+    for (const k of ['dh', 'dp']) {
+      absent(k, /set-silent-run/);
+      absent(k, /desktop\.silent/);
+    }
+    absent('dp', /silentRun/);
+    has('dm', /function desktopSilentRun\(\)[\s\S]{0,220}return false/);
+    /* v2.6：原位置顶替的「侧栏在独立窗口显示」开关也已移除，
+       桌面专有设置只剩「开机自动启动」。 */
+    for (const k of ['dh', 'dp']) {
+      absent(k, /set-sidebar-window/);
+      absent(k, /desktop\.sidebarWindow/);
+      absent(k, /sidebarWindow/);
+    }
+    has('dh', /id="set-auto-launch"/);
+  }],
+  ['v2.4 · 主窗口与设置共用唯一滚动条，侧栏独立滚动', () => {
+    has('dh', /<div id="scroll-root">/);
+    has('dh', /<\/div><!-- \/#scroll-root -->/);
+    const html = F.dh;
+    assert.ok(html.indexOf('id="scroll-root"') < html.indexOf('class="app" id="main"'),
+      '滚动容器必须先于主界面');
+    assert.ok(html.indexOf('id="settings"') < html.indexOf('/#scroll-root'),
+      '设置必须与主界面在同一个滚动容器内');
+    has('dc', /#scroll-root \{[\s\S]{0,220}overflow-y: auto/);
+    has('dc', /overscroll-behavior: contain/);
+    has('dc', /body\.settings-open \.app \{ display: none; \}/);
+    /* 设置不再 fixed 覆盖、不再自带滚动条 */
+    absent('dc', /\.settings \{[\s\S]{0,260}position: fixed/);
+    absent('dc', /\.settings-body \{[\s\S]{0,220}overflow-y: auto/);
+    has('dc', /\.settings\.open \{\s*display: flex/);
+    for (const tag of ['function openSettings()', 'function closeSettings()']) {
+      const at = F.dp.indexOf(tag);
+      assert.ok(at >= 0, '缺少 ' + tag);
+      assert.match(F.dp.slice(at, at + 420), /scroll-root[\s\S]{0,120}scrollTop = 0/);
+    }
+  }],
+  ['v2.6 · 独立窗口设置与功能已移除，侧栏固定内嵌', () => {
+    /* 设置页 / 字典 / preload / 主进程 IPC / 独立窗口 helper 全部清空 */
+    for (const k of ['dh', 'dp', 'preload', 'dm']) {
+      for (const pat of [/'chrome:app:sidebarWindow'/, /setSidebarWindow/,
+        /getSidebarWindow/, /sidebarWindowEnabled/, /sidebarWin\b/,
+        /openDetachedSidebar/, /closeDetachedSidebar/, /sidebarDetachedOpen/,
+        /set-sidebar-window/, /sidebarWindow: v/]) {
+        absent(k, pat);
+      }
+    }
+    absent('dh', /desktop\.sidebarWindow/);
+    absent('dp', /desktop\.sidebarWindow/);
+    /* 侧栏仍内嵌且自带独立滚动条，主界面与设置共用唯一滚动条 */
+    has('dm', /function showSidePanel\(url, reason, active\)[\s\S]{0,1400}popupWin\.setSize\(COLLAPSED_WIDTH \+ PANEL_DEFAULT_RIGHT/);
+    has('dm', /popupWin\.focus\(\);   \/\/ 仅显式用户动作激活窗口/);
+    has('dm', /sideView\.setBounds\(\{ x: PANEL_LEFT, y: 0, width: Math\.max\(0, cw - PANEL_LEFT\), height: ch \}\)/);
+    has('dc', /#scroll-root \{[\s\S]{0,220}overflow-y: auto/);
+    has('dc', /overscroll-behavior: contain/);
+  }],
+
+  ['v2.5 · 两端下拉刷新页面：共享手势模块、指示器与刷新链路', () => {
+    const PTR = require(path.join(ROOT, 'shared', 'hsa-pull-refresh.js'));
+    assert.equal(PTR.VERSION, '1.0.0');
+    has('pullLib', /function decide\(/);
+    has('pullLib', /function wheelAccum\(/);
+    has('pullLib', /function install\(/);
+    has('pullLib', /touchstart|touchmove|mousedown|wheel/);
+    /* 纯逻辑：顶部下拉才生效、带阻尼与阈值；刷新中 / 拦截时不响应 */
+    const d = PTR.decide({ startY: 100, currentY: 240, scrollTop: 0 });
+    assert.equal(d.active, true);
+    assert.equal(d.pull, 70);
+    assert.equal(d.armed, true);
+    assert.equal(PTR.decide({ startY: 100, currentY: 240, scrollTop: 8 }).active, false);
+    assert.equal(PTR.decide({ startY: 100, currentY: 240, scrollTop: 0, refreshing: true }).active, false);
+    assert.equal(PTR.wheelAccum({ deltaY: -120, accumulated: 0, scrollTop: 0 }), 36);
+    assert.equal(PTR.wheelAccum({ deltaY: -120, accumulated: 36, scrollTop: 5 }), 0);
+    for (const k of ['eh', 'dh']) {
+      has(k, /id="pull-refresh"/);
+      has(k, /data-pull-text/);
+      has(k, /hsa-pull-refresh\.js/);
+      before(k, 'hsa-pull-refresh.js', 'popup.js');
+    }
+    for (const k of ['ep', 'dp']) {
+      has(k, /HSA_PULL_REFRESH\.install\(/);
+      has(k, /scroller: \(\) => \$\('scroll-root'\) \|\| document\.scrollingElement/);
+      has(k, /await send\('refreshTasks'\)/);
+      has(k, /logUserAction\('pull-refresh'/);
+      for (const key of ['pull.idle', 'pull.pull', 'pull.armed',
+        'pull.refreshing', 'pull.done', 'pull.error', 'pull.blocked']) {
+        has(k, new RegExp("'" + key + "'"));
+      }
+    }
+    has('sharedCss', /\.pull-refresh \{/);
+    has('sharedCss', /pull-refresh\[data-state="refreshing"\]/);
+    assert.ok(require(path.join(ROOT, 'scripts', 'sync-shared.js')) &&
+      fs.readFileSync(path.join(ROOT, 'scripts', 'sync-shared.js'), 'utf8').includes('hsa-pull-refresh.js'));
+  }],
+  ['v2.5 · 下拉刷新与严格运行模式衔接：运行期拦截、空闲才刷新', () => {
+    /* 下拉复用 refreshTasks：运行期由严格白名单拦截；日志写入仍放行。 */
+    assert.equal(CORE.strictBlockedMessage('refreshTasks', true), true);
+    assert.equal(CORE.strictBlockedMessage('logUserAction', true), false);
+    for (const k of ['ep', 'dp']) {
+      has(k, /blocked: \(\) => strictRunGuard\('refreshTasks'\)/);
+      has(k, /enabled: \(\) => !body\.classList\.contains\('settings-open'\)/);
+    }
+  }],
+  ['v2.5 · 所有悬浮框统一最上层（截图黑色提示 / 圆环卡 / 登录提示）', () => {
+    const TOP = /z-index:\s*2147483647/;
+    for (const k of ['ec', 'dc']) {
+      for (const sel of ['.tip {', '.ring-hover-card {']) {
+        const at = F[k].indexOf(sel);
+        assert.ok(at >= 0, k + ' 缺少 ' + sel);
+        assert.match(F[k].slice(at, at + 1200), TOP, k + ' ' + sel + ' 不在最上层');
+      }
+    }
+    const loginAt = F.dc.indexOf('.login-badge-tip {');
+    assert.ok(loginAt >= 0);
+    assert.match(F.dc.slice(loginAt, loginAt + 320), TOP);
+    has('hoverTip', /'z-index', '2147483647', 'important'/);
+    has('sharedCss', /z-index: 2147483647 !important/);
+  }],
+  ['v2.5 · 下拉指示器不引入第二根滚动条，桌面单滚动条结构保持', () => {
+    /* 指示器 fixed 且不接收指针事件，放在共享滚动容器之外，不参与滚动链。 */
+    has('sharedCss', /\.pull-refresh \{[\s\S]{0,400}position: fixed/);
+    has('sharedCss', /pointer-events: none/);
+    for (const k of ['eh', 'dh']) {
+      const html = F[k];
+      assert.ok(html.indexOf('id="pull-refresh"') > 0, k + ' 缺少指示器');
+      assert.ok(html.indexOf('</body>') > html.indexOf('id="pull-refresh"'),
+        k + ' 指示器应放在 body 末尾，不夹在滚动容器与主界面之间');
+    }
+    has('dh', /<div id="scroll-root">/);
+    has('dc', /#scroll-root \{[\s\S]{0,220}overflow-y: auto/);
+    has('dc', /overscroll-behavior: contain/);
+    has('dc', /body \{[\s\S]{0,400}overflow: hidden/);
+  }],
+  ['v2.6 · 下拉刷新为 minirefresh applet 主题风格（仿微信小程序三点）', () => {
+    /* 50px 透明下拉区、无边框无文字；三点 ball-beat 与交错动画 */
+    has('sharedCss', /v2\.6 · 下拉刷新 · minirefresh applet 主题风格/);
+    has('sharedCss', /\.pull-refresh \{[\s\S]{0,360}height: 50px/);
+    has('sharedCss', /background: transparent; border: 0/);
+    has('sharedCss', /min\(var\(--pull, 0px\), 50px\)/);
+    has('sharedCss', /\.ball-beat \.dot \{[\s\S]{0,260}width: 8px; height: 8px/);
+    has('sharedCss', /opacity: calc\(\.3 \+ var\(--pull-progress, 0\) \* \.55\)/);
+    has('sharedCss', /@keyframes hsa-ball-beat/);
+    has('sharedCss', /animation: hsa-ball-beat \.9s infinite ease-in-out both/);
+    has('sharedCss', /dot:nth-child\(2\) \{ animation-delay: \.16s/);
+    has('sharedCss', /dot:nth-child\(3\) \{ animation-delay: \.32s/);
+    has('sharedCss', /\.loading-applet \.ball-beat \.dot/);
+    has('sharedCss', /\.pull-text \{[\s\S]{0,300}opacity: 0/);
+    has('sharedCss', /\[data-state="error"\] \.pull-text/);
+    has('sharedCss', /prefers-reduced-motion: reduce/);
+    /* 视觉隐藏文字，仅拦截 / 失败时露出；无成功动画 */
+    absent('sharedCss', /data-state="done"[^\n]*\{ opacity: 1/);
+    /* 两端 DOM：三个点 + 文案节点，移除旧箭头 */
+    for (const k of ['eh', 'dh']) {
+      has(k, /class="ball-beat" aria-hidden="true"><i class="dot"><\/i><i class="dot"><\/i><i class="dot"><\/i>/);
+      absent(k, /pull-arrow/);
+      has(k, /class="pull-text" data-pull-text/);
+    }
+    /* 文案对齐 default 主题语义，新增 error 键 */
+    for (const k of ['ep', 'dp']) {
+      for (const lit of ["'pull.armed': '释放刷新'", "'pull.refreshing': '加载中...'",
+        "'pull.done': '刷新成功'", "'pull.error': '刷新失败'",
+        "'pull.armed': 'Release to refresh'", "'pull.done': 'Refreshed'",
+        "'pull.error': 'Refresh failed'"]) {
+        has(k, new RegExp(lit.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+      }
+      has(k, /error: t\('pull\.error'\)/);
+      has(k, /wrap: \(\) => \$\('main'\) \|\| \$\('scroll-root'\) \|\| document\.scrollingElement/);
+    }
+    /* 共享手势模块：内容跟随 translate、进度变量、loading 类、error 状态 */
+    has('pullLib', /isWrapCssTranslate=true/);
+    has('pullLib', /var getWrap =/);
+    has('pullLib', /wrap\.style\.transform = pull > 0 \? 'translateY\(' \+ pull \+ 'px\)'/);
+    has('pullLib', /--pull-progress/);
+    has('pullLib', /classList\.toggle\('loading-applet', next === 'refreshing'\)/);
+    has('pullLib', /error: l\.error/);
+    has('pullLib', /render\(r && r\.ok === false \? 'error' : 'done'/);
+    /* 纯逻辑回归：成功直接回弹收起、失败保留提示 */
+    const PTR = require(path.join(ROOT, 'shared', 'hsa-pull-refresh.js'));
+    assert.equal(PTR.decide({ startY: 0, currentY: 140, scrollTop: 0 }).armed, true);
+    assert.equal(PTR.DEFAULTS.maxPull, 96);
+  }],
+  ['v2.6 · 下拉刷新仍零第三方依赖且两端共享唯一实现', () => {
+    /* 不引入 minirefresh 库文件，只复刻主题视觉，保持共享清单 7 个文件 */
+    const sync = fs.readFileSync(path.join(ROOT, 'scripts', 'sync-shared.js'), 'utf8');
+    assert.match(sync, /hsa-pull-refresh\.js/);
+    assert.doesNotMatch(sync, /minirefresh/);
+    for (const k of ['eh', 'dh']) {
+      assert.doesNotMatch(F[k], /minirefresh[^"]*\.js/);
+      has(k, /hsa-pull-refresh\.js/);
+    }
+    const files = sync.match(/const FILES = \[([\s\S]*?)\];/)[1];
+    assert.equal((files.match(/\.js'|\.css'|\.json'/g) || []).length, 7);
   }]
+
 ];
 
 function runChecks() {

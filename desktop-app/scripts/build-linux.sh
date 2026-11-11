@@ -45,20 +45,23 @@ else
 fi
 
 echo "[4/4] 构建 Ubuntu / Debian x64 .deb..."
-mkdir -p "$ROOT/dist"
-rm -f "$ROOT/dist"/HumanSearchAssistant-Ubuntu-*.deb "$ROOT/dist/SHA256SUMS.txt"
+# Windows 与 Ubuntu 共用仓库根 release/ 目录；固定文件名，重复编译直接覆盖原文件。
+RELEASE=$(CDPATH= cd -- "$ROOT/.." && pwd)/release
+mkdir -p "$RELEASE"
+# 只清理旧校验和；安装包本身由 electron-builder 按固定文件名直接覆盖。
+rm -f "$RELEASE/SHA256SUMS.txt"
 npm run dist:deb
 
-DEB=$(find "$ROOT/dist" -maxdepth 1 -type f -name '*.deb' -print | sort | tail -n 1)
-[ -n "$DEB" ] || fail "electron-builder 未生成 .deb 文件。"
+DEB="$RELEASE/HumanSearchAssistant-Ubuntu.deb"
+[ -f "$DEB" ] || fail "electron-builder 未生成 HumanSearchAssistant-Ubuntu.deb。"
 dpkg-deb --info "$DEB" >/dev/null || fail "生成的 .deb 未通过 dpkg-deb 校验。"
 (
-  cd "$ROOT/dist"
-  sha256sum "$(basename "$DEB")" > SHA256SUMS.txt
+  cd "$RELEASE"
+  sha256sum "HumanSearchAssistant-Ubuntu.deb" > SHA256SUMS.txt
 )
 
 echo ""
-echo "构建成功："
-ls -lh "$DEB" "$ROOT/dist/SHA256SUMS.txt"
+echo "构建成功（输出目录：$RELEASE，同名文件已覆盖）："
+ls -lh "$DEB" "$RELEASE/SHA256SUMS.txt"
 echo ""
 dpkg-deb -I "$DEB" | sed -n '1,24p'

@@ -1558,7 +1558,8 @@ a.tt-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px;
   transform: translate(-50%, -8px) scale(0.95);
   transform-origin: 50% 0;
   transition: opacity 220ms ease, transform 260ms cubic-bezier(0.34, 1.56, 0.64, 1);
-  z-index: 30;
+  /* v2.5：圆环悬停卡片也是悬浮框，始终在最上层。 */
+  z-index: 2147483647;
 }
 .ring-hover-card .rhc-title {
   display: block;

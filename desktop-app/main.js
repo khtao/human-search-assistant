@@ -265,6 +265,34 @@ ipcMain.handle('chrome:app:autoLaunch', (_e, enabled) => {
   saveState();
   return on;
 });
+/* 诊断数据导出：运行日志 / 实时关键网页，用户选路径后写盘（不落进日常日志）。 */
+ipcMain.handle('chrome:diag:export', async (_e, fileName, content, encoding) => {
+  try {
+    const dlg = E.dialog;
+    if (!dlg || typeof dlg.showSaveDialog !== 'function') {
+      return { ok: false, reason: 'unavailable', message: 'save dialog unavailable' };
+    }
+    const name = String(fileName || 'hsa-export.json').replace(/[\\/:*?"<>|]/g, '_');
+    const isZip = /\.zip$/i.test(name);
+    const res = await dlg.showSaveDialog({
+      title: '导出诊断数据',
+      defaultPath: path.join(app.getPath('downloads'), name),
+      filters: [isZip ? { name: 'ZIP', extensions: ['zip'] }
+                      : { name: 'JSON', extensions: ['json'] }]
+    });
+    if (!res || res.canceled || !res.filePath) return { ok: false, reason: 'canceled' };
+    /* 文本日志写 utf8；HTML zip 包由 base64 还原为二进制后写盘。 */
+    if (String(encoding || '') === 'base64') {
+      fs.writeFileSync(res.filePath, Buffer.from(String(content || ''), 'base64'));
+    } else {
+      fs.writeFileSync(res.filePath, String(content || ''), 'utf8');
+    }
+    return { ok: true, path: res.filePath };
+  } catch (err) {
+    return { ok: false, reason: 'error', message: String(err && err.message || err) };
+  }
+});
+
 ipcMain.handle('chrome:app:autoLaunch:get', () => {
   try {
     if (typeof app.getLoginItemSettings === 'function') {
@@ -501,6 +529,8 @@ let sideView = null;
 let sideTabId = null;
 let sideVisible = false;
 let panelReason = null;            // 'user' | 'run' | null
+/* v2.6：侧栏固定内嵌在主窗口右侧的 WebContentsView，自带独立滚动条；
+   主界面与设置在 #scroll-root 共用另一根滚动条。独立窗口模式已移除。 */
 /* v1.3.3 · 用户主动点登录徽标 / 面板按钮时，给主进程一个短暂保护窗口：
    这期间侧栏的导航、登录页 DOM、Cookie 变更都不得写任何业务键，
    否则「单击开关侧栏 / 双击打开主页」会把 20,192 分清成 null、图标变灰。 */
@@ -713,6 +743,7 @@ function ensureTaskView() {
 
 function applyTaskViewBounds() {
   if (!taskView || !popupWin || popupWin.isDestroyed()) return;
+  /* 静默开关已移除，这里保留兼容判断；正常模式始终给任务侧栏可见区域。 */
   if (desktopSilentRun()) {
     taskView.setBounds({ x: -3400, y: -3400, width: 1180, height: 820 });
     return;
@@ -1435,7 +1466,8 @@ async function scanSidebarCards(webContents) {
     }
     await webContents.executeJavaScript('window.scrollTo(0,0)', true).catch(() => null);
   }
-  const cards = [...merged.values()];
+  /* 分段滚动补齐后按 DOM 序号归位：严格保持截图任务列表顺序。 */
+  const cards = HSA_CORE.taskListOrder([...merged.values()]);
   merged.clear();                 // 及时释放收集结果，不常驻引用 DOM 数据
   return cards.length ? Object.assign({}, last || {}, { cards: cards }) : null;
 }
@@ -1546,7 +1578,19 @@ ipcMain.handle('chrome:task:clickAll', async (_event, clickIndex, options) => {
     /* 没有可用的主界面任务状态时绝不按侧栏显示自行判断，交给原来的双页索引回退 */
     const matchedScored = scored.filter(c => c.syncMatched).length;
     if (scored.length && matchedScored > 0) {
-      const plan = SidebarCards.planSidebarClicks(merged, skipCompletedCards);
+      /* 严格按截图任务列表 DOM 顺序，修复实际运行中的顺序错乱。 */
+      const plan = HSA_CORE.taskListOrder(
+        SidebarCards.planSidebarClicks(merged, skipCompletedCards));
+      const orderText = HSA_CORE.taskListNames(plan)
+        .map((n, i) => (i + 1) + '.' + n).join(' → ');
+      desktopActivityPush({
+        state: 'syncing', page: tv.webContents.getURL(),
+        zh: '任务卡执行顺序（严格按截图列表）：' + orderText,
+        en: 'Task card order (strict DOM order): ' + orderText
+      });
+      DBG.log('task', '任务卡执行顺序（严格按截图列表 DOM 顺序）', {
+        count: plan.length, order: orderText, source: 'sidebar-flyout'
+      });
       const skippedBySetting = scored.length - plan.length;
       const page = {
         url: tv.webContents.getURL(), found: scored.length, clicked: 0,
@@ -1720,7 +1764,18 @@ ipcMain.handle('chrome:task:clickAll', async (_event, clickIndex, options) => {
         DBG.log('task', '同步索引和实时 DOM 均无任务卡', {page:pageDef.page});
         continue;
       }
-      DBG.log('task', '同步索引和实时 DOM 合并', {page:pageDef.page, live:live.length, total:pageEntries.length});
+      /* 回退路径同样严格按 DOM 顺序，实时发现的卡片按 idx 归位到正确位置。 */
+      pageEntries = HSA_CORE.taskListOrder(pageEntries);
+      const fallbackOrder = HSA_CORE.taskListNames(pageEntries)
+        .map((n, i) => (i + 1) + '.' + n).join(' → ');
+      desktopActivityPush({
+        state: 'opening', page: pageDef.url,
+        zh: '任务卡执行顺序（索引回退 · DOM 顺序）：' + fallbackOrder,
+        en: 'Task card order (index fallback · DOM order): ' + fallbackOrder
+      });
+      DBG.log('task', '同步索引和实时 DOM 合并（按 DOM 顺序）', {
+        page:pageDef.page, live:live.length, total:pageEntries.length, order:fallbackOrder
+      });
       const page = {
         url: pageDef.url, found: pageEntries.length, clicked: 0,
         opened: 0, skipped: 0, failed: 0, source: 'sync-index'
@@ -2245,10 +2300,10 @@ function desktopQuietRun() {
     /completingTasks|searching|fetchingStartPoints|checkingLimit|fetchingEndPoints|syncing/
       .test(String((state && state.phase) || ''))));
 }
-/* v1.3.8：静默完成任务。只在「用户手动开启 + 自动运行期间」生效；
-   默认关闭时完全不改变原有可见行为。 */
+/* v2.4：设置里的「静默完成任务」开关已移除。保留函数名兼容既有调用点，
+   恒定返回 false —— 侧栏 / 页面一律按用户可见行为运行，不再有隐藏页面模式。 */
 function desktopSilentRun() {
-  return !!(state && state.silentRun === true && desktopQuietRun());
+  return false;
 }
 function autoFocusAllowed() {
   try {
@@ -2701,8 +2756,7 @@ app.whenReady().then(() => {
   // 必须最先执行：makeWindow 的 session 参数、Cookie 监听、后台 fetch 都依赖它
   initAppSession();
   loadState();
-  /* v1.3.8：静默完成任务默认关闭；开机自启与系统登录项对齐（默认关闭）。 */
-  if (typeof state.silentRun !== 'boolean') state.silentRun = false;
+  /* v2.6：静默完成任务与侧栏独立窗口均已移除；开机自启与系统登录项对齐（默认关闭）。 */
   if (typeof state.launchAtLogin !== 'boolean') state.launchAtLogin = false;
   try {
     if (typeof app.getLoginItemSettings === 'function' &&

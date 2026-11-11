@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 'use strict';
 /* Windows-only builder entry. Works after npm ci when Electron install scripts
- * were suppressed. Unique output protects against locked dist\win-unpacked.
- * --dry-run is a Linux/CI-compatible configuration-only check. */
+ * were suppressed. Windows and Ubuntu both emit into the repository-level
+ * release/ directory with fixed filenames, so every rebuild overwrites the
+ * previous artifact directly. --dry-run is a Linux/CI-compatible check. */
 const fs = require('fs');
 const path = require('path');
 const {spawnSync} = require('child_process');
@@ -13,8 +14,8 @@ const BUILDER = path.join(ROOT, 'node_modules', 'electron-builder', 'cli.js');
 const isDirOnly = process.argv.includes('--dir');
 const dryRun = process.argv.includes('--dry-run');
 const mirror = process.env.ELECTRON_MIRROR || 'https://npmmirror.com/mirrors/electron/';
-const stamp = new Date().toISOString().replace(/[-:T.Z]/g, '').slice(0,14);
-const outputRel = path.join('dist', 'windows-builds', `win-${stamp}-${process.pid}`);
+/* 与 electron-builder.yml 的 ../release 一致：固定目录、固定文件名、直接覆盖。 */
+const outputRel = '../release';
 const configArgs = ['--config', 'electron-builder.win.yml', '--win', '--x64',
   ...(isDirOnly ? ['--dir'] : []), `--config.directories.output=${outputRel}`];
 function run(cmd, args, env = process.env) {
@@ -47,7 +48,7 @@ function prepare() {
 function main() {
   if (dryRun) {
     console.log(JSON.stringify({builder:'electron-builder/cli.js', electronDist:'node_modules/electron/dist',
-      output:outputRel, arguments:configArgs, cacheFirst:true, uniqueOutput:true,dirOnly:isDirOnly},null,2));
+      output:outputRel, arguments:configArgs, cacheFirst:true, overwriteOutput:true,dirOnly:isDirOnly},null,2));
     return 0;
   }
   // 打包前确认主进程 require 的 lib 模块都在 files 白名单里。
@@ -66,15 +67,14 @@ function main() {
     console.error('[HSA] electron-builder missing. First run: npm run ci');
     return 1;
   }
-  // Keep legacy output untouched: another installed/debugging Electron process may own it.
   console.log('[HSA] Using local Electron: '+BIN);
-  console.log('[HSA] Isolated output: '+outputRel);
+  console.log('[HSA] Shared output (overwrite): '+path.resolve(ROOT, outputRel));
   const env = {...process.env,
     ELECTRON_BUILDER_BINARIES_MIRROR: process.env.ELECTRON_BUILDER_BINARIES_MIRROR ||
       'https://npmmirror.com/mirrors/electron-builder-binaries/'};
   const status = run(process.execPath,[BUILDER,...configArgs],env);
-  if (status === 0) console.log('[HSA] Complete: '+path.join(ROOT,outputRel));
-  else console.error('[HSA] Build failed; previous output and binaries have not been deleted.');
+  if (status === 0) console.log('[HSA] Complete (overwritten): '+path.resolve(ROOT,outputRel));
+  else console.error('[HSA] Build failed; previous artifacts stay in place.');
   return status;
 }
 process.exitCode = main();

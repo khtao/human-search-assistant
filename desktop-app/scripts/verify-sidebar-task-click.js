@@ -6,7 +6,7 @@
  *   · 自动开始先同步积分；积分与任务都完成 → 零动作（默认）
  *   · 「不跳过已完成任务卡」默认关闭 = 默认跳过已完成卡；开启后即使全部完成
  *     仍发起点击流程，点全部积分卡
- *   · 开启跳过（默认）：依次点击 即将举行的体育赛事、古代印加奇迹
+ *   · 开启跳过（默认）：依次点击 即将到来的喜剧活动、云形成类型
  *   · 开启不跳过：依次点击 7 张积分卡（含已完成）
  *   · 点哪张只取决于主界面任务状态：故意把侧栏 DOM 的完成标记反过来，
  *     点击清单必须保持不变
@@ -34,17 +34,18 @@ const HTML = fs.readFileSync(path.join(ROOT, 'src', 'popup.html'), 'utf8');
 const PKG = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
 const FIXTURE = path.join(ROOT, S.SIDEBAR_FIXTURE_REL);
 
+/* 与用户截图 / 上传侧栏素材一致的任务列表（从上到下，严格按此顺序执行）。 */
 const POINTS = {
-  '即将举行的体育赛事': 10,
-  '曼谷凉爽微风旱季': 10,
-  '古代印加奇迹': 10,
+  '即将到来的喜剧活动': 10,
+  '阿德莱德春季葡萄酒之旅': 10,
+  '云形成类型': 10,
   '探险火星': 15,
   '古代建筑': 15,
   '你是否知道答案？': 5,
   '完成此拼图': 5
 };
 const EXPECT_ALL = Object.keys(POINTS);
-const EXPECT_SKIP_ON = ['即将举行的体育赛事', '古代印加奇迹'];
+const EXPECT_SKIP_ON = ['即将到来的喜剧活动', '云形成类型'];
 
 let pass = 0;
 function ck(cond, msg) {
@@ -195,7 +196,7 @@ async function main() {
   const defaultPlan = S.planSidebarClicks(merged, skipFromSetting(false));
   const allPlan = S.planSidebarClicks(merged, skipFromSetting(true));
   ck(JSON.stringify(names(defaultPlan)) === JSON.stringify(EXPECT_SKIP_ON),
-    '默认关闭不跳过：仅真实点击 即将举行的体育赛事、古代印加奇迹');
+    '默认关闭不跳过：仅真实点击 即将到来的喜剧活动、云形成类型');
   ck(JSON.stringify(names(allPlan)) === JSON.stringify(EXPECT_ALL),
     '开启不跳过：依次点击 7 张积分卡（含已完成）');
 
@@ -211,8 +212,8 @@ async function main() {
   await page.evaluate(() => {
     const cards = [...document.querySelectorAll('a.block')];
     const byName = n => cards.find(a => (a.innerText || a.textContent || '').includes(n));
-    /* 把未完成的「即将举行的体育赛事」在侧栏 DOM 上伪装成已完成 */
-    const a = byName('即将举行的体育赛事');
+    /* 把未完成的「即将到来的喜剧活动」在侧栏 DOM 上伪装成已完成 */
+    const a = byName('即将到来的喜剧活动');
     if (a) {
       const pc = a.querySelector('.point_cont');
       if (pc) {
@@ -239,7 +240,7 @@ async function main() {
     }
   });
   const scan2 = await page.evaluate(S.SIDEBAR_SCAN_SOURCE);
-  const domA = scan2.cards.find(c => c.name === '即将举行的体育赛事');
+  const domA = scan2.cards.find(c => c.name === '即将到来的喜剧活动');
   const domB = scan2.cards.find(c => c.name === '探险火星');
   ck(!!domA && !!domB && domA.completed === true && domB.completed === false,
     '侧栏 DOM 完成标记已被成功反转（用于反证）');
@@ -247,7 +248,7 @@ async function main() {
   ck(JSON.stringify(names(S.planSidebarClicks(merged2, skipFromSetting(false)))) === JSON.stringify(EXPECT_SKIP_ON)
       && JSON.stringify(names(S.planSidebarClicks(merged2, skipFromSetting(true)))) === JSON.stringify(EXPECT_ALL),
     '侧栏显示反转后点击清单不变：点哪张只取决于主界面任务状态');
-  const a2 = merged2.find(c => c.name === '即将举行的体育赛事');
+  const a2 = merged2.find(c => c.name === '即将到来的喜剧活动');
   const b2 = merged2.find(c => c.name === '探险火星');
   ck(a2.domCompleted === true && a2.completed === false && b2.domCompleted === false && b2.completed === true,
     '侧栏显示与决策字段分离：domCompleted 仅诊断，completed 来自主界面');

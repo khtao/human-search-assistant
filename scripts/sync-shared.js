@@ -15,7 +15,9 @@ const TARGETS = [
   path.join(ROOT, 'edge-extension', 'shared'),
   path.join(ROOT, 'desktop-app', 'shared')
 ];
-const FILES = ['hsa-core.js', 'hsa-recovery.js', 'hsa-shared.css', 'decisions.json'];
+const FILES = ['hsa-core.js', 'hsa-recovery.js', 'hsa-shared.css',
+               'hsa-zip.js', 'hsa-hover-tip.js', 'hsa-pull-refresh.js',
+               'decisions.json'];
 const HEADER = '/* AUTO-GENERATED from shared/ — do not edit; run node scripts/sync-shared.js */\n';
 
 function body(src) {

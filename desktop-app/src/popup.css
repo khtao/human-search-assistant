@@ -120,11 +120,30 @@ body {
   background: var(--bg);
   color: var(--fg);
   -webkit-font-smoothing: antialiased;
-  overflow-x: hidden;
+  /* v2.4：滚动统一交给 #scroll-root，窗口本身不再产生第二根滚动条。 */
+  height: 100vh;
+  overflow: hidden;
   transition: background-color 200ms ease, color 200ms ease;
 }
 
 .app { display: flex; flex-direction: column; }
+
+/* v2.4 · 唯一滚动条：主界面（.app）与设置（.settings）共用同一个滚动容器。
+   侧栏是独立的 WebContentsView / 独立 BrowserWindow，自带另一根滚动条；
+   overscroll-behavior: contain 阻止两边滚动链互相传导。 */
+#scroll-root {
+  position: fixed;
+  inset: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+}
+#scroll-root::-webkit-scrollbar { width: 8px; }
+#scroll-root::-webkit-scrollbar-thumb {
+  background: var(--border-strong, rgba(0,0,0,.12)); border-radius: 8px;
+}
+body.panel-open #scroll-root { width: 400px; max-width: 400px; }
 
 /* v1.0.9 · 右侧内嵌官网面板展开时，左侧助手 UI 固定 400px；
    右侧由主窗口的 BrowserView 覆盖，DOM 不参与布局，避免卡片被拉宽。 */
@@ -262,7 +281,8 @@ body.panel-open .app { width: 400px; max-width: 400px; }
   position: absolute;
   top: calc(100% + 8px);
   right: 0;
-  z-index: 60;
+  /* v2.5：与插件版 / 共享 hover-tip 同口径，悬浮框始终在最上层。 */
+  z-index: 2147483647;
   width: max-content;
   max-width: 230px;
   padding: 7px 10px;
@@ -895,6 +915,10 @@ body.panel-open .app { width: 400px; max-width: 400px; }
   transform: translateY(-3px);
   box-shadow: var(--shadow-lift);
   border-color: var(--border-strong);
+  /* v2.4：与插件版一致 —— 卡片整体抬到最上层，避免 transform 建立
+     stacking context 后内部 .tip 被圆环 / 控件盖住。 */
+  position: relative;
+  z-index: 2147483647;
 }
 
 /* 可领取卡片：默认外观与其他卡片完全一致，只在悬浮/聚焦时露出「可跳转」提示 */
@@ -922,7 +946,8 @@ body.panel-open .app { width: 400px; max-width: 400px; }
   position: absolute;
   bottom: calc(100% + 10px);
   left: 50%;
-  z-index: 30;
+  /* v2.4：对齐插件版，积分卡黑色悬浮框始终在最上层（原 z-index:30）。 */
+  z-index: 2147483647;
   width: max-content;
   max-width: 220px;
   padding: 9px 11px;
@@ -1027,35 +1052,24 @@ body.panel-open .app { width: 400px; max-width: 400px; }
   to { transform: scale(1); opacity: 0; }
 }
 
-body.settings-open { min-height: 590px; }
-
+/* v2.4：设置不再是 fixed 覆盖层 + 内部独立滚动，而是与 .app 并列放在
+   #scroll-root 里，二者只显示其一，因此共用窗口唯一的一根滚动条。 */
 .settings {
-  position: fixed;
-  /* v1.1.6：侧栏展开时窗口变宽，设置面板固定在左侧 400px，
-     否则右半边被原生 WebContentsView 盖住 →「设置界面显示不全」。 */
-  inset: 0 auto 0 0;
-  width: min(100vw, var(--collapsed-w, 400px));
+  position: relative;
+  width: 100%;
   max-width: 100%;
-  z-index: 50;
-  display: flex;
+  display: none;
   flex-direction: column;
   background: var(--bg);
-  box-shadow: var(--panel-shadow);
-  transform: translateX(104%);
-  visibility: hidden;
-  transition: transform 380ms cubic-bezier(0.22, 1, 0.36, 1), visibility 0s linear 380ms;
 }
 
-body.panel-open .settings { width: min(100vw, var(--collapsed-w, 400px)); }
-
 .settings.open {
-  transform: none;
-  visibility: visible;
-  transition: transform 420ms cubic-bezier(0.22, 1, 0.36, 1), visibility 0s;
+  display: flex;
+  animation: rise 380ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
 }
 
 .app { transition: transform 420ms cubic-bezier(0.22, 1, 0.36, 1), opacity 300ms ease; }
-body.settings-open .app { transform: translateX(-28px); opacity: 0.4; }
+body.settings-open .app { display: none; }
 
 .settings-head {
   display: flex;
@@ -1067,14 +1081,14 @@ body.settings-open .app { transform: translateX(-28px); opacity: 0.4; }
 
 .settings-head h2 { font-size: 15px; font-weight: 700; letter-spacing: -0.02em; }
 
+/* v2.4：不再自带滚动条，内容高度自然撑开 #scroll-root 的滚动范围。 */
 .settings-body {
-  flex: 1;
-  overflow-y: auto;
+  flex: 0 0 auto;
+  overflow: visible;
   padding: 4px 20px 18px;
   display: flex;
   flex-direction: column;
   gap: 14px;
-  scrollbar-width: thin;
 }
 
 .set-group {
@@ -1631,7 +1645,8 @@ a.tt-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px;
   transform: translate(-50%, -8px) scale(0.95);
   transform-origin: 50% 0;
   transition: opacity 220ms ease, transform 260ms cubic-bezier(0.34, 1.56, 0.64, 1);
-  z-index: 30;
+  /* v2.5：圆环悬停卡片也是悬浮框，始终在最上层。 */
+  z-index: 2147483647;
 }
 .ring-hover-card .rhc-title {
   display: block;

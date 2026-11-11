@@ -253,5 +253,8 @@ contextBridge.exposeInMainWorld('__desktop', {
   taskClickAll: (index, options) => invoke('chrome:task:clickAll', index, options || {}),
   shimVersion: '1.3.8',
   setAutoLaunch: enabled => invoke('chrome:app:autoLaunch', !!enabled),
-  getAutoLaunch: () => invoke('chrome:app:autoLaunch:get')
+  getAutoLaunch: () => invoke('chrome:app:autoLaunch:get'),
+  /* 诊断数据导出：系统保存对话框写 JSON 文件 */
+  saveExport: (fileName, content, encoding) => invoke('chrome:diag:export',
+    String(fileName || ''), String(content || ''), String(encoding || ''))
 });

@@ -234,7 +234,18 @@ function mergeSidebarWithSync(cards, syncSummary, clickIndex) {
 
 /** 纯函数：生成真实点击计划。skipCompleted=false 时点全部积分卡（含已完成）。 */
 function planSidebarClicks(cards, skipCompleted) {
-  return (Array.isArray(cards) ? cards : [])
+  /* 严格按侧栏 DOM 顺序（截图任务列表从上到下）执行：
+     不按分组 / 积分 / 完成态 / 同步索引重排；分段滚动补齐的卡片也按 idx 归位。 */
+  var domIndex = function (c, i) {
+    var v = c && (c.idx != null ? c.idx : (c.domOrder != null ? c.domOrder : c.order));
+    var n = Number(v);
+    return Number.isFinite(n) ? n : i;
+  };
+  var ordered = (Array.isArray(cards) ? cards : []).slice()
+    .map(function (c, i) { return { c: c, i: i, d: domIndex(c, i) }; })
+    .sort(function (a, b) { return (a.d - b.d) || (a.i - b.i); })
+    .map(function (x) { return x.c; });
+  return ordered
     .filter(c => c && c.scored && Number(c.points) > 0 && (!skipCompleted || !c.completed))
     .map(c => ({
       idx: c.idx, name: c.name, points: c.points, completed: !!c.completed,

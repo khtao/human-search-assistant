@@ -4,6 +4,10 @@
 >
 > 本包为**插件版 / 桌面版差异统一版**：27 项已勾选决策的落地情况、共享 `shared/` 目录结构与回归命令见 [实施说明.md](实施说明.md)。
 >
+> 本包已启用**严格运行模式**：搜索词只取当日 ≥5 字热搜原文，自动运行期间禁用其它影响运行的功能（详见 [实施说明.md](实施说明.md) 第七节）。
+>
+> 设置页新增**运行日志导出**与**关键网页实时抓取**：日常运行只写运行日志，关键页面按需实时抓取最新数据（详见 [实施说明.md](实施说明.md) 第八节）。
+>
 
 ---
 
@@ -11,7 +15,7 @@
 
 本项目是**独立开发、非官方的个人工具**，不是 Microsoft 产品，未经 Microsoft 授权、赞助、认证或认可。Microsoft、Bing、Microsoft Rewards、Microsoft Edge 等名称仅用于说明兼容的第三方服务，商标归各自权利人所有。
 
-代码里确实实现了**程序自动提交 Bing 搜索**：由热榜词池生成查询词、用 CDP 模拟真人键鼠输入、按「拟人强度」控制轨迹与停留时长，并支持定时无人值守运行。而 Microsoft Rewards 官方规则将合格 Search 定义为「用户本人出于真实研究目的手动输入文字」，明确排除由 bot、macro 或其他自动化方式提交的查询；官方支持页写明「请勿使用程序、机器人或宏来帮助进行搜索」，重复违规可能导致**账户暂停、已赚积分全部失效**。
+代码里确实实现了**程序自动提交 Bing 搜索**：由当日热搜池生成 ≥5 字查询词、用 CDP 模拟真人键鼠输入按固定节奏执行，并支持定时无人值守运行。而 Microsoft Rewards 官方规则将合格 Search 定义为「用户本人出于真实研究目的手动输入文字」，明确排除由 bot、macro 或其他自动化方式提交的查询；官方支持页写明「请勿使用程序、机器人或宏来帮助进行搜索」，重复违规可能导致**账户暂停、已赚积分全部失效**。
 
 因此：**请不要依赖本工具的自动化功能获取积分。** 风险最低、也最符合官方要求的用法是只把它当本地看板，搜索与任务由本人在官网手动完成；积分与进度一律以服务端记录为准。详细的规则对照与规避清单见 [「合规与法律风险规避」](#compliance)。
 
@@ -24,12 +28,14 @@
 | **先同步，再动手** | 主按钮走 `runAutoComplete()` → `syncStart()` → `syncRewardsUnified()`，后台用 `fetch` 读 `rewards.bing.com/dashboard`、`/earn` 与 `/api/getuserinfo?type=1`；同步失败直接「零动作返回」，不点击、不搜索。 |
 | **全完成真的不动** | `allDone` 判定要求：非未登录、非估算、任务项 ≥ 3、搜索项已拿满、进度 ≥ 100 且每项完成；满足后返回 `{ reason: 'allDone', skipped: true, clicked: 0, searches: 0 }`。开启「不跳过已完成任务卡」时才会继续点卡片。 |
 | **只点该点的卡片** | 扫描时排除已完成、0 分、搜索进度条、连续打卡、兑换 / 推荐 / 推广卡与签到进度（见 `bannedText`、`sidebar-task-cards.js` 的 `REDEEM_URL` / `SEARCH_COUNTER` / `PROMO_TEXT` / `PROGRESS_TEXT`）；桌面版用 `taskClickIndex` 定位任务，重算矩形后再点击。 |
-| **真鼠标事件 + 拟人强度** | 通过 `chrome.debugger.attach(..., '1.3')` 发送 `Input.dispatchMouseEvent`（`mouseMoved` → `mousePressed` → `mouseReleased`）与 `Input.dispatchKeyEvent`；`HUMAN_PROFILES` 的 1/2/3 档分别控制步数、过冲、滚动幅度与每轮时长。 |
-| **搜索词来自实时热榜** | `HOT_SOURCES = ['bing','baidu','weibo','toutiao','zhihu','sina']`，每轮随机选 2–4 个源取词；取不到时报错「不使用本地词库」，不会退回内置词表。另有 `www.bing.com/AS/Suggestions` 相关词与结果页「相关搜索」。 |
+| **真鼠标事件（固定节奏）** | 通过 `chrome.debugger.attach(..., '1.3')` 发送 `Input.dispatchMouseEvent`（`mouseMoved` → `mousePressed` → `mouseReleased`）与 `Input.dispatchKeyEvent`；严格运行模式下 `HUMAN_PROFILES` 的随机轨迹、过冲、滚动与拟人强度均已禁用，只保留固定中心点击与固定等待。 |
+| **搜索词只取当日热搜原文** | `HOT_SOURCES = ['bing','baidu','weibo','toutiao','zhihu','sina']` 固定全量抓取；词长必须 ≥5 个字，按 UTC+8 判定为「当日」。少于 5 字的单调词、历史缓存词、本地词库、Bing autosuggest 与结果页「相关搜索」一律禁用；词不够就少跑几轮，绝不补词 / 拼接 / 复用。 |
+| **设置页诊断数据** | 「记录运行日志」开关（默认开）：日志含系统时间、用户操作、运行过程、运行结果、错误信息，环形上限 600 条，不写网页 HTML / 快照；「导出运行日志」生成 `hsa-runlog-*.json`；「抓取关键网页（HTML zip）」强制 `fresh` + `cache:no-store` 实时抓取 `/dashboard`、`/earn` 与 **Bing 侧边栏**，导出 `hsa-keypages-*.zip`（manifest.json + 3 个 HTML，失败页保留占位说明），不复用缓存 / 可见快照 / 面板 / 隐藏数据视图。 |
+| **下拉刷新 · 仿微信小程序（两端一致）** | 视觉复刻 minirefresh `applet` 主题：**50px 透明下拉区、三个 8px 圆点 ball-beat（默认 0.3 透明度、刷新时交错缩放）、内容区域随下拉整体 `translateY`、无成功动画直接回弹**；文案沿用 default 主题语义（下拉刷新 / 释放刷新 / 加载中... / 刷新成功 / 刷新失败）但视觉隐藏，仅严格运行期拦截与刷新失败时露出小字。共享 `hsa-pull-refresh.js` 统一手势状态机（触摸 / 鼠标拖拽 / 顶部滚轮），不引入第三方库；指示器 `pointer-events: none` 且不进入滚动容器，不产生第二根滚动条；刷新复用 `refreshTasks` 并写用户操作日志。 |
 | **默认不自动跑** | `AUTO_DEFAULTS = { enabled: false, times: [], count: 30, level: 3 }`；定时最多 `AUTO_MAX_TIMES = 10` 个时间点，由 `chrome.alarms` 的 `hsaScheduledRun` 触发，同一时间点当天只触发一次。 |
 | **积分日历** | 每次同步写入 `pointsHistory`（按本地日期，最多保留 400 天），设置页支持日 / 周 / 月聚合。 |
 | **收尾把焦点还给你** | `KEEP_TASK_TABS = true`（任务页保留）、`RESTORE_FOCUS_ON_FINISH = true`，结束时关闭搜索页、调用 `restoreUserFocus()`。 |
-| **双语 / 主题 / 桌面专属** | 弹窗内置中英文 `I18N` 表与 `uiLang` / `uiTheme` 持久化；浅色 / 深色 / 跟随系统、减少动画；桌面版另有开机自启、静默完成任务与系统托盘，均默认关闭。 |
+| **双语 / 主题 / 桌面专属** | 弹窗内置中英文 `I18N` 表与 `uiLang` / `uiTheme` 持久化；浅色 / 深色 / 跟随系统、减少动画；桌面版另有开机自启与系统托盘，均默认关闭；侧栏固定内嵌在主窗口右侧，自带独立滚动条。 |
 
 ---
 
@@ -86,7 +92,7 @@ npm run verify         # 8 个离线回归脚本
 1. **同步**：`syncStart()` 读取积分、搜索配额与今日任务；失败（未登录 / 页面不可读）则写回 `idle` 并零动作返回。
 2. **判定全完成**：按上文 `allDone` 条件判断，满足则直接返回；`dontSkipCompletedCards = false` 时不会重载页面、不点卡片、不搜索。
 3. **点击待完成卡片**：`completePendingTaskCards()` 打开 / 扫描 Rewards 侧栏或 dashboard / earn 页面，按宿主能力优先采用官网卡片的真实交互路径（桌面可用 CDP 真鼠标，不可用时降级页面交互并逐卡记录触发方式）；相邻点击间隔两版统一默认 10 秒，等待页面稳定后才继续，可在设置里调 1–60 秒。弹出的任务标签页保留不关闭。
-4. **执行搜索**：`handleStart()` 启动流程，`runFlow()` 中调用 `searchLoop()`，按剩余搜索配额生成查询词，访问 `www.bing.com/search?q=...`，混合「粘贴关键词 / 相关词改词 / 回首页」等路径，每轮时长基准 16–29 秒（再乘以强度档系数 0.7–1.0），并做滚动、结果点击等拟人动作；`POINTS_PER_SEARCH = 3` 只用于本地估算。
+4. **执行搜索**：`handleStart()` 启动流程，`runFlow()` 中调用 `searchLoop()`，按剩余搜索配额从当日热搜池取 ≥5 字合规词，访问 `www.bing.com/search?q=...`。严格运行模式走单一固定路径（固定中心点击 → 输入 → 固定 Enter 提交 → 页面稳定等待 → 固定轮间 10 秒），不回首页、不改词、不滚动、不点结果、不随机延时；`POINTS_PER_SEARCH = 3` 只用于本地估算。
 5. **收尾**：`presetSyncFinish()` 再同步一次，写入 `endPoints` / `finalEarned`（起始积分未知时 `earnedIsEstimate = true`）、`lastRun` 与 `pointsHistory`；关闭搜索页、恢复运行前的标签页焦点。
 
 ### 3. 设置项
@@ -101,9 +107,9 @@ npm run verify         # 8 个离线回归脚本
 | 定时自动运行 | 关 | `AUTO_DEFAULTS.enabled: false` |
 | 启动时间 | 空；留空点「添加」首个为 08:00，之后在最晚时间上 +30 分钟，自动去重排序，最多 10 个 | `defaultAutoTime()`、`AUTO_MAX_TIMES` |
 | 搜索次数上限 | 30（可填 1–150） | `AUTO_DEFAULTS.count`，`clampInt(..., 1, 150)` |
-| 拟人强度 | 3（低 / 中 / 高） | `HUMAN_PROFILES` 1–3 |
+| 拟人强度 | 3（保留设置项，严格模式不生效） | `HUMAN_PROFILES` 定义保留，运行期禁用 |
 | 积分日历 | 日 / 周 / 月，最多 400 天 | `recordPointsHistory()`、`pointsHistory` |
-| 开机自动启动 / 静默完成任务 | 均关，仅桌面版 | `desktop-app/main.js` 的 `state.launchAtLogin` / `state.silentRun` |
+| 开机自动启动 | 关，仅桌面版 | `desktop-app/main.js` 的 `state.launchAtLogin` |
 | 恢复默认设置 | 需二次点击确认（3 秒内） | `popup.js` 的 `resetBtn` 处理 |
 
 定时由 `chrome.alarms` 的 `hsaScheduledRun` 唤醒，`maybeRunAutoTasks()` 会检查总开关、时间点是否在列表里、当天是否已触发以及是否已有任务在运行。
@@ -143,14 +149,14 @@ npm run verify         # 8 个离线回归脚本
 ### 本仓库代码里与之直接相关的事实
 
 1. `searchLoop()` 自动生成并提交查询词，`cdpInsertText()` / `cdpKey()` 用 CDP 把文字与回车送进 Bing 搜索框——这是程序输入，不是用户手动输入。
-2. `HUMAN_PROFILES`、`GO_HOME_RATE`、`RELATED_RATE`、`ENTER_RATE`、`CLICK_RESULT_RATE`、`RESULT_HOLD_MIN/MAX` 用随机轨迹、随机回首页 / 改词、结果页停留与滚动来模拟真人；`autoTasks` 与 `hsaScheduledRun` 支持无人值守定时运行，桌面版还有「静默完成任务」。这些都属于官方排除的自动化方式。
+2. 严格运行模式已禁用 `HUMAN_PROFILES` / `GO_HOME_RATE` / `RELATED_RATE` / `ENTER_RATE` / `CLICK_RESULT_RATE` / `RESULT_HOLD_MIN/MAX` 的随机轨迹、回首页 / 改词、滚动与随机停留；`autoTasks` 与 `hsaScheduledRun` 在运行期不会重入，提醒、运行期刷新 / 同步与 watchdog 续跑同样禁用。桌面版的「静默完成任务」开关已移除，页面与侧栏一律按用户可见行为运行。这些仍属于官方排除的自动化方式。
 3. 代码用 `HUMAN_VERIFY_OFFICIAL = true`、`hitByCount()` 与收尾积分差做本地核对，并可能把 `finalEarned` 标为估算；**本地核对不等于官方确认计分**，一切以服务端为准。
 4. `host_permissions` 里的 5 个第三方热榜域名（加上 Bing 自带热榜源共 6 个词源）只用于取搜索词，工具不代理登录、不批量注册账号、不内置绕过风控的逻辑；但自动化本身已足够触发上述限制。
 
 ### 规避建议
 
 1. **只当看板用**：在 Rewards 官网 / Bing 由本人手动搜索与完成任务，把本工具用于查看进度、积分日历与本地日志。
-2. **保持自动化关闭**：`定时自动运行` 默认关闭，不要开启；桌面版的开机自启、静默完成任务也保持默认关闭。
+2. **保持自动化关闭**：`定时自动运行` 默认关闭，不要开启；桌面版的开机自启也保持默认关闭。
 3. **不用自动化攒分**：不把自动执行当作日常获取积分的手段；不使用多账号、VPN / 代理隐藏地区或任何规避平台检测的做法（官方条款亦提示 VPN 可能导致账户取消与积分没收）。
 4. **接受后果自担**：自动化可能拿不到积分、已获积分作废或账户受限；页面结构、接口与规则变化也可能让功能失效，不要以本工具作为任务完成的唯一依据。
 5. **分发前处理仓库现状**：保留「非官方、未经授权 / 赞助 / 认证」声明；Microsoft / Bing / Rewards 名称只用纯文本引用，不使用徽标或产品图标；`desktop-app/tests/` 中保存了从官网抓取的静态资源（如 `MsRewardsLogo.svg`、`RAFSearchAndEarnHVA.png` 等），公开分发前需核实这些第三方素材的使用权限；补上 `LICENSE`（当前为 `UNLICENSED` / 无许可证文件，公开代码不自动授予复制、修改、再分发权利）；清理根 README 的冲突标记与失效链接。

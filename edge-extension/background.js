@@ -1,6 +1,8 @@
 /* 共享核心：插件版与桌面版共用的决策与纯逻辑（单一真源见 shared/） */
 importScripts('shared/hsa-core.js');
+importScripts('shared/hsa-zip.js');
 const HSA_CORE = globalThis.HSA_CORE;
+const HSA_ZIP = globalThis.HSA_ZIP;
 
 const DASHBOARD_URL = 'https://rewards.bing.com/dashboard';
 const EARN_URL = 'https://rewards.bing.com/earn';
@@ -41,6 +43,7 @@ const BG_TEXT = {
   zh: {
     signIn: '请先在浏览器中登录 Microsoft Rewards（rewards.bing.com），然后重新开始。',
     topics: '所有热搜源均不可用，请检查网络后重试（不使用本地词库）。',
+    strictNoWords: HSA_CORE.TEXT.strictNoWords,
     network: 'Bing 没有响应，请检查网络连接。',
     stale: '上次运行被中断（浏览器关闭或电脑休眠），请重新点击开始。',
     runStopped: m => '运行已中止：' + m,
@@ -49,6 +52,7 @@ const BG_TEXT = {
   en: {
     signIn: 'Sign in to Microsoft Rewards (rewards.bing.com) in this browser, then press Start again.',
     topics: 'All trending sources are unavailable. Check your connection (no local word list).',
+    strictNoWords: HSA_CORE.TEXT.strictNoWordsEn,
     network: 'Bing is not responding. Check your connection.',
     stale: 'The last run was cut off (browser closed or PC slept). Press Start to run again.',
     runStopped: m => 'Run stopped: ' + m,
@@ -66,8 +70,95 @@ let flowActive = false;
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const rand = (min, max) => min + Math.random() * (max - min);
-const store = obj => chrome.storage.local.set(obj);
+/* 严格运行模式：running 状态由 store 统一维护，供消息 / 闹钟同步拦截使用。 */
+let strictRunActive = false;
+const store = obj => {
+  if (obj && Object.prototype.hasOwnProperty.call(obj, 'running')) strictRunActive = !!obj.running;
+  /* 运行过程 / 运行结果 / 错误信息：状态变化自动写详细日志。
+     系统时间 ts / iso、平台、类别全部由 shared/hsa-core.js 统一补齐。 */
+  try {
+    if (obj && (obj.phase || obj.running !== undefined || obj.error || obj.stopRequested)) {
+      const phase = String(obj.phase || '');
+      const isError = !!obj.error || phase === 'error';
+      const isResult = phase === 'completed' || (obj.running === false && !isError);
+      const snapshot = {
+        phase: phase, running: obj.running, stopRequested: obj.stopRequested,
+        error: obj.error, currentSearch: obj.currentSearch, totalSearch: obj.totalSearch
+      };
+      hsaRunLog('run-state', {
+        level: isError ? 'error' : 'info',
+        category: isError ? 'error' : isResult ? 'result' : 'run-step',
+        event: 'run-state', state: phase,
+        zh: (isError ? '运行错误：' : isResult ? '运行结束：' : '运行阶段：') + (phase || 'state'),
+        en: (isError ? 'Run error: ' : isResult ? 'Run finished: ' : 'Run phase: ') + (phase || 'state'),
+        detail: JSON.stringify(snapshot),
+        result: isResult ? 'finished' : '',
+        error: String(obj.error || ''), ok: !isError,
+        count: Number(obj.currentSearch) || 0
+      }).catch(() => {});
+    }
+  } catch (err) {}
+  return chrome.storage.local.set(obj);
+};
 const load = keys => chrome.storage.local.get(keys);
+/* Service Worker 重启后补齐运行态，避免消息 / 闹钟拦截出现空窗。 */
+load(['running']).then(s => { strictRunActive = !!s.running; }).catch(() => {});
+/* 诊断设置：日常运行只有运行日志；开关由设置页控制，运行期不允许改。 */
+const HSA_PLATFORM = 'edge-extension';
+let runLogEnabled = true;
+load(['settings']).then(s => {
+  const v = s && s.settings && s.settings.runLogEnabled;
+  runLogEnabled = v !== false;
+}).catch(() => {});
+
+/* 追加一条运行日志：字段白名单裁剪 + 环形上限，绝不写网页 HTML / 快照。 */
+function hsaRunLog(event, info) {
+  if (!runLogEnabled) return Promise.resolve();
+  const o = Object.assign({ event: String(event || 'activity'), at: Date.now() }, info || {});
+  const now = Number(o.at) || Date.now();
+  return load(['runLog'])
+    .then(s => store({ runLog: HSA_CORE.runLogAppend(s && s.runLog, o, now) }))
+    .catch(() => {});
+}
+
+/* 关键网页实时抓取：强制 fresh + cache:no-store，不走 120 秒 HTML 缓存，
+   不读可见快照 / 面板 / 隐藏数据视图；抓到的 HTML 只随本次导出返回。 */
+async function hsaCaptureKeyPages(policy) {
+  const p = policy || HSA_CORE.keyPagePolicy();
+  const out = [];
+  for (const page of p.pages) {
+    /* 三页均为完整 URL：/dashboard、/earn、Bing 侧边栏 panelflyout。 */
+    const url = page.url || (p.origin + page.path);
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), p.timeoutMs);
+    const started = Date.now();
+    try {
+      const res = await fetch(url, {
+        credentials: 'include', cache: 'no-store', signal: ctrl.signal
+      });
+      const html = String((await res.text()) || '').slice(0, p.maxBytes);
+      out.push({
+        name: page.name, path: page.path, url: res.url || url, file: page.file,
+        ok: !!res.ok, status: Number(res.status) || 0,
+        bytes: html.length, html: html,
+        collectedAt: Date.now(), durationMs: Date.now() - started,
+        source: p.source
+      });
+    } catch (err) {
+      out.push({
+        name: page.name, path: page.path, url: url, file: page.file,
+        ok: false, status: 0, bytes: 0, html: '',
+        collectedAt: Date.now(), durationMs: Date.now() - started,
+        source: p.source,
+        error: (err && err.name === 'AbortError') ? 'timed out' : String(err && err.message || err)
+      });
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  return out;
+}
+
 const isCurrent = token => token === flowToken;
 
 function parseUrl(url) {
@@ -108,6 +199,8 @@ const RELATED_RATE = 0.42;
 const ENTER_RATE = 0.5;
 const CLICK_RESULT_RATE = 0.35;
 const STOP = Symbol('stopped');
+/* 严格运行模式（单一真源 shared/hsa-core.js）：固定节奏，禁用一切运行期可变功能。 */
+const STRICT = HSA_CORE.STRICT_RUN;
 
 const HUMAN_PROFILES = {
   1: { steps: [4, 10], overshoot: 0, scroll: [0.2, 0.8], screens: 0.6, round: 0.7 },
@@ -158,7 +251,8 @@ function cleanKeyword(s) {
 }
 
 function validKeyword(s) {
-  return s.length >= 2 && s.length <= 30 && /[a-zA-Z0-9\u3400-\u9fff]/.test(s);
+  /* 严格运行模式：少于 5 字的单调词一律拒绝，词源只能是当日热搜。 */
+  return HSA_CORE.isStrictKeyword(s);
 }
 
 async function fetchSource(url, opts) {
@@ -237,13 +331,13 @@ const HOT_SOURCE_FNS = {
 };
 
 async function getKeywordPool(limit) {
-  const chosen = shuffle(HOT_SOURCES).slice(0, 2 + Math.floor(Math.random() * 3));
+  const chosen = HOT_SOURCES.slice();  /* 严格模式：固定抓取全部当日热搜源 */
   const collected = [];
   const errors = [];
   for (const name of chosen) {
     try {
       const list = await HOT_SOURCE_FNS[name]();
-      for (const text of list) if (validKeyword(text)) collected.push({ text, source: name });
+      for (const text of list) if (validKeyword(text)) collected.push({ text, source: name, at: Date.now() });
     } catch (err) {
       errors.push(name + ': ' + (err && err.message ? err.message : String(err)));
     }
@@ -256,30 +350,34 @@ async function getKeywordPool(limit) {
     return true;
   });
   return {
-    items: shuffle(unique).slice(0, Math.max(1, limit)),
+    items: unique.slice(0, Math.max(1, limit)),
     sources: chosen,
     errors
   };
 }
 
 async function buildQueries(count, usedList) {
-  const used = new Set((usedList || []).map(String));
+  /* 严格运行模式：只用本次抓取的「当日热搜原文」；不足 5 字的单调词、
+     历史缓存词、本地词库、相关延伸 / autosuggest 一律不参与选词。 */
   const pool = await getKeywordPool(Math.max(24, count * 3));
   if (!pool.items.length) {
     throw new Error(bgMsg('topics') + ' (' + pool.errors.join(' / ').slice(0, 180) + ')');
   }
-  const fresh = pool.items.filter(k => !used.has(k.text));
-  const words = fresh.length ? fresh : pool.items.slice();
-  const queries = [];
-  for (let i = 0; i < count; i++) {
-    const w = words[(i * 7 + 1) % words.length];
-    queries.push(String(w.text).trim().slice(0, 30));
+  const built = HSA_CORE.strictQueries(count, pool.items, Date.now());
+  if (!built.queries.length) {
+    throw new Error(bgMsg('strictNoWords') + ' (短词 ' + built.droppedShort
+      + ' / 非当日 ' + built.droppedStale + ')');
   }
-  console.info('[HumanSearch] 热搜源 ' + pool.sources.join('+') + ' · 词池 ' + pool.items.length + ' 条');
+  console.info('[HumanSearch] 严格模式 · 当日热搜 ' + pool.sources.join('+')
+    + ' · 合规词 ' + built.queries.length + '/' + built.requested
+    + ' · 丢弃短词 ' + built.droppedShort + ' / 非当日 ' + built.droppedStale
+    + ' / 重复 ' + built.droppedDuplicate);
   return {
-    queries,
-    usedWords: [...used, ...queries].slice(-1000),
-    trendCount: pool.items.length
+    /* 词不够就少跑几轮：不补词、不拼接、不复用、不循环重复。 */
+    queries: built.queries,
+    usedWords: (usedList || []).concat(built.queries).slice(-1000), // 仅作记录，不参与选词
+    trendCount: pool.items.length,
+    strict: built
   };
 }
 
@@ -575,6 +673,11 @@ function mousePath(from, to, level = 3) {
   return points;
 }
 
+/* 严格运行模式：固定中心点击，不生成拟人轨迹 / 过冲 / 随机延时。 */
+function strictClickPlan(box) {
+  return { center: [box.x + box.w / 2, box.y + box.h / 2] };
+}
+
 function humanClickPlan(box, from, level = 3) {
   const cx = box.x + box.w * rand(0.25, 0.75);
   const cy = box.y + box.h * rand(0.3, 0.7);
@@ -628,11 +731,10 @@ async function searchLoop(token) {
   let lastQuery = '';
   let lastXY = [120, 140];
   const modeCount = { paste: 0, related: 0, home: 0, stay: 0 };
-  const runLevel = clampInt((await load(['runLevel'])).runLevel || 3, 1, 3);
-  const profile = profileOf(runLevel);
-  const settings = await getSettings();
-  const [holdMin, holdMax] = holdRange(settings);
-  console.info('[HumanSearch] 拟人强度：' + runLevel);
+  /* 严格运行模式：拟人强度 / 随机停留不再参与运行，全部改为固定节奏。 */
+  const STRICT_POLICY = HSA_CORE.strictRunPolicy();
+  console.info('[HumanSearch] 严格运行模式：仅当日 ≥' + STRICT_POLICY.minKeywordChars
+    + ' 字热搜词，运行期禁用其它功能');
 
   try {
     tabId = await openOrNavigate('searchTabId', HOME_URL, true);
@@ -658,36 +760,18 @@ async function searchLoop(token) {
     if (st.stopRequested || current >= st.totalSearch) return;
     const baseQuery = st.searchQueue && st.searchQueue[current];
     if (!baseQuery) return;
+    /* 严格运行模式：运行期再次确认词长，防止外部写入少于 5 字的短词。 */
+    if (!HSA_CORE.isStrictKeyword(baseQuery)) throw new Error(bgMsg('strictNoWords'));
 
-    const roundTotal = rand(holdMin, holdMax) * profile.round;
-    const roundStart = Date.now();
-    const goHome = Math.random() < GO_HOME_RATE;
-    const useRelated = Math.random() < RELATED_RATE;
+    /* 严格运行模式：固定节奏，不启用拟人强度 / 随机停留 / 改词 / 回首页。 */
     let keyword = baseQuery;
     let method = '';
     let searched = false;
 
     try {
-      if (useRelated) {
-        let related = await relatedSearches(tabId);
-        bail(token);
-        if (!related.length) related = await suggestRelated(lastQuery || baseQuery);
-        bail(token);
-        if (related.length) {
-          keyword = String(pickOne(related)).trim().slice(0, 30);
-          method = '改词·相关延伸';
-        } else {
-          keyword = baseQuery;
-          method = '改词·热搜回退';
-        }
-        if (goHome) await navigateSearch(tabId, HOME_URL, isBingHome, token);
-        await navigateSearch(tabId, directSearchUrl(keyword), isBingSearch, token);
-        const afterDirect = await chrome.tabs.get(tabId).catch(() => null);
-        searched = !!afterDirect && isBingSearch(afterDirect.url);
-        modeCount.related++;
-      } else {
+      /* 严格运行模式：禁用相关延伸 / autosuggest 改词，关键词只能是当日热搜池原文。 */
+      {
         method = '粘贴关键词';
-        if (goHome) await navigateSearch(tabId, HOME_URL, isBingHome, token);
         let box = await probe(tabId, SEARCH_INPUTS);
         bail(token);
         if (!box) {
@@ -697,34 +781,24 @@ async function searchLoop(token) {
         }
         if (!box) throw new Error('找不到 Bing 搜索框');
 
-        const plan = humanClickPlan(box.box, lastXY, runLevel);
+        /* 严格运行模式：固定中心点击，不使用拟人轨迹与过冲。 */
+        const plan = strictClickPlan(box.box);
         lastXY = plan.center;
-        if (realInput) await cdpClickPlan(tabId, plan);
+        if (realInput) await cdpClickAt(tabId, plan.center[0], plan.center[1]);
         else await domClick(tabId, plan.center[0], plan.center[1]);
-        await nap(rand(150, 600), token);
+        await nap(STRICT.fixedNapMs, token);
 
         if (realInput) await cdpClearInput(tabId);
         else await domClearInput(tabId);
-        await nap(rand(100, 350), token);
+        await nap(STRICT.fixedNapMs, token);
 
         if (realInput) await cdpInsertText(tabId, keyword);
         else await domInput(tabId, keyword);
-        await nap(rand(150, 500), token);
+        await nap(STRICT.fixedNapMs, token);
 
-        if (Math.random() < ENTER_RATE) {
-          if (realInput) await cdpKey(tabId, 'Enter');
-          else await domKey(tabId, 'Enter');
-        } else {
-          const btn = await probe(tabId, SEARCH_BUTTONS);
-          bail(token);
-          if (btn && realInput) {
-            await cdpClickAt(tabId, btn.box.x + btn.box.w / 2, btn.box.y + btn.box.h / 2);
-          } else if (realInput) {
-            await cdpKey(tabId, 'Enter');
-          } else {
-            await domKey(tabId, 'Enter');
-          }
-        }
+        /* 严格运行模式：固定 Enter 提交，不随机切换按钮 / 回车。 */
+        if (realInput) await cdpKey(tabId, 'Enter');
+        else await domKey(tabId, 'Enter');
         const result = await waitForTab(tabId, isBingSearch, PAGE_TIMEOUT, true);
         searched = !!result && isBingSearch(result.url);
         if (!searched) {
@@ -735,11 +809,19 @@ async function searchLoop(token) {
         modeCount.paste++;
       }
 
-      if (goHome) modeCount.home++; else modeCount.stay++;
+      modeCount.stay++;
       lastQuery = keyword;
       await store({ currentQuery: keyword });
       console.info(`[HumanSearch] [${current + 1}/${st.totalSearch}] ${keyword} · ${method}`
-        + (goHome ? ' · 回首页' : ' · 留在结果页'));
+        + ' · 严格模式');
+      hsaRunLog('search', {
+        level: 'info', actor: 'system', category: 'run-step',
+        state: 'searching', query: keyword, page: 'bing-search',
+        zh: '第 ' + (current + 1) + '/' + st.totalSearch + ' 轮搜索：' + keyword,
+        en: 'Search ' + (current + 1) + '/' + st.totalSearch + ': ' + keyword,
+        detail: '严格模式：当日 ≥5 字热搜原文「' + keyword + '」→ 固定点击 → 输入 → Enter → 页面稳定等待',
+        result: 'query submitted', count: current + 1
+      }).catch(() => {});
       bail(token);
     } catch (err) {
       if (err === STOP || haltFlag) throw STOP;
@@ -751,36 +833,14 @@ async function searchLoop(token) {
     if (!searched) {
       failures++;
       if (failures >= MAX_FAILURES) throw new Error(bgMsg('network'));
-      await nap(rand(1000, 2000), token);
+      await nap(STRICT.fixedNapMs, token);
       continue;
     }
     failures = 0;
 
+    /* 严格运行模式：禁用滚动 / 点结果 / 随机停留，只保留页面稳定等待（T07）。 */
     try {
-      await nap(rand(800, 2500), token);
-      const hit = await probe(tabId, RESULT_LINKS);
-      bail(token);
-      const hasResults = !!hit;
-      for (const step of scrollPlan(runLevel)) {
-        bail(token);
-        if (realInput) await cdpWheel(tabId, step.dy);
-        else await domWheel(tabId, step.dy);
-        await nap(step.dt * 1000, token);
-      }
-      if (Math.random() < CLICK_RESULT_RATE && hasResults) {
-        const link = await probe(tabId, RESULT_LINKS);
-        bail(token);
-        if (link) {
-          const cx = link.box.x + link.box.w * 0.3;
-          const cy = link.box.y + link.box.h * 0.5;
-          if (realInput) await cdpClickAt(tabId, cx, cy);
-          else await domClick(tabId, cx, cy);
-          await nap(rand(1000, 4000), token);
-          await goBackSearch(tabId, token);
-        }
-      }
-      const left = roundTotal - (Date.now() - roundStart);
-      if (left > 800) await nap(left * 0.6, token);
+      await nap(STRICT_POLICY.pageStableWaitMs, token);
     } catch (err) {
       if (err === STOP || haltFlag) throw STOP;
     }
@@ -789,12 +849,12 @@ async function searchLoop(token) {
     await store({ currentSearch: current + 1, lastActivity: Date.now() });
 
     if (current + 1 < st.totalSearch && !haltFlag) {
-      await nap(rand(3000, 12000), token);   
+      await nap(STRICT.fixedRoundIntervalMs, token);
     }
   }
 
-  console.info('[HumanSearch] 方式混合：粘贴 ' + modeCount.paste + ' / 改词 ' + modeCount.related
-    + ' · 回首页 ' + modeCount.home + ' / 留在结果页 ' + modeCount.stay);
+  console.info('[HumanSearch] 严格运行模式：当日热搜词 ' + modeCount.paste + ' 次'
+    + ' · 禁用改词 / 回首页 / 拟人随机 / 滚动 / 点结果');
 }
 
 function waitForTab(tabId, test, timeout, checkNow) {
@@ -1612,6 +1672,13 @@ async function finishRun(token) {
 async function finishWithError(message) {
   await cdpDetachAll();
   await store({ phase: 'error', running: false, stopRequested: false, error: message });
+  hsaRunLog('error', {
+    level: 'error', actor: 'system', category: 'error',
+    state: 'error', reason: 'run-failed', ok: false,
+    zh: String(message || ''), en: String(message || ''),
+    detail: '运行失败：' + String(message || ''),
+    error: String(message || ''), result: 'failed'
+  }).catch(() => {});
   chrome.alarms.clear('watchdog');
   await restoreUserFocus();
 }
@@ -1814,12 +1881,81 @@ function parseActivities(html) {
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!msg || typeof msg.type !== 'string') return;
+  /* 严格运行模式：运行期禁止刷新 / 同步 / 改设置 / 重复启动等影响运行的操作。 */
+  if (strictRunActive && HSA_CORE.strictBlockedMessage(msg.type, true)) {
+    sendResponse({ ok: false, reason: 'strictRun', message: HSA_CORE.TEXT.strictRunBlocked });
+    return;
+  }
   if (msg.type === 'stop') {
     handleStop();
   } else if (msg.type === 'autoComplete') {
     runAutoComplete({ manual: true, level: msg.level, cap: msg.count })
       .then(sendResponse)
       .catch(err => sendResponse({ ok: false, reason: 'error', message: err.message }));
+    return true;
+  } else if (msg.type === 'logUserAction') {
+    /* 用户操作只追加日志（系统时间由共享核心补齐），不改变任何运行状态；
+       严格运行期消息白名单放行，避免影响运行。 */
+    hsaRunLog('user-action', {
+      actor: 'user', category: 'user-action', level: 'info',
+      event: 'user-action', name: String(msg.action || ''),
+      zh: String(msg.action || ''), en: String(msg.action || ''),
+      detail: String(msg.detail || ''), result: String(msg.result || ''),
+      ok: msg.ok !== false, count: Number(msg.count) || 0
+    }).catch(() => {});
+    sendResponse({ ok: true });
+    return true;
+  } else if (msg.type === 'exportRunLog') {
+    /* 只读导出：严格运行期也允许，不触发抓取、不改运行状态。 */
+    (async () => {
+      const s = await load(['runLog']).catch(() => ({}));
+      const entries = (s && Array.isArray(s.runLog)) ? s.runLog : [];
+      const now = Date.now();
+      return {
+        ok: true, fileName: HSA_CORE.runLogFileName(now),
+        content: HSA_CORE.runLogExport(entries, { now: now, platform: HSA_PLATFORM }),
+        count: entries.length
+      };
+    })().then(sendResponse).catch(err => sendResponse({
+      ok: false, reason: 'error', message: String(err && err.message || err)
+    }));
+    return true;
+  } else if (msg.type === 'captureKeyPages') {
+    /* 运行期由严格模式白名单拦截；空闲时实时抓取三页并导出 HTML 的 zip 包。 */
+    (async () => {
+      const now = Date.now();
+      const policy = HSA_CORE.keyPagePolicy();
+      const pages = await hsaCaptureKeyPages(policy);
+      const okCount = pages.filter(p => p.ok).length;
+      const built = HSA_CORE.keyPageZipFiles(pages, now, { platform: HSA_PLATFORM });
+      const ZIP = globalThis.HSA_ZIP;
+      if (!ZIP || typeof ZIP.buildZip !== 'function') throw new Error('zip builder unavailable');
+      const zip = ZIP.buildZip(built.files, now);
+      const summary = pages.map(p => p.name + ':' + (p.ok
+        ? 'OK ' + p.bytes + 'B/' + p.durationMs + 'ms'
+        : 'FAIL ' + (p.error || 'unknown'))).join(' | ');
+      hsaRunLog('key-pages', {
+        level: okCount ? 'info' : 'warn', actor: 'user',
+        category: okCount ? 'result' : 'error', state: 'capture',
+        zh: '实时抓取关键网页 ' + okCount + '/' + pages.length + ' 页并打包 HTML zip',
+        en: 'Live key-page capture ' + okCount + '/' + pages.length + ' → HTML zip',
+        page: policy.pages.map(p => p.path).join(','), count: okCount,
+        ok: okCount > 0, detail: summary,
+        result: 'zip ' + zip.length + ' bytes · ' + built.files.length + ' files',
+        error: pages.filter(p => !p.ok).map(p => p.name + ':' + p.error).join(' | '),
+        durationMs: Date.now() - now
+      }).catch(() => {});
+      return {
+        ok: okCount > 0, fileName: HSA_CORE.keyPageFileName(now),
+        content: ZIP.toBase64(zip), encoding: 'base64',
+        count: okCount, total: pages.length,
+        files: built.files.map(f => f.name), bytes: zip.length,
+        fresh: true, source: policy.source, capturedAt: now,
+        summary: summary
+      };
+    })().then(sendResponse).catch(err => sendResponse({
+      ok: false, reason: 'error', message: String(err && err.message || err)
+    }));
     return true;
   } else if (msg.type === 'refreshTasks' || msg.type === 'refreshPoints') {
     const reason = msg.type === 'refreshPoints' ? 'refreshPoints' : 'manual-refresh';
@@ -1844,6 +1980,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
 chrome.alarms.onAlarm.addListener(alarm => {
   if (!alarm) return;
+  if (!HSA_CORE.strictAlarmAllowed(alarm.name, strictRunActive)) return;
   if (alarm.name === 'watchdog') resumeIfNeeded();
   else if (alarm.name === 'cooldownEnd') endCooldown();
   else if (alarm.name === SCHEDULED_ALARM) onScheduledRun().catch(() => rebuildAutoAlarm().catch(() => {}));
@@ -1982,6 +2119,10 @@ chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== 'local') return;
   if (changes.uiLang) bgLang = changes.uiLang.newValue || 'zh';
   if (changes.autoTasks) rebuildAutoAlarm().catch(() => {});
+  if (changes.settings) {
+    const v = changes.settings.newValue && changes.settings.newValue.runLogEnabled;
+    runLogEnabled = v !== false;
+  }
 });
 
 load(['uiLang']).then(s => { bgLang = s.uiLang || 'zh'; }).catch(() => {});
@@ -2584,8 +2725,8 @@ function ybInject(action, payload) {
         x: tr.x, y: tr.y, w: tr.w, h: tr.h
       });
     }
-    var rank = function (s) { return s === 'daily' ? 0 : s === 'promo' ? 1 : 2; };
-    items.sort(function (a, b) { return rank(a.section) - rank(b.section) || a.idx - b.idx; });
+    /* 严格按截图任务列表的 DOM 顺序：不按分组 / 积分 / 完成态重排。 */
+    items.sort(function (a, b) { return a.idx - b.idx; });
     return {
       items: items, anchorCount: anchors.length, doneSkipped: doneSkipped,
       scanned: anchors.length, signedOut: false,
@@ -2704,8 +2845,8 @@ function ybInject(action, payload) {
         text: c.text.slice(0, 120)
       });
     }
-    var rank = function (s) { return s === 'daily' ? 0 : s === 'promo' ? 1 : 2; };
-    items.sort(function (a, b) { return rank(a.section) - rank(b.section) || a.idx - b.idx; });
+    /* 严格按截图任务列表的 DOM 顺序：不按分组 / 积分 / 完成态重排。 */
+    items.sort(function (a, b) { return a.idx - b.idx; });
     return {
       items: items, candidates: candidates,
       headerHits: headers.map(function (h) { return h.text; }).slice(0, 8),
@@ -3792,8 +3933,10 @@ async function humanClickTasks(token, stat) {
         seen.add(k);
         return true;
       });
-      cards.sort((a, b) => (Number(a.order) || (Number(a.domOrder) || 0))
-        - (Number(b.order) || (Number(b.domOrder) || 0)));
+      /* 严格按页面 DOM 顺序（共享纯逻辑）：不按分组 / 积分重排。 */
+      const orderedCards = HSA_CORE.taskListOrder(cards);
+      cards.length = 0;
+      for (const c of orderedCards) cards.push(c);
       cardTotal += collected.cards.length;
       pageAnchors = collected.cards.length;
       console.info('[AutoTask] ' + pg.label + '：从头到尾滚动 ' + collected.segments
@@ -4115,7 +4258,18 @@ async function hsaActivityPush(info) {
     en: Array.isArray(o.en) ? o.en.join(' · ') : String(o.en || ''),
     page: o.page || '', card: o.card || '', query: o.query || ''
   };
-  try { await store({ activityDetail: payload }); } catch (err) {}
+  const patch = { activityDetail: payload };
+  if (runLogEnabled) {
+    try {
+      const cur = await load(['runLog']);
+      patch.runLog = HSA_CORE.runLogAppend(cur && cur.runLog, {
+        at: now, event: 'activity', level: payload.state === 'error' ? 'error' : 'info',
+        state: payload.state, zh: payload.zh, en: payload.en,
+        page: payload.page, card: payload.card, query: payload.query, delayMs: delayMs
+      }, now);
+    } catch (err) {}
+  }
+  try { await store(patch); } catch (err) {}
 }
 
 async function runAutoComplete(opts) {
@@ -4903,10 +5057,18 @@ async function runEmbeddedPanelTasksFlow(token, stat, holder) {
   }
   await nap(FLYOUT_SCAN_SETTLE_MS, token);
 
-  merged.sort((a, b) => (Number(a.order) || 0) - (Number(b.order) || 0));
+  /* 严格按侧栏任务列表 DOM 顺序，修复实际运行中顺序错乱。 */
+  const orderedMerged = HSA_CORE.taskListOrder(merged);
+  merged.length = 0;
+  for (const c of orderedMerged) merged.push(c);
   if (merged.length) {
-    console.info('[AutoTask] 待点任务卡（按侧栏顺序）：'
-      + merged.map((c, i) => (i + 1) + '.' + (c.title || '').slice(0, 18)).join(' → '));
+    const order = merged.map((c, i) => (i + 1) + '.' + (c.title || '').slice(0, 18)).join(' → ');
+    console.info('[AutoTask] 待点任务卡（严格按截图任务列表 DOM 顺序）：' + order);
+    hsaRunLog('task-order', {
+      actor: 'system', category: 'run-step', level: 'info', state: 'task-order',
+      zh: '任务卡执行顺序（严格按截图列表）', en: 'Task card order (strict DOM order)',
+      detail: order, count: merged.length, result: 'ordered'
+    }).catch(() => {});
   }
 
   console.info('[AutoTask] 插件内部侧栏滚动完成：外层 ' + segments
