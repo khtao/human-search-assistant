@@ -17,7 +17,9 @@
 const SNAPSHOT_HTML_LIMIT = 600 * 1024;  // state 中整页 HTML 快照的硬上限
 const DEFAULTS = {
   idleDelayMs: 4000,        // 窗口隐藏后多久才进入静默，避免短暂切窗
-  sweepIntervalMs: 10 * 60 * 1000,  // 静默期低频巡检（unref，不阻止退出）
+  /* v3.0：静默期巡检从 10 分钟缩到 2 分钟。定时器 unref 且只做纯判断，
+     开销可忽略，但能及时回收静默期间被定时任务重新拉起的内嵌视图。 */
+  sweepIntervalMs: 2 * 60 * 1000,
   maxHtmlChars: SNAPSHOT_HTML_LIMIT
 };
 
@@ -99,6 +101,8 @@ class MemoryGovernor {
     this.stats.releasedViews += released;
     this.stats.trimmedChars += trimmed;
     this.stats.gcCalls++;
+    /* v3.0：进入静默时额外清一次 Chromium HTTP 缓存（不碰 Cookie） */
+    this._call('onEnter', reason);
     this._startSweep();
     this._log('governor', '进入托盘静默低占用状态', {
       reason: reason, releasedViews: released, trimmedChars: trimmed
@@ -112,17 +116,22 @@ class MemoryGovernor {
     this._stopSweep();
     /* 恢复保活：任务页面不能被 Chromium 降频 */
     this._call('setThrottling', false);
+    /* v3.0：按需重建静默期释放的可见侧栏（dispose 不重建） */
+    this._call('onExit', reason);
     this._log('governor', '退出托盘静默，恢复页面保活', { reason: reason });
   }
 
   _startSweep() {
     this._stopSweep();
     const interval = Math.max(100, Number(this.cfg.sweepIntervalMs) || DEFAULTS.sweepIntervalMs);
-    /* 静默期低频巡检：反复裁剪可能重新写入的大快照，并顺便做一次 GC。
-       视图已在进入时释放，巡检不再重复销毁，避免抖动。 */
+    /* v3.0 · 静默期低频巡检：裁剪可能重新写入的大快照 + GC，并再次回收
+       静默期间被定时任务重新创建的离屏视图。releaseIdleViews 自身带
+       isBusy / taskClickRunning 护栏，运行中不会误销毁。 */
     this._sweepTimer = setInterval(() => {
       if (this.disposed || !this.quiet) { this._stopSweep(); return; }
       if (this._call('isBusy')) { this._exit('busy-during-sweep'); return; }
+      const released = Number(this._call('releaseIdleViews')) || 0;
+      this.stats.releasedViews += released;
       this._call('trimState');
       this._call('gc');
       this.stats.gcCalls++;

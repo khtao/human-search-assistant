@@ -1,8 +1,12 @@
 /* 共享核心：插件版与桌面版共用的决策与纯逻辑（单一真源见 shared/） */
 importScripts('shared/hsa-core.js');
 importScripts('shared/hsa-zip.js');
+/* v2.9 · 插件版专用内存预算（MV3 SW 空闲即回收，不保留大对象） */
+importScripts('lib/mv3-budget.js');
 const HSA_CORE = globalThis.HSA_CORE;
 const HSA_ZIP = globalThis.HSA_ZIP;
+const MV3 = (typeof globalThis !== 'undefined' && globalThis.HSA_MV3_BUDGET) ||
+  (typeof require === 'function' ? require('./lib/mv3-budget.js') : null);
 
 const DASHBOARD_URL = 'https://rewards.bing.com/dashboard';
 const EARN_URL = 'https://rewards.bing.com/earn';
@@ -111,15 +115,23 @@ load(['settings']).then(s => {
   runLogEnabled = v !== false;
 }).catch(() => {});
 
-/* 追加一条运行日志：字段白名单裁剪 + 环形上限，绝不写网页 HTML / 快照。 */
+/* v2.9 · 运行日志批量写入：MV3 每次 load+store 都会把整份日志 JSON 序列化
+   一遍，一条一写效率极差。改为有界队列（16 条 / 250ms）合并成一次写入，
+   持久化条数上限 180（原 600），仍由共享核心做字段白名单裁剪。 */
+const runLogBatcher = MV3.makeLogBatcher({
+  load: () => load(['runLog']).catch(() => ({})),
+  store: patch => store(patch),
+  append: (list, entry, at) => HSA_CORE.runLogAppend(list, entry, at),
+  schedule: (fn, ms) => setTimeout(fn, ms),
+  cancel: id => clearTimeout(id)
+});
 function hsaRunLog(event, info) {
   if (!runLogEnabled) return Promise.resolve();
-  const o = Object.assign({ event: String(event || 'activity'), at: Date.now() }, info || {});
-  const now = Number(o.at) || Date.now();
-  return load(['runLog'])
-    .then(s => store({ runLog: HSA_CORE.runLogAppend(s && s.runLog, o, now) }))
-    .catch(() => {});
+  const o = Object.assign({ event: String(event || 'activity'), at: Date.now(),
+    platform: HSA_PLATFORM }, info || {});
+  return runLogBatcher.add(o);
 }
+function flushRunLog() { return runLogBatcher.flush(); }
 
 /* 关键网页实时抓取：强制 fresh + cache:no-store，不走 120 秒 HTML 缓存，
    不读可见快照 / 面板 / 隐藏数据视图；抓到的 HTML 只随本次导出返回。 */
@@ -190,8 +202,9 @@ const RELATED_SELECTORS = [
   "a[href*='/search?q=']", "a[href*='search?q=']"
 ];
 const HOT_SOURCES = ['bing', 'baidu', 'weibo', 'toutiao', 'zhihu', 'sina'];
-const SOURCE_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
-  + '(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Edg/131.0.0.0';
+/* v2.9 · 已移除所有浏览器伪装：不再伪造 User-Agent / Accept-Language /
+   sec-ch-ua* 客户端提示，也不再注入 navigator 覆盖脚本。请求头由运行时
+   （扩展 / Electron）自行提供，Referer 等站点必需字段照常保留。 */
 const SOURCE_TIMEOUT = 8000;
 const USE_REAL_INPUT = true;          
 const GO_HOME_RATE = 0.38;
@@ -281,7 +294,7 @@ function textOf(html, patterns) {
 const HOT_SOURCE_FNS = {
   bing: async () => {
     const r = await fetchSource('https://www.bing.com/news/trendingtopics?form=HPNTOP',
-      { headers: { 'User-Agent': SOURCE_UA, 'Accept-Language': 'zh-CN,zh;q=0.9' } });
+      { /* v2.9：无浏览器伪装，交给扩展运行时自带请求头 */ });
     if (!r.ok) throw new Error('HTTP ' + r.status);
     return textOf(await r.text(), [
       /<a[^>]+class="[^"]*title[^"]*"[^>]*>([^<]{2,60})<\/a>/g,
@@ -290,7 +303,7 @@ const HOT_SOURCE_FNS = {
   },
   baidu: async () => {
     const r = await fetchSource('https://top.baidu.com/board?tab=realtime',
-      { headers: { 'User-Agent': SOURCE_UA } });
+      {});
     if (!r.ok) throw new Error('HTTP ' + r.status);
     return textOf(await r.text(), [
       /"query"\s*:\s*"([^"\\]{2,60})"/g,
@@ -299,7 +312,7 @@ const HOT_SOURCE_FNS = {
   },
   weibo: async () => {
     const r = await fetchSource('https://weibo.com/ajax/side/hotSearch',
-      { headers: { 'User-Agent': SOURCE_UA, Referer: 'https://weibo.com/' } });
+      { headers: { Referer: 'https://weibo.com/' } });
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const data = await r.json();
     return ((data && data.data && data.data.realtime) || [])
@@ -307,14 +320,14 @@ const HOT_SOURCE_FNS = {
   },
   toutiao: async () => {
     const r = await fetchSource('https://www.toutiao.com/hot-event/hot-board/?origin=toutiao_pc',
-      { headers: { 'User-Agent': SOURCE_UA } });
+      {});
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const data = await r.json();
     return ((data && data.data) || []).map(it => cleanKeyword((it && (it.Title || it.title)) || ''));
   },
   zhihu: async () => {
     const r = await fetchSource('https://www.zhihu.com/api/v3/feed/topstory/hot-lists/total?limit=50&desktop=true',
-      { headers: { 'User-Agent': SOURCE_UA } });
+      {});
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const data = await r.json();
     return ((data && data.data) || []).map(it => cleanKeyword(
@@ -323,7 +336,7 @@ const HOT_SOURCE_FNS = {
   },
   sina: async () => {
     const r = await fetchSource('https://rss.sina.com.cn/news/marquee/ddt.xml',
-      { headers: { 'User-Agent': SOURCE_UA } });
+      {});
     if (!r.ok) throw new Error('HTTP ' + r.status);
     return [...String(await r.text()).matchAll(/<title>(?:<!\[CDATA\[)?([^<\]]{2,80})/g)]
       .map(m => cleanKeyword(m[1]));
@@ -375,7 +388,7 @@ async function buildQueries(count, usedList) {
   return {
     /* 词不够就少跑几轮：不补词、不拼接、不复用、不循环重复。 */
     queries: built.queries,
-    usedWords: (usedList || []).concat(built.queries).slice(-1000), // 仅作记录，不参与选词
+    usedWords: MV3.trimUsedWords((usedList || []).concat(built.queries)), // v2.9：上限 120
     trendCount: pool.items.length,
     strict: built
   };
@@ -1332,16 +1345,9 @@ let lastFetchAt = 0;
 /* D01=A：优先官网原始网络数据；D06=D：后台展示允许 120 秒短期缓存并标记采集时间，
    用户刷新 / 开始 / 收尾一律强制新数据。缓存有条目数与字节上限，避免常驻大 HTML。 */
 const hsaHtmlCache = new Map();
-function hsaCacheTrim(now) {
-  for (const [k, v] of hsaHtmlCache) {
-    if (!v || now - v.at > HSA_CORE.DEFAULTS.htmlCacheTtlMs) hsaHtmlCache.delete(k);
-  }
-  while (hsaHtmlCache.size > HSA_CORE.DEFAULTS.htmlCacheMaxEntries) {
-    const oldest = hsaHtmlCache.keys().next().value;
-    if (oldest == null) break;
-    hsaHtmlCache.delete(oldest);
-  }
-}
+/* v2.9 / v3.1：htmlCacheMaxEntries(1) / htmlCacheTtlMs(45s) 由插件专用
+   预算控制；htmlCacheMaxBytes 只作缓存准入门槛，不再截断官网响应体。 */
+function hsaCacheTrim(now) { return MV3.trimCache(hsaHtmlCache, now); }
 async function fetchRewardsPage(path, opts) {
   if (searchGuard) {
     guardBlocks++;
@@ -1354,7 +1360,7 @@ async function fetchRewardsPage(path, opts) {
   hsaCacheTrim(now);
   if (!fresh) {
     const hit = hsaHtmlCache.get(key);
-    if (hit && now - hit.at <= HSA_CORE.DEFAULTS.htmlCacheTtlMs) {
+    if (hit && now - hit.at <= MV3.POLICY.htmlCacheTtlMs) {
       return Object.assign({}, hit.value, { source: 'cache', collectedAt: hit.at });
     }
   }
@@ -1368,10 +1374,15 @@ async function fetchRewardsPage(path, opts) {
       cache: 'no-store',
       signal: ctrl.signal
     });
-    const html = (await res.text()).slice(0, HSA_CORE.DEFAULTS.htmlCacheMaxBytes);
-    const value = { ok: res.ok, status: res.status, url: res.url, html,
-                    collectedAt: Date.now(), source: 'official-network' };
-    if (res.ok && html.length > 800) {
+    /* v3.1 · 官网 HTML 必须完整交给解析器。v2.9 这里把响应体直接
+       slice 到 96KB，砍掉了 /dashboard 与 /earn 后半段内嵌的积分/任务
+       数据，cards 为空 → 同步降级 readRewardsPage → chrome.tabs.create
+       打开可见 rewards 标签页（用户看到「同步时弹出官网」）。
+       现在响应体永不截断；缓存只收 ≤ MV3.POLICY.htmlCacheMaxBytes 的
+       完整页面，超限页面本次照常解析、只是不复用。 */
+    const html = await res.text();
+    const value = MV3.officialPageValue(res, html, Date.now());
+    if (res.ok && MV3.cacheableHtml(html)) {
       hsaHtmlCache.delete(key);
       hsaHtmlCache.set(key, { at: Date.now(), value: value });
       hsaCacheTrim(Date.now());
@@ -1908,6 +1919,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   } else if (msg.type === 'exportRunLog') {
     /* 只读导出：严格运行期也允许，不触发抓取、不改运行状态。 */
     (async () => {
+      await flushRunLog();          // v2.9：导出包含尚未落盘的一批
       const s = await load(['runLog']).catch(() => ({}));
       const entries = (s && Array.isArray(s.runLog)) ? s.runLog : [];
       const now = Date.now();
@@ -1957,9 +1969,22 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       ok: false, reason: 'error', message: String(err && err.message || err)
     }));
     return true;
+  } else if (msg.type === HSA_CORE.SYNC_ON_OPEN.messageType) {
+    /* v3.0 · 打开主界面同步一次：严格运行期已由上方白名单拦截，
+       这里只做一次 fresh 官网同步，不启动任务、不改设置。 */
+    syncRewardsUnified({ fresh: true, noTabs: true,
+      reason: HSA_CORE.SYNC_ON_OPEN.reason })
+      .then(r => store({ syncNotice: {
+        at: Date.now(), reason: HSA_CORE.SYNC_ON_OPEN.reason, ok: !!r.ok,
+        changed: (r.changed || []).length
+      } }))
+      .catch(err => store({ syncNotice: {
+        at: Date.now(), reason: HSA_CORE.SYNC_ON_OPEN.reason, ok: false,
+        error: String(err && err.message || err)
+      } }));
   } else if (msg.type === 'refreshTasks' || msg.type === 'refreshPoints') {
     const reason = msg.type === 'refreshPoints' ? 'refreshPoints' : 'manual-refresh';
-    syncRewardsUnified({ fresh: true, reason: reason })
+    syncRewardsUnified({ fresh: true, noTabs: true, reason: reason })
       .then(r => store({ syncNotice: {
         at: Date.now(), reason: reason, ok: !!r.ok,
         changed: (r.changed || []).length
@@ -2267,7 +2292,7 @@ async function readVisibleRewardsSnapshot() {
         }
         return {
           url: location.href,
-          html: document.documentElement.outerHTML.slice(0, 600 * 1024),
+          html: document.documentElement.outerHTML.slice(0, MV3.POLICY.capturedHtmlBytes),
           text: text,
           rows: rows.slice(0, 60),
           signedOut: /Sign in to your Microsoft account|登录到 Microsoft 帐户/i.test(text),
@@ -4172,7 +4197,8 @@ async function presetSearchCount(counter, cap) {
 }
 
 async function syncStart(token, cap) {
-  const sync = await syncRewardsUnified({ fresh: true, reason: 'start', token: token });
+  const sync = await syncRewardsUnified({ fresh: true, noTabs: true,
+    reason: 'start', token: token });
   if (!sync.ok) {
     await store({
       todayStart: null, liveCheck: false,
@@ -4219,7 +4245,7 @@ async function syncStart(token, cap) {
 }
 
 async function presetSyncFinish(st, searches, start) {
-  const sync = await syncRewardsUnified({ fresh: true, reason: 'finish' });
+  const sync = await syncRewardsUnified({ fresh: true, noTabs: true, reason: 'finish' });
   const finalPoints = sync.ok ? sync.balance : null;
   const finalToday = sync.ok ? sync.todaySearch : null;
   const exact = !!st.startKnown && finalPoints !== null;
@@ -4260,14 +4286,12 @@ async function hsaActivityPush(info) {
   };
   const patch = { activityDetail: payload };
   if (runLogEnabled) {
-    try {
-      const cur = await load(['runLog']);
-      patch.runLog = HSA_CORE.runLogAppend(cur && cur.runLog, {
-        at: now, event: 'activity', level: payload.state === 'error' ? 'error' : 'info',
-        state: payload.state, zh: payload.zh, en: payload.en,
-        page: payload.page, card: payload.card, query: payload.query, delayMs: delayMs
-      }, now);
-    } catch (err) {}
+    /* v2.9：并入批量队列，本函数只写 activityDetail 一个键 */
+    hsaRunLog('activity', {
+      at: now, event: 'activity', level: payload.state === 'error' ? 'error' : 'info',
+      state: payload.state, zh: payload.zh, en: payload.en,
+      page: payload.page, card: payload.card, query: payload.query, delayMs: delayMs
+    }).catch(() => {});
   }
   try { await store(patch); } catch (err) {}
 }
@@ -4525,7 +4549,10 @@ async function syncRewardsUnified(opts) {
     : (Number.isFinite(prevPs[key]) ? prevPs[key] : null);
 
   let cards = taskItemsFromPages(pages);
-  if (!cards.length && pages.reachable && !(o.skipInjection)) {
+  /* v3.1 · noTabs：打开主界面 / 手动刷新 / 收尾 / 登录返回等「同步」入口
+     一律不得打开任何 rewards 标签页。官网 HTML 已保证完整，网络 + 快照
+     补缺足够；只有自动运行的搜索 / 点击链路才允许按需开后台标签。 */
+  if (!cards.length && pages.reachable && !(o.skipInjection) && !o.noTabs) {
     const r = await readRewardsPage(EARN_URL, url => pathStarts(url, '/earn'),
       readTaskCardsFromDom, o.token == null ? flowToken : o.token);
     if (r && r.ok && Array.isArray(r.rows)) {
@@ -4602,7 +4629,8 @@ async function syncRewardsUnified(opts) {
 }
 
 const refreshTodayTasks = async function (token) {
-  const r = await syncRewardsUnified({ fresh: true, reason: 'refreshTasks', token: token });
+  const r = await syncRewardsUnified({ fresh: true, noTabs: true,
+    reason: 'refreshTasks', token: token });
   return { ok: r.ok, signedOut: r.signedOut, count: (r.todayTasks.items || []).length };
 };
 
@@ -4681,7 +4709,7 @@ function onPanelTabUpdated(tabId, info, tab) {
   if (!/^https:\/\/rewards\.bing\.com\//i.test(String(tab && tab.url || ''))) return;
   if (Date.now() - lastPanelSyncAt < 5000) return;
   lastPanelSyncAt = Date.now();
-  syncRewardsUnified({ reason: 'login-return' })
+  syncRewardsUnified({ noTabs: true, reason: 'login-return' })
     .then(r => store({ syncNotice: { at: Date.now(), reason: 'login-return',
       ok: !!r.ok, changed: (r.changed || []).length } }))
     .catch(() => {});

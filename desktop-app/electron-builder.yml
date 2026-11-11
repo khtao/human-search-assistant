@@ -14,6 +14,8 @@ files:
   - host.html
   - lib/core.js
   - lib/debug-capture.js
+  # v2.9：桌面版运行时内存/写盘预算模块，必须随包发布
+  - lib/runtime-budget.js
   # main.js 顶层 require 的 lib 模块必须逐项列出；漏列会让 app.asar 启动即报
   # "Cannot find module './lib/xxx'"（由 verify-packaged-lib.js 防呆校验）
   - lib/sidebar-task-cards.js

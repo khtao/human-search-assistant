@@ -225,7 +225,7 @@ test('v2.6 · applet 主题视觉：50px 透明区 / 三点 ball-beat / 交错�
     assert.match(s, /class="pull-text" data-pull-text/);
     assert.doesNotMatch(s, /pull-arrow/);
   }
-  /* 零第三方依赖：只复刻主题视觉，共享清单仍是 7 个文件 */
+  /* 零第三方依赖：只复刻主题视觉；v2.8 起共享清单仍为 7 个文件 */
   const sync = read('scripts/sync-shared.js');
   assert.match(sync, /hsa-pull-refresh\.js/);
   assert.doesNotMatch(sync, /minirefresh/);

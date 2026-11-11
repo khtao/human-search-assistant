@@ -182,7 +182,10 @@ const runtime = {
     hasListeners: () => messageListeners.size > 0
   },
   onInstalled: makeEvent('runtime.onInstalled'),
-  onStartup: makeEvent('runtime.onStartup')
+  onStartup: makeEvent('runtime.onStartup'),
+  /* v3.0 · 桌面 popup 常驻隐藏：窗口 show / restore 时主进程广播此事件，
+     触发「打开主界面同步一次」，与插件版打开即新文档的行为对齐。 */
+  onUiOpened: makeEvent('ui:opened')
 };
 
 /* ------------------------------------------------------------------ 导出 chrome */

@@ -263,6 +263,12 @@
           <span class="set-label"><span data-i18n="desktop.autoLaunch">开机自动启动</span></span>
           <input type="checkbox" id="set-auto-launch" class="switch">
         </label>
+        <!-- v2.9：已移除全部浏览器伪装；这里只说明默认主页/搜索引擎（只读说明）。 -->
+        <div class="set-row" data-i18n-title="desktop.edgeHint" data-tip-role="hint"
+             title="内置浏览器不做任何身份伪装，使用 Electron 自身标识；默认主页与搜索引擎为 Bing">
+          <span class="set-label"><span data-i18n="desktop.edge">内置浏览器</span></span>
+          <span class="set-label"><span data-i18n="desktop.edgeValue">默认主页 · Bing</span></span>
+        </div>
         <p id="desktop-msg" class="preview-msg" role="status" hidden></p>
       </div>
       <div class="set-group" id="diag-group" style="--g:5">

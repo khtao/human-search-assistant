@@ -169,6 +169,18 @@ const load = keys => chrome.storage.local.get(keys);
 load(['running']).then(s => { strictRunActive = !!s.running; }).catch(() => {});
 /* 诊断设置：日常运行只有运行日志；开关由设置页控制，运行期不允许改。 */
 const HSA_PLATFORM = 'desktop-app';
+/* v2.9 · 桌面版专用预算（与插件版分别优化）：主进程已做写盘节流与落盘副本
+   裁剪，这里只需收紧常驻 storage 里的日志 / 历史词 / 官网 HTML 体积。 */
+const DESKTOP_MEM = Object.freeze({
+  /* v3.1 · 恢复到 applet 版的 600KB。v2.9 误压到 256KB 会截断 /dashboard
+     与 /earn 的官网响应，导致积分/任务解析失败（插件版表现为弹出官网标签）。 */
+  htmlCacheMaxBytes: 600 * 1024,
+  runLogEntries: 240,              // 原 600（插件版 180）
+  usedWordsMax: 160                // 原 1000（插件版 120）
+});
+function desktopTrimLog(list) {
+  return Array.isArray(list) ? list.slice(-(DESKTOP_MEM.runLogEntries - 1)) : [];
+}
 let runLogEnabled = true;
 load(['settings']).then(s => {
   const v = s && s.settings && s.settings.runLogEnabled;
@@ -181,7 +193,7 @@ function hsaRunLog(event, info) {
   const o = Object.assign({ event: String(event || 'activity'), at: Date.now() }, info || {});
   const now = Number(o.at) || Date.now();
   return load(['runLog'])
-    .then(s => store({ runLog: HSA_CORE.runLogAppend(s && s.runLog, o, now) }))
+    .then(s => store({ runLog: HSA_CORE.runLogAppend(desktopTrimLog(s && s.runLog), o, now) }))
     .catch(() => {});
 }
 
@@ -271,8 +283,9 @@ const RELATED_SELECTORS = [
   "a[href*='/search?q=']", "a[href*='search?q=']"
 ];
 const HOT_SOURCES = ['bing', 'baidu', 'weibo', 'toutiao', 'zhihu', 'sina'];
-const SOURCE_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
-  + '(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Edg/131.0.0.0';
+/* v2.9 · 已移除所有浏览器伪装：不再伪造 User-Agent / Accept-Language /
+   sec-ch-ua* 客户端提示，也不再注入 navigator 覆盖脚本。请求头由运行时
+   （扩展 / Electron）自行提供，Referer 等站点必需字段照常保留。 */
 const SOURCE_TIMEOUT = 8000;
 const USE_REAL_INPUT = true;          // 关掉即全程使用页面内合成事件
 const GO_HOME_RATE = 0.38;
@@ -367,7 +380,7 @@ function textOf(html, patterns) {
 const HOT_SOURCE_FNS = {
   bing: async () => {
     const r = await fetchSource('https://www.bing.com/news/trendingtopics?form=HPNTOP',
-      { headers: { 'User-Agent': SOURCE_UA, 'Accept-Language': 'zh-CN,zh;q=0.9' } });
+      { /* v2.9：无浏览器伪装，交给 Electron 自带请求头 */ });
     if (!r.ok) throw new Error('HTTP ' + r.status);
     return textOf(await r.text(), [
       /<a[^>]+class="[^"]*title[^"]*"[^>]*>([^<]{2,60})<\/a>/g,
@@ -376,7 +389,7 @@ const HOT_SOURCE_FNS = {
   },
   baidu: async () => {
     const r = await fetchSource('https://top.baidu.com/board?tab=realtime',
-      { headers: { 'User-Agent': SOURCE_UA } });
+      {});
     if (!r.ok) throw new Error('HTTP ' + r.status);
     return textOf(await r.text(), [
       /"query"\s*:\s*"([^"\\]{2,60})"/g,
@@ -385,7 +398,7 @@ const HOT_SOURCE_FNS = {
   },
   weibo: async () => {
     const r = await fetchSource('https://weibo.com/ajax/side/hotSearch',
-      { headers: { 'User-Agent': SOURCE_UA, Referer: 'https://weibo.com/' } });
+      { headers: { Referer: 'https://weibo.com/' } });
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const data = await r.json();
     return ((data && data.data && data.data.realtime) || [])
@@ -393,14 +406,14 @@ const HOT_SOURCE_FNS = {
   },
   toutiao: async () => {
     const r = await fetchSource('https://www.toutiao.com/hot-event/hot-board/?origin=toutiao_pc',
-      { headers: { 'User-Agent': SOURCE_UA } });
+      {});
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const data = await r.json();
     return ((data && data.data) || []).map(it => cleanKeyword((it && (it.Title || it.title)) || ''));
   },
   zhihu: async () => {
     const r = await fetchSource('https://www.zhihu.com/api/v3/feed/topstory/hot-lists/total?limit=50&desktop=true',
-      { headers: { 'User-Agent': SOURCE_UA } });
+      {});
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const data = await r.json();
     return ((data && data.data) || []).map(it => cleanKeyword(
@@ -409,7 +422,7 @@ const HOT_SOURCE_FNS = {
   },
   sina: async () => {
     const r = await fetchSource('https://rss.sina.com.cn/news/marquee/ddt.xml',
-      { headers: { 'User-Agent': SOURCE_UA } });
+      {});
     if (!r.ok) throw new Error('HTTP ' + r.status);
     return [...String(await r.text()).matchAll(/<title>(?:<!\[CDATA\[)?([^<\]]{2,80})/g)]
       .map(m => cleanKeyword(m[1]));
@@ -463,7 +476,7 @@ async function buildQueries(count, usedList) {
   return {
     /* 词不够就少跑几轮：不补词、不拼接、不复用、不循环重复。 */
     queries: built.queries,
-    usedWords: (usedList || []).concat(built.queries).slice(-1000), // 仅作记录，不参与选词
+    usedWords: (usedList || []).concat(built.queries).slice(-DESKTOP_MEM.usedWordsMax), // v2.9：上限 160
     trendCount: pool.items.length,
     strict: built
   };
@@ -1572,7 +1585,7 @@ async function desktopFetchOfficialHtml(path) {
       sleep(8000).then(() => null)
     ]);
     if (!res || !res.ok || typeof res.text !== 'function') return null;
-    const html = String(await res.text() || '').slice(0, HSA_CORE.DEFAULTS.htmlCacheMaxBytes);
+    const html = String(await res.text() || '').slice(0, DESKTOP_MEM.htmlCacheMaxBytes);
     if (html.length < 800 || isSignInPage(html)) return null;
     return { ok: true, status: res.status || 200, url: res.url || url, html: html,
              source: 'official-network', collectedAt: Date.now() };
@@ -1676,6 +1689,11 @@ async function fetchRewardsPage(path, opts) {
     }
     const panel = await desktopFetchFromPanel(path);
     if (panel) return panel;
+    /* v3.1 · noTabs：打开主界面 / 手动刷新等同步入口不创建隐藏取数视图，
+       既不弹页面，也不与静默态的视图回收冲突。 */
+    if (opts && opts.noTabs) {
+      return { ok: false, status: 0, url: null, html: '', error: 'no-tabs sync' };
+    }
     return await desktopFetchFromDataView(path, opts);
   })();
   try {
@@ -2624,12 +2642,24 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       ok: false, reason: 'error', message: String(err && err.message || err)
     }));
     return true;
+  } else if (msg.type === HSA_CORE.SYNC_ON_OPEN.messageType) {
+    /* v3.0 · 打开主界面同步一次：立即应答，同步完成后写 syncNotice。 */
+    desktopSyncRewards({ fresh: true, noTabs: true,
+      reason: HSA_CORE.SYNC_ON_OPEN.reason })
+      .then(r => store({ syncNotice: {
+        at: Date.now(), reason: HSA_CORE.SYNC_ON_OPEN.reason, ok: !!r.ok,
+        changed: (r.changed || []).length
+      } }))
+      .catch(err => store({ syncNotice: {
+        at: Date.now(), reason: HSA_CORE.SYNC_ON_OPEN.reason, ok: false,
+        error: String(err && err.message || err)
+      } }));
   } else if (msg.type === 'refreshTasks' || msg.type === 'refreshPoints') {
     /* v1.3.3：立即应答（后台同步可能要重新加载两页，不能让弹窗等 IPC 超时）；
        同步真正完成后写 syncNotice → storage.onChanged → 圆圈下方绿字
        「已同步积分」。整条刷新链路仍是唯一的 desktopSyncRewards。 */
     const reason = msg.type === 'refreshPoints' ? 'refreshPoints' : 'manual-refresh';
-    desktopSyncRewards({ fresh: true, reason: reason })
+    desktopSyncRewards({ fresh: true, noTabs: true, reason: reason })
       .then(r => store({ syncNotice: {
         at: Date.now(), reason: reason, ok: !!r.ok,
         changed: (r.changed || []).length
@@ -6513,7 +6543,8 @@ async function desktopSyncRewards(opts) {
   const policy = HSA_CORE.syncCachePolicy(o.reason);
   const fresh = !!o.fresh || policy.fresh;
   const pages = o.pages || await fetchBothPages(fresh
-    ? { fresh: true, reason: o.reason } : { reason: o.reason });
+    ? { fresh: true, reason: o.reason, noTabs: o.noTabs }
+    : { reason: o.reason, noTabs: o.noTabs });
   const prev = await load(['pointsSummary', 'todayTasks', 'todaySearch', 'loginStatus', 'taskClickIndex']);
   const prevPs = prev.pointsSummary || {};
   const prevTt = prev.todayTasks || {};
@@ -6809,7 +6840,7 @@ async function desktopActivityWrite(info) {
   if (runLogEnabled) {
     try {
       const cur = await load(['runLog']);
-      patch.runLog = HSA_CORE.runLogAppend(cur && cur.runLog, {
+      patch.runLog = HSA_CORE.runLogAppend(desktopTrimLog(cur && cur.runLog), {
         at: now, event: 'activity', level: payload.state === 'error' ? 'error' : 'info',
         state: payload.state, zh: payload.zh, en: payload.en,
         page: payload.page, card: payload.card, next: payload.next,

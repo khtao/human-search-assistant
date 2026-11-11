@@ -36,6 +36,8 @@ const P = {
   hoverTip: 'shared/hsa-hover-tip.js',
   zipLib: 'shared/hsa-zip.js',
   pullLib: 'shared/hsa-pull-refresh.js',
+  mv3Budget: 'edge-extension/lib/mv3-budget.js',
+  runtimeBudget: 'desktop-app/lib/runtime-budget.js',
   preload: 'desktop-app/preload.js',
   sidebarLib: 'desktop-app/lib/sidebar-task-cards.js',
   winBuild: 'desktop-app/scripts/build-win-safe.js',
@@ -828,7 +830,7 @@ const CHECKS = [
     assert.equal(PTR.DEFAULTS.maxPull, 96);
   }],
   ['v2.6 · 下拉刷新仍零第三方依赖且两端共享唯一实现', () => {
-    /* 不引入 minirefresh 库文件，只复刻主题视觉，保持共享清单 7 个文件 */
+    /* 不引入 minirefresh 库文件，只复刻主题视觉；v2.8 起共享清单仍为 7 个文件 */
     const sync = fs.readFileSync(path.join(ROOT, 'scripts', 'sync-shared.js'), 'utf8');
     assert.match(sync, /hsa-pull-refresh\.js/);
     assert.doesNotMatch(sync, /minirefresh/);
@@ -838,6 +840,346 @@ const CHECKS = [
     }
     const files = sync.match(/const FILES = \[([\s\S]*?)\];/)[1];
     assert.equal((files.match(/\.js'|\.css'|\.json'/g) || []).length, 7);
+  }],
+  ['v2.9 · 全部浏览器伪装已移除：无 UA / UA-CH / navigator 注入 / 自定义请求头', () => {
+    for (const k of ['eb', 'db', 'dm', 'preload', 'host']) {
+      for (const pat of [
+        /userAgentFallback/, /setUserAgent/, /sec-ch-ua(?:-|\s|'|"|:)/,
+        /navigatorScript/, /EDGE_IDENTITY/, /edge-identity/, /SOURCE_UA/,
+        /HSA_APPLY_EDGE_IDENTITY/, /chrome:edge:profile/, /getEdgeProfile/,
+        /applyFetchHeaders/, /installEdgeClientHints/
+      ]) {
+        absent(k, pat, P[k] + ' 仍残留伪装 ' + pat);
+      }
+    }
+    /* 不再伪造 User-Agent，Referer 等业务必需头照常保留 */
+    for (const k of ['eb', 'db']) {
+      absent(k, /'User-Agent':/);
+      has(k, /Referer: 'https:\/\/weibo\.com\/'/);
+    }
+    /* 默认 Bing 是起始页设置，不属于身份伪装，保留 */
+    has('dm', /const DEFAULT_BROWSER_HOME = 'https:\/\/www\.bing\.com\/\?mkt=zh-CN'/);
+    has('dm', /const DEFAULT_SEARCH_ENGINE = 'https:\/\/www\.bing\.com\/search\?q='/);
+    /* 伪装模块与旧专项测试文件已删除 */
+    assert.equal(fs.existsSync(path.join(ROOT, 'desktop-app', 'lib', 'edge-identity.js')), false);
+    assert.equal(fs.existsSync(path.join(ROOT, 'tests', 'edge-identity.test.js')), false);
+    for (const k of ['ymlLinux', 'ymlWin']) {
+      absent(k, /edge-identity\.js/);
+      has(k, /lib\/runtime-budget\.js/);
+    }
+    /* 设置页文案如实说明「无伪装」 */
+    has('dh', /不做任何身份伪装/);
+    has('dp', /'desktop\.edgeValue': '默认主页 · Bing'/);
+    has('dp', /'desktop\.edgeValue': 'Home · Bing'/);
+    absent('dh', /伪装为 Microsoft Edge/);
+  }],
+  ['v2.9 · 插件版专用预算模块：MV3 策略与桌面版取值不同', () => {
+    const M = require(path.join(ROOT, 'edge-extension', 'lib', 'mv3-budget.js'));
+    const D = require(path.join(ROOT, 'desktop-app', 'lib', 'runtime-budget.js'));
+    assert.equal(M.VERSION, '1.0.0');
+    assert.equal(M.POLICY.htmlCacheMaxEntries, 1);
+    /* v3.1：96KB 误把官网响应体截断导致同步弹官网，恢复为 applet 版 600KB，
+       但仍只作为「单条缓存准入门槛」，响应体本身永不截断。 */
+    assert.equal(M.POLICY.htmlCacheMaxBytes, 600 * 1024);
+    assert.equal(M.POLICY.htmlCacheTtlMs, 45000);
+    assert.equal(M.POLICY.capturedHtmlBytes, 256 * 1024);
+    assert.equal(M.POLICY.runLogEntries, 180);
+    assert.equal(M.POLICY.usedWordsMax, 120);
+    /* 两端分别取值，不是共用一套 */
+    assert.notEqual(M.POLICY.runLogEntries, D.POLICY.runLogEntries);
+    assert.notEqual(M.POLICY.usedWordsMax, D.POLICY.usedWordsMax);
+    has('eb', /importScripts\('lib\/mv3-budget\.js'\)/);
+    absent('db', /mv3-budget/);
+    has('eb', /已移除所有浏览器伪装/);
+    /* 缓存裁剪纯函数 */
+    const map = new Map([['a', { at: 1 }], ['b', { at: Date.now() }], ['c', { at: Date.now() }]]);
+    assert.ok(M.trimCache(map, Date.now()) >= 2);
+    assert.equal(map.size, 1);
+    assert.equal(M.trimLog(Array.from({ length: 400 }, (_, i) => i)).length, 179);
+    assert.equal(M.trimUsedWords(Array.from({ length: 500 }, (_, i) => i)).length, 120);
+  }],
+  ['v2.9 · 插件版日志批量合并：N 条只写一次，导出前冲刷', async () => {
+    const M = require(path.join(ROOT, 'edge-extension', 'lib', 'mv3-budget.js'));
+    const stores = [];
+    let scheduled = null;
+    const b = M.makeLogBatcher({
+      load: () => Promise.resolve({ runLog: [] }),
+      store: v => { stores.push(v); return Promise.resolve(); },
+      append: (l, e) => l.concat([e]),
+      schedule: fn => { scheduled = fn; return 7; },
+      cancel: () => { scheduled = null; }
+    });
+    for (let i = 0; i < 5; i++) b.add({ at: i, event: 'e' + i });
+    assert.equal(b.size(), 5);
+    assert.ok(scheduled, '应排队一次尾随写');
+    await b.flush();
+    assert.equal(stores.length, 1, '5 条日志必须合并成 1 次 storage 写');
+    assert.equal(stores[0].runLog.length, 5);
+    assert.equal(b.size(), 0);
+    has('eb', /const runLogBatcher = MV3\.makeLogBatcher/);
+    has('eb', /function flushRunLog\(\)/);
+    has('eb', /await flushRunLog\(\)/);
+    has('eb', /hsaRunLog\('activity'/);
+    has('eb', /MV3\.cacheableHtml\(html\)/);
+    has('eb', /MV3\.officialPageValue\(res, html, Date\.now\(\)\)/);
+    has('eb', /MV3\.POLICY\.capturedHtmlBytes/);
+    has('eb', /MV3\.trimUsedWords/);
+  }],
+  ['v2.9 · 桌面版专用预算模块：写盘节流 / 落盘裁剪 / 空闲视图回收', () => {
+    const D = require(path.join(ROOT, 'desktop-app', 'lib', 'runtime-budget.js'));
+    assert.equal(D.VERSION, '1.0.0');
+    assert.equal(D.POLICY.stateWriteMinGapMs, 150);
+    assert.equal(D.POLICY.diskSnapshotHtmlBytes, 256 * 1024);
+    assert.equal(D.POLICY.runLogEntries, 240);
+    assert.equal(D.POLICY.dataViewIdleMs, 90000);
+    /* 前导立即写 + 尾随合并 */
+    let writes = 0, trailing = null;
+    const t = D.makeWriteThrottle({
+      now: () => 1000, write: () => writes++,
+      schedule: fn => { trailing = fn; return 1; }, cancel: () => { trailing = null; }
+    });
+    t.save();
+    assert.equal(writes, 1, '首次写必须立即落盘（启动校验依赖）');
+    t.save(); t.save();
+    assert.equal(writes, 1, '高频写应被合并');
+    trailing();
+    assert.equal(writes, 2);
+    t.flush();
+    assert.equal(writes, 3);
+    /* 落盘副本裁剪但内存态完整 */
+    const state = { a: 1,
+      visibleRewardsSnapshot: { html: 'x'.repeat(700000), text: 'y'.repeat(90000), foo: 2 },
+      runLog: Array.from({ length: 700 }, () => ({ z: 1 })) };
+    const disk = D.diskState(state);
+    assert.equal(disk.visibleRewardsSnapshot.html.length, D.POLICY.diskSnapshotHtmlBytes);
+    assert.equal(disk.visibleRewardsSnapshot.text.length, D.POLICY.diskSnapshotTextBytes);
+    assert.equal(disk.visibleRewardsSnapshot.htmlTruncated, true);
+    assert.equal(disk.runLog.length, 240);
+    assert.equal(state.visibleRewardsSnapshot.html.length, 700000, '内存态不得被裁剪');
+    assert.equal(D.shouldReleaseIdleView(0, 91000, false), true);
+    assert.equal(D.shouldReleaseIdleView(0, 91000, true), false, '运行中绝不释放');
+    assert.equal(D.shouldReleaseIdleView(0, 1000, false), false);
+    assert.equal(D.trimUsedWords(Array.from({ length: 500 }, () => 1)).length, 160);
+  }],
+  ['v2.9 · 桌面主进程接线：节流写盘 / 退出强刷 / 调试期零整页 HTML / 空闲视图回收', () => {
+    has('dm', /const RUNTIME_BUDGET = require\('\.\/lib\/runtime-budget\.js'\)/);
+    has('dm', /const stateWrites = RUNTIME_BUDGET\.makeWriteThrottle/);
+    has('dm', /RUNTIME_BUDGET\.diskState\(state\)/);
+    has('dm', /function flushStateSync\(\)/);
+    has('dm', /flushStateSync\(\);   \/\/ v2\.9：把节流的尾随写强制落盘/);
+    absent('dm', /JSON\.stringify\(state, null, 2\)/);
+    has('dm', /if \(DBG\.enabled\) \{/);
+    has('dm', /if \(!DBG\.enabled\) return;   \/\/ v2\.9：调试关闭时零整页 HTML 分配/);
+    has('dm', /function startDataViewSweep\(\)/);
+    has('dm', /function stopDataViewSweep\(\)/);
+    has('dm', /RUNTIME_BUDGET\.shouldReleaseIdleView\(d\.lastUsed, now, false\)/);
+    has('dm', /d\.lastUsed = now;/);
+    has('dm', /if \(id\.unref\) id\.unref\(\);/);
+    /* 视图创建入口改回无伪装名字，仍保持唯一 new ViewClass */
+    has('dm', /function newEmbeddedView\(prefs\)/);
+    assert.equal((F.dm.match(/newEmbeddedView\(embeddedViewPrefs\(\)\)/g) || []).length, 4);
+    assert.equal((F.dm.match(/new ViewClass\(/g) || []).length, 1);
+    absent('dm', /newEdgeView|edgeViews|applyEdgeProfile/);
+  }],
+  ['v2.9 · 桌面后台脚本分别收紧：日志 / 历史词 / 官网 HTML 上限', () => {
+    has('db', /const DESKTOP_MEM = Object\.freeze\(\{/);
+    has('db', /runLogEntries: 240/);
+    has('db', /usedWordsMax: 160/);
+    has('db', /htmlCacheMaxBytes: 600 \* 1024/);
+    has('db', /function desktopTrimLog\(list\)/);
+    has('db', /HSA_CORE\.runLogAppend\(desktopTrimLog\(s && s\.runLog\)/);
+    has('db', /HSA_CORE\.runLogAppend\(desktopTrimLog\(cur && cur\.runLog\)/);
+    has('db', /slice\(-DESKTOP_MEM\.usedWordsMax\)/);
+    has('db', /slice\(0, DESKTOP_MEM\.htmlCacheMaxBytes\)/);
+    /* 两端策略不同：插件用批量队列，桌面靠主进程写盘节流 */
+    absent('db', /makeLogBatcher|runLogBatcher/);
+    absent('eb', /makeWriteThrottle|diskState/);
+  }],
+  ['v2.9 · 默认 Bing 与登录/积分链路 URL 不变，共享清单仍 7 个文件', () => {
+    has('dm', /win\.loadURL\(url && url !== 'about:blank' \? url : DEFAULT_BROWSER_HOME\)/);
+    has('dm', /sideView\.webContents\.loadURL\(DEFAULT_BROWSER_HOME\)/);
+    has('dm', /openInSidePanel\(url \|\| DEFAULT_BROWSER_HOME, 'user'\)/);
+    has('dm', /openInSidePanel\('https:\/\/rewards\.bing\.com\/dashboard', 'user'\)/);
+    has('dm', /https:\/\/rewards\.bing\.com\/earn/);
+    for (const k of ['eb', 'db']) {
+      has(k, /const HOME_URL = 'https:\/\/www\.bing\.com\/\?mkt=zh-CN'/);
+      has(k, /const DASHBOARD_URL = 'https:\/\/rewards\.bing\.com\/dashboard'/);
+      has(k, /const EARN_URL = 'https:\/\/rewards\.bing\.com\/earn'/);
+    }
+    const sync = fs.readFileSync(path.join(ROOT, 'scripts', 'sync-shared.js'), 'utf8');
+    assert.doesNotMatch(sync, /edge-profile|mv3-budget|runtime-budget/);
+    assert.equal((sync.match(/const FILES = \[([\s\S]*?)\];/)[1]
+      .match(/\.js'|\.css'|\.json'/g) || []).length, 7);
+  }],
+  ['v2.9 · 设置页只读信息仍在且无新增开关', () => {
+    has('dh', /data-i18n="desktop\.edge"/);
+    has('dh', /data-i18n="desktop\.edgeValue"/);
+    has('dh', /data-i18n-title="desktop\.edgeHint"/);
+    assert.doesNotMatch(F.dh, /id="set-edge/);
+    const at = F.dh.indexOf('data-i18n="desktop.edge"');
+    assert.doesNotMatch(F.dh.slice(at, at + 320), /<input/);
+  }],
+  ['v3.0 · 打开主界面同步一次：共享判定 + 两端 popup + 两端后台（运行中例外）', () => {
+    const CORE = require(path.join(ROOT, 'shared', 'hsa-core.js'));
+    assert.equal(CORE.SYNC_ON_OPEN.messageType, 'syncOnOpen');
+    assert.equal(CORE.SYNC_ON_OPEN.reason, 'ui-open');
+    assert.equal(CORE.SYNC_ON_OPEN.minGapMs, 60000);
+    assert.equal(CORE.SYNC_ON_OPEN.storageKey, 'syncOnOpenAt');
+    assert.equal(CORE.syncOnOpenAllowed(false, null, 1000000), true, '空闲首次打开允许');
+    assert.equal(CORE.syncOnOpenAllowed(true, null, 1000000), false, '正在运行一律例外');
+    assert.equal(CORE.syncOnOpenAllowed(false, 970000, 1000000), false, '30s 内重复打开节流');
+    assert.equal(CORE.syncOnOpenAllowed(false, 939000, 1000000), true, '超过 60s 可再次同步');
+    assert.equal(CORE.syncCachePolicy('ui-open').fresh, true, '必须强制新数据');
+    assert.equal(CORE.strictBlockedMessage('syncOnOpen', true), true,
+      '严格运行期消息白名单兜底拦截');
+    assert.equal(CORE.strictBlockedMessage('syncOnOpen', false), false);
+    for (const k of ['ep', 'dp']) {
+      has(k, /async function requestSyncOnOpen\(\)/);
+      has(k, /HSA_CORE\.syncOnOpenAllowed\(running, lastAt, now\)/);
+      has(k, /chrome\.storage\.local\.set\(\{ \[HSA_CORE\.SYNC_ON_OPEN\.storageKey\]: now \}\)/);
+      has(k, /send\(HSA_CORE\.SYNC_ON_OPEN\.messageType/);
+      has(k, /requestSyncOnOpen\(\);/);
+    }
+    /* 桌面 popup 常驻隐藏，额外监听主进程广播 */
+    has('dp', /chrome\.runtime\.onUiOpened\.addListener\(\(\) => requestSyncOnOpen\(\)\)/);
+    absent('ep', /onUiOpened/);
+    has('preload', /onUiOpened: makeEvent\('ui:opened'\)/);
+    has('dm', /broadcast\('ui:opened', \[\{ at: Date\.now\(\) \}\]\)/);
+    for (const k of ['eb', 'db']) {
+      has(k, /msg\.type === HSA_CORE\.SYNC_ON_OPEN\.messageType/);
+      has(k, /reason: HSA_CORE\.SYNC_ON_OPEN\.reason/);
+      has(k, /syncNotice/);
+    }
+    has('eb', /syncRewardsUnified\(\{ fresh: true, noTabs: true,/);
+    has('db', /desktopSyncRewards\(\{ fresh: true, noTabs: true,/);
+    /* 共享核心导出与副本一致 */
+    const coreSrc = fs.readFileSync(path.join(ROOT, 'shared', 'hsa-core.js'), 'utf8');
+    assert.match(coreSrc, /SYNC_ON_OPEN: SYNC_ON_OPEN/);
+    assert.match(coreSrc, /syncOnOpenAllowed: syncOnOpenAllowed/);
+    assert.equal(CORE.VERSION,
+      require(path.join(ROOT, 'edge-extension', 'shared', 'hsa-core.js')).VERSION);
+  }],
+  ['v3.0 · 桌面静默内存：静默期最多留 2 个 renderer', () => {
+    const GOV = fs.readFileSync(path.join(ROOT, 'desktop-app', 'lib', 'memory-governor.js'), 'utf8');
+    /* 侧栏创建时不再预加载 Bing SPA，只在展开 / 恢复时加载 */
+    has('dm', /function loadSideViewDefault\(url\)/);
+    has('dm', /if \(!url\) loadSideViewDefault\(\)/);
+    has('dm', /创建时不预加载/);
+    const ensure = F.dm.slice(F.dm.indexOf('function ensureSideView(initialUrl)'),
+      F.dm.indexOf('function ensureSideView(initialUrl)') + 700);
+    assert.doesNotMatch(ensure, /loadURL\(DEFAULT_BROWSER_HOME\)/,
+      '创建视图时不得预加载默认页');
+    assert.match(ensure, /if \(initialUrl\)/, '恢复时按原 URL 重建');
+    /* 静默无条件释放侧栏 + 退出静默按需恢复 */
+    has('dm', /let sideViewRestore = null;/);
+    has('dm', /sideViewRestore = \{/);
+    has('dm', /function restoreSideViewIfNeeded\(\)/);
+    has('dm', /if \(!r \|\| !r\.visible\) return 0;/);
+    has('dm', /if \(sideViewRestore\) sideViewRestore\.visible = false;/);
+    absent('dm', /侧栏只在面板收起时释放/);
+    /* 退出/dispose 不重建 */
+    has('dm', /onExit: reason => \{/);
+    has('dm', /if \(reason === 'dispose' \|\| quitting\) return;/);
+    /* 静默期大快照从内存移除 + 日志收紧 */
+    has('dm', /delete s\.html;/);
+    has('dm', /s\.htmlQuietTrimmed = true;/);
+    has('dm', /RUNTIME_BUDGET\.POLICY\.runLogEntries/);
+    has('dm', /trimSnapshotHtml\(s, SNAPSHOT_HTML_LIMIT\)/);
+    /* 静默时停止隐藏 renderer 加载 + 清 HTTP 缓存（不碰 Cookie） */
+    has('dm', /if \(on\) \{ try \{ if \(typeof wc\.stop === 'function'\) wc\.stop\(\); \} catch \{\} \}/);
+    has('dm', /s\.clearCache\(\)/);
+    has('dm', /不影响登录 Cookie/);
+    /* 巡检 2 分钟且会重复回收静默期间新建的视图 */
+    assert.match(GOV, /sweepIntervalMs: 2 \* 60 \* 1000/);
+    assert.match(GOV, /const released = Number\(this\._call\('releaseIdleViews'\)\) \|\| 0;/);
+    assert.match(GOV, /this\._call\('onEnter', reason\)/);
+    assert.match(GOV, /this\._call\('onExit', reason\)/);
+    assert.match(GOV, /unref\(\)/);
+  }],
+  ['v3.1 · 异常根因已消除：官网响应体不再被缓存上限截断', () => {
+    const M = require(path.join(ROOT, 'edge-extension', 'lib', 'mv3-budget.js'));
+    /* 纯函数：响应体原样保留，700KB 也不截断 */
+    const big = '<html>' + 'x'.repeat(700000) + '</html>';
+    const v = M.officialPageValue({ ok: true, status: 200, url: 'https://rewards.bing.com/earn' },
+      big, 123);
+    assert.equal(v.html.length, big.length, '官网 HTML 必须完整交给解析器');
+    assert.equal(v.source, 'official-network');
+    assert.equal(v.ok, true);
+    assert.equal(M.cacheableHtml(big), false, '超限页面不进缓存，但本次照常解析');
+    assert.equal(M.cacheableHtml('<html>' + 'y'.repeat(500000) + '</html>'), true);
+    assert.equal(M.cacheableHtml(''), false);
+    /* 源码：不再出现 res.text()).slice(...)，返回值在缓存 if 之外 */
+    absent('eb', /res\.text\(\)\)\.slice\(0, MV3\.POLICY/);
+    absent('db', /res\.text\(\)\)\.slice\(0, MV3\.POLICY/);
+    has('eb', /const html = await res\.text\(\);/);
+    has('eb', /const value = MV3\.officialPageValue\(res, html, Date\.now\(\)\)/);
+    has('eb', /if \(res\.ok && MV3\.cacheableHtml\(html\)\)/);
+    has('eb', /return value;/);
+    /* 缓存预算仍在：条目 1 / TTL 45s，常驻 ≤600KB（applet 版 2.4MB） */
+    assert.equal(M.POLICY.htmlCacheMaxEntries, 1);
+    assert.equal(M.POLICY.htmlCacheTtlMs, 45000);
+    const CORE = require(path.join(ROOT, 'shared', 'hsa-core.js'));
+    assert.equal(M.POLICY.htmlCacheMaxBytes, CORE.DEFAULTS.htmlCacheMaxBytes);
+    /* 桌面版同一根因：256KB → 600KB */
+    has('db', /htmlCacheMaxBytes: 600 \* 1024/);
+    has('db', /slice\(0, DESKTOP_MEM\.htmlCacheMaxBytes\)/);
+  }],
+  ['v3.1 · 同步绝不打开 rewards 标签页/隐藏视图（noTabs 护栏）', () => {
+    /* 插件版：降级注入条件加 !o.noTabs */
+    has('eb', /if \(!cards\.length && pages\.reachable && !\(o\.skipInjection\) && !o\.noTabs\)/);
+    /* 插件版全部 7 个 syncRewardsUnified 调用点都带 noTabs */
+    const calls = F.eb.match(/syncRewardsUnified\(\{[^}]*\}\)/g) || [];
+    assert.ok(calls.length >= 6, '应覆盖全部同步入口');
+    for (const c of calls) assert.match(c, /noTabs: true/, '同步入口漏了 noTabs: ' + c);
+    /* 自动运行的 readRewardsPage（积分读取 / 搜索点击）不受影响 */
+    has('eb', /async function readRewardsPage\(/);
+    assert.ok((F.eb.match(/await readRewardsPage\(/g) || []).length >= 2);
+    /* 桌面版：跳过隐藏取数视图，且同步入口透传 noTabs */
+    has('db', /if \(opts && opts\.noTabs\)/);
+    has('db', /error: 'no-tabs sync'/);
+    has('db', /noTabs: o\.noTabs/);
+    has('db', /desktopSyncRewards\(\{ fresh: true, noTabs: true,/);
+    /* 下拉刷新 / 手动刷新走 refreshTasks，同样被护栏覆盖 */
+    for (const k of ['ep', 'dp']) has(k, /refreshTasks/);
+    has('eb', /syncRewardsUnified\(\{ fresh: true, noTabs: true, reason: reason \}\)/);
+  }],
+  ['v3.1 · 对话中后续改动仍完整落在插件版（applet 基线功能未被破坏）', () => {
+    /* applet 下拉刷新主题（共享模块未改动） */
+    has('eh', /hsa-pull-refresh\.js/);
+    has('sharedCss', /hsa-ball-beat|pull-refresh/);
+    const pull = fs.readFileSync(path.join(ROOT, 'shared', 'hsa-pull-refresh.js'), 'utf8');
+    assert.match(pull, /ball-beat|applet/);
+    /* 关键页 ZIP 导出、悬浮提示、日历复位、严格运行、日志导出 */
+    has('eh', /hsa-zip\.js|diag-group/);
+    has('ec', /2147483647/);
+    has('eh', /hsa-hover-tip\.js/);
+    has('ep', /calendarReset\(\)/);
+    has('eb', /HSA_CORE\.isStrictKeyword|strictQueries/);
+    has('eb', /exportRunLog/);
+    /* v2.9 两端分别优化、v3.0 打开同步，插件版都已接线 */
+    has('eb', /importScripts\('lib\/mv3-budget\.js'\)/);
+    has('ep', /async function requestSyncOnOpen\(\)/);
+    has('eb', /msg\.type === HSA_CORE\.SYNC_ON_OPEN\.messageType/);
+    /* 共享副本与单一真源一致（同步脚本复制 7 个文件） */
+    const a = fs.readFileSync(path.join(ROOT, 'shared', 'hsa-core.js'), 'utf8');
+    const b = fs.readFileSync(path.join(ROOT, 'edge-extension', 'shared', 'hsa-core.js'), 'utf8');
+    const stripHead = t => t.replace(/^\/\* AUTO-GENERATED[^\n]*\n/, '');
+    assert.equal(stripHead(b), a, '插件版 shared 副本（去掉自动生成头）必须与 shared/ 一致');
+  }],
+  ['v3.0 · 打开同步不引入新的常驻定时器，且默认 Bing / 官网链路不变', () => {
+    for (const k of ['ep', 'dp']) {
+      const fn = F[k].slice(F[k].indexOf('async function requestSyncOnOpen'),
+        F[k].indexOf('async function requestSyncOnOpen') + 900);
+      assert.doesNotMatch(fn, /setInterval|setTimeout/, '打开同步不得引入常驻轮询');
+    }
+    has('dm', /const DEFAULT_BROWSER_HOME = 'https:\/\/www\.bing\.com\/\?mkt=zh-CN'/);
+    has('dm', /win\.loadURL\(url && url !== 'about:blank' \? url : DEFAULT_BROWSER_HOME\)/);
+    has('dm', /sideView\.webContents\.loadURL\(DEFAULT_BROWSER_HOME\)/);
+    has('dm', /openInSidePanel\(url \|\| DEFAULT_BROWSER_HOME, 'user'\)/);
+    for (const k of ['eb', 'db']) {
+      has(k, /const DASHBOARD_URL = 'https:\/\/rewards\.bing\.com\/dashboard'/);
+      has(k, /const EARN_URL = 'https:\/\/rewards\.bing\.com\/earn'/);
+    }
   }]
 
 ];

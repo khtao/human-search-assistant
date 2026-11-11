@@ -42,7 +42,11 @@ sudo chmod 4755 /opt/拟人搜索助手/chrome-sandbox
 - **积分日历**：设置页按日 / 周 / 月查看积分赚取记录，最多保留 400 天。
 - **运行详情**：进度圆圈下方的状态行实时显示同步、点击第几张卡片、下一步动作、搜索关键词与倒计时。
 - **系统托盘**：关闭窗口后驻留托盘，托盘菜单可显示主界面或退出。
-- **桌面专属设置**：仅「开机自动启动」一项。「静默完成任务」与「侧栏在独立窗口显示」开关均已移除；官网侧栏固定内嵌在主窗口右侧，自带独立滚动条，主界面与设置共用另一根滚动条。
+- **桌面专属设置**：「开机自动启动」一项可切换，另有一行只读信息「内置浏览器：Microsoft Edge · Bing」。「静默完成任务」与「侧栏在独立窗口显示」开关均已移除；官网侧栏固定内嵌在主窗口右侧，自带独立滚动条，主界面与设置共用另一根滚动条。
+- **无浏览器伪装（v2.9）**：`edge-identity.js` 已删除；不再设置全局 / 逐视图 UA、不再注册请求头改写钩子、不再注入页面身份覆盖脚本、后台热搜请求也不再伪造 `User-Agent`。内置浏览器使用 Electron 自身真实标识，每次网络请求少一次头改写回调，每个 webContents 少一个常驻 `dom-ready` 闭包。默认主页 `https://www.bing.com/?mkt=zh-CN`、默认搜索 `https://www.bing.com/search?q=` 保留（起始页设置，不是身份伪装）；登录、积分同步、任务侧栏仍显式使用 Rewards 原始 URL。
+- **打开主界面同步一次（v3.0）**：popup 初始化与窗口 `show` / `restore` 时各请求一次 `syncOnOpen`，共享判定 `HSA_CORE.syncOnOpenAllowed` 保证「运行中跳过 + 60s 节流」；主进程通过 `ui:opened` 广播通知常驻隐藏的 popup。静默期清理掉的页面快照由这次同步补回。
+- **静默态内存压缩（v3.0）**：`MemoryGovernor` 进入静默时无条件释放**全部**内嵌 `WebContentsView`（含原本展开的侧栏），只保留 host 与 popup 两个必需 renderer；`sideViewRestore` 记录 URL/显隐，退出静默 `onExit` 按需重建，`dispose` 不重建。侧栏创建不再预加载 `DEFAULT_BROWSER_HOME`，改为 `loadSideViewDefault()` 在面板真正展开时加载。静默期 `trimStateSnapshots()` 直接 `delete s.html` 移除两份 600KB 整页快照并收紧 runLog；`setAllThrottling(true)` 额外 `wc.stop()`；`onEnter` 清 HTTP 缓存；巡检 2 分钟且重复回收视图。
+- **桌面版内存/效率专项（与插件版分别优化）**：`lib/runtime-budget.js` 提供纯逻辑 —— ① `makeWriteThrottle` 把「每条日志一次全量 state 美化 JSON 同步写盘」改为紧凑 JSON + 前导立即写 / 150ms 尾随合并，退出前 `flushStateSync()` 强刷；② `diskState()` 只在落盘副本里把两份页面 HTML 快照裁到 256KB、文本裁到 32KB、日志裁到 240 条，**内存态保持完整**；③ `shouldReleaseIdleView()` 配合 `main.js` 的 30s `unref` 巡检，把空闲 90s 的离屏取数 `WebContentsView` 销毁，下次同步按需重建（运行中 / 任务点击期间绝不释放）；④ 调试开关关闭时跳过每次导航的整页 `outerHTML` 读取，消除渲染进程与主进程的大字符串尖峰。后台脚本另把历史词 1000→160；官网 HTML 上限在 v3.1 恢复为 applet 版的 600KB（v2.9 误压到 256KB 会截断响应体、导致积分/任务解析失败，插件版表现为同步时弹出 rewards 官网标签），打开同步 / 手动刷新另加 `noTabs` 护栏跳过隐藏取数视图。
 
 ---
 

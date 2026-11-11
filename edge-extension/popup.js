@@ -1633,7 +1633,25 @@ document.addEventListener('DOMContentLoaded', () => {
   loadUiLang();
   loadSettings();
   loadAutoTasks();
+  /* ======================================================================
+   * v3.0 · 打开主界面时同步一次（正在运行时例外）
+   * 插件版每次打开 popup 都是新文档，DOMContentLoaded 即触发；
+   * 桌面版 popup 常驻隐藏到托盘，额外由主进程 ui:opened 广播触发。
+   * 判定与节流全部走共享核心 syncOnOpenAllowed，两端行为严格一致。
+   * ==================================================================== */
+  async function requestSyncOnOpen() {
+    try {
+      const s = await chrome.storage.local.get(['running', HSA_CORE.SYNC_ON_OPEN.storageKey]);
+      const now = Date.now();
+      const running = !!(s && s.running);
+      const lastAt = s && s[HSA_CORE.SYNC_ON_OPEN.storageKey];
+      if (!HSA_CORE.syncOnOpenAllowed(running, lastAt, now)) return;
+      await chrome.storage.local.set({ [HSA_CORE.SYNC_ON_OPEN.storageKey]: now });
+      send(HSA_CORE.SYNC_ON_OPEN.messageType, { at: now, source: HSA_CORE.SYNC_ON_OPEN.reason });
+    } catch (err) {}
+  }
   refresh();
+  requestSyncOnOpen();
   const scheduleRefresh = () => {
     if (document.hidden) { uiDirty = true; return; }
     uiDirty = false;

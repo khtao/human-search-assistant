@@ -194,6 +194,8 @@ document.addEventListener('DOMContentLoaded', () => {
       'desktop.title': '桌面版', 'desktop.autoLaunch': '开机自动启动',
       'desktop.autoLaunchHint': '登录系统后自动运行桌面版',
       'desktop.onlyDesktop': '该设置仅桌面版可用，浏览器插件中不可设置',
+      'desktop.edge': '内置浏览器', 'desktop.edgeValue': '默认主页 · Bing',
+      'desktop.edgeHint': '内置浏览器不做任何 UA / 客户端提示 / navigator 伪装，使用 Electron 自身标识；默认主页与搜索引擎为 Bing，登录与积分页面仍按官网地址打开',
       'desktop.autoLaunchOn': '已开启开机自动启动', 'desktop.autoLaunchOff': '已关闭开机自动启动'
     },
     en: {
@@ -323,6 +325,8 @@ document.addEventListener('DOMContentLoaded', () => {
       'desktop.title': 'Desktop', 'desktop.autoLaunch': 'Launch at login',
       'desktop.autoLaunchHint': 'Start the desktop app after signing in to the system',
       'desktop.onlyDesktop': 'This option is desktop-only and disabled in the extension',
+      'desktop.edge': 'Built-in browser', 'desktop.edgeValue': 'Home · Bing',
+      'desktop.edgeHint': 'No UA / client-hint / navigator spoofing — the built-in browser uses Electron own identity; Bing is the default home page and search engine, sign-in and points pages still open at their official URLs',
       'desktop.autoLaunchOn': 'Launch at login enabled', 'desktop.autoLaunchOff': 'Launch at login disabled'
     }
   };
@@ -1904,7 +1908,31 @@ document.addEventListener('DOMContentLoaded', () => {
   /* v1.1.8 · 初始化零抓取：删掉旧版「数据过期就 send refreshToday /
      refreshTasks / refreshPoints」的整段逻辑。未登录时空闲就安静地显示
      storage 里已有的值，不请求任何官网页面。 */
+  /* ======================================================================
+   * v3.0 · 打开主界面时同步一次（正在运行时例外）
+   * 插件版每次打开 popup 都是新文档，DOMContentLoaded 即触发；
+   * 桌面版 popup 常驻隐藏到托盘，额外由主进程 ui:opened 广播触发。
+   * 判定与节流全部走共享核心 syncOnOpenAllowed，两端行为严格一致。
+   * ==================================================================== */
+  async function requestSyncOnOpen() {
+    try {
+      const s = await chrome.storage.local.get(['running', HSA_CORE.SYNC_ON_OPEN.storageKey]);
+      const now = Date.now();
+      const running = !!(s && s.running);
+      const lastAt = s && s[HSA_CORE.SYNC_ON_OPEN.storageKey];
+      if (!HSA_CORE.syncOnOpenAllowed(running, lastAt, now)) return;
+      await chrome.storage.local.set({ [HSA_CORE.SYNC_ON_OPEN.storageKey]: now });
+      send(HSA_CORE.SYNC_ON_OPEN.messageType, { at: now, source: HSA_CORE.SYNC_ON_OPEN.reason });
+    } catch (err) {}
+  }
   refresh();
+  requestSyncOnOpen();
+  /* 桌面 popup 常驻隐藏到托盘：窗口 show / restore 时主进程广播 ui:opened，
+     与插件版「打开即新文档」等价；60 秒节流保证一次打开只同步一次。 */
+  if (chrome.runtime && chrome.runtime.onUiOpened &&
+      typeof chrome.runtime.onUiOpened.addListener === 'function') {
+    chrome.runtime.onUiOpened.addListener(() => requestSyncOnOpen());
+  }
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== 'local') return;
     if (Object.keys(changes).every(key => key === 'taskClickIndex')) return;

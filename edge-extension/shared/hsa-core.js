@@ -715,7 +715,7 @@
   /* D06 · D：后台展示允许短期缓存；刷新 / 开始 / 收尾一律要新数据。 */
   var FRESH_REASONS = new Set([
     'refreshTasks', 'refreshPoints', 'refreshToday', 'manual-refresh', 'user-refresh',
-    'start', 'finish', 'points', 'run-start', 'run-finish', 'refresh'
+    'start', 'finish', 'points', 'run-start', 'run-finish', 'refresh', 'ui-open'
   ]);
   function isFreshRequired(reason) {
     return FRESH_REASONS.has(String(reason || ''));
@@ -729,6 +729,27 @@
       showCollectedAt: true,
       reason: String(reason || '')
     };
+  }
+
+  /* ======================================================================
+     * v3.0 · 打开主界面时同步一次（两端一致）
+     *  · 正在运行：一律跳过（popup 先读 running，后台严格模式白名单再兜一层）；
+     *  · 重复打开：最小间隔节流，避免桌面窗口反复 show / focus 造成密集官网请求；
+     *  · 只做一次 fresh 同步，不启动任务、不改设置、不触碰侧栏。
+     * ==================================================================== */
+  var SYNC_ON_OPEN = Object.freeze({
+    messageType: 'syncOnOpen',
+    reason: 'ui-open',
+    minGapMs: 60000,
+    storageKey: 'syncOnOpenAt'
+  });
+  function syncOnOpenAllowed(running, lastAt, now, minGapMs) {
+    if (running === true) return false;
+    var t = Number.isFinite(now) ? now : Date.now();
+    var gap = Number.isFinite(minGapMs) && minGapMs > 0 ? minGapMs : SYNC_ON_OPEN.minGapMs;
+    var last = Number(lastAt);
+    if (Number.isFinite(last) && last > 0 && t - last < gap) return false;
+    return true;
   }
 
   /* S01 · B：状态行显示运行详情（当前步骤 / 动态倒计时），全文可悬停查看。 */
@@ -803,6 +824,8 @@
     taskListNames: taskListNames,
     calendarNavAllowed: calendarNavAllowed,
     calendarReset: calendarReset,
-    keyPageZipFiles: keyPageZipFiles
+    keyPageZipFiles: keyPageZipFiles,
+    SYNC_ON_OPEN: SYNC_ON_OPEN,
+    syncOnOpenAllowed: syncOnOpenAllowed
   };
 });

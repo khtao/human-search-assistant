@@ -50,7 +50,19 @@ const { DebugCapture } = require('./lib/debug-capture');
 const DBG = new DebugCapture();
 const C = require('./lib/core');
 const HSA_CORE = require('./shared/hsa-core.js');
+const RUNTIME_BUDGET = require('./lib/runtime-budget.js');
 const SidebarCards = require('./lib/sidebar-task-cards');
+
+/* ==========================================================================
+ * v2.9 · 已移除全部浏览器伪装
+ *   · 不再设置全局 UA，也不再逐视图改写 UA；
+ *   · 不再注入客户端提示头，也不再注册请求头改写钩子；
+ *   · 不再在每个页面注入身份覆盖脚本（省掉常驻闭包与 dom-ready 监听）；
+ *   内置浏览器使用 Electron 自身真实身份。仅保留上一轮要求的默认主页 /
+ *   默认搜索引擎为 Bing（属于起始页设置，与身份伪装无关）。
+ * ======================================================================== */
+const DEFAULT_BROWSER_HOME = 'https://www.bing.com/?mkt=zh-CN';
+const DEFAULT_SEARCH_ENGINE = 'https://www.bing.com/search?q=';
 const { MemoryGovernor, trimSnapshotHtml, SNAPSHOT_HTML_LIMIT } = require('./lib/memory-governor');
 
 /* 所有窗口（popup / host / Rewards 标签页 / 登录窗口）显式共用同一个
@@ -74,6 +86,8 @@ function getAppSession() {
   return APP_SESSION;
 }
 
+/* v2.9 · 不再注册任何请求头改写钩子：每次网络请求少一次 webRequest 回调，
+   Electron 自带 UA / 客户端提示直接透传。 */
 /** app.whenReady() 的第一件事：拿到会话并挂上 Cookie 同步监听。 */
 function initAppSession() {
   if (APP_SESSION) return APP_SESSION;
@@ -109,12 +123,33 @@ function loadState() {
   catch { state = {}; }
   if (!state || typeof state !== 'object' || Array.isArray(state)) state = {};
 }
-function saveState() {
-  try {
-    fs.mkdirSync(USER(), { recursive: true });
-    fs.writeFileSync(statePath(), JSON.stringify(state, null, 2), 'utf8');
-  } catch (err) { console.error('[storage] 写入失败:', err.message); }
-}
+/* ==========================================================================
+ * v2.9 · 桌面版写盘效率：以前每条运行日志都触发一次「整份 state 美化 JSON」
+ * 同步写盘，而 state 里含 2 份 600KB 页面快照 + 600 条日志，运行期密集写盘
+ * 会反复序列化几 MB。现在：
+ *   · 紧凑 JSON（去掉 2 空格缩进）；
+ *   · 前导立即写 + 150ms 尾随合并，高频写入最多约 6~7 次/秒；
+ *   · 落盘副本只裁大快照（内存态保持完整，功能不受影响）；
+ *   · will-quit 前强制 flush，绝不丢状态。
+ * ======================================================================== */
+const stateWrites = RUNTIME_BUDGET.makeWriteThrottle({
+  now: () => Date.now(),
+  write: () => {
+    try {
+      fs.mkdirSync(USER(), { recursive: true });
+      fs.writeFileSync(statePath(),
+        JSON.stringify(RUNTIME_BUDGET.diskState(state)), 'utf8');
+    } catch (err) { console.error('[storage] 写入失败:', err.message); }
+  },
+  schedule: (fn, ms) => {
+    const id = setTimeout(fn, ms);
+    if (id.unref) id.unref();
+    return id;
+  },
+  cancel: id => clearTimeout(id)
+});
+function saveState() { stateWrites.save(); }
+function flushStateSync() { stateWrites.flush(); }
 
 const shimWindows = new Set();      // 加载了 preload 的窗口（可接收事件广播）
 function broadcast(key, args) {
@@ -377,6 +412,7 @@ ipcMain.handle('chrome:fetch', async (_e, url, init, id) => {
   fetchControllers.set(id, ctl);
   // cookie 读取也在同一个 guard 覆盖范围内，避免登录探测挂起时 handler 永不返回。
   const work = (async () => {
+    /* v2.9：无伪装，保留业务自带的必要请求头（Referer / Cookie 等）。 */
     const headers = Object.assign({}, init.headers || {});
     const cookie = await cookieHeaderFor(url);
     if (cookie && !headers.Cookie && !headers.cookie) headers.Cookie = cookie;
@@ -526,6 +562,8 @@ const PANEL_DEFAULT_RIGHT = 760;   // 展开后右侧官网面板宽度
 const COLLAPSED_WIDTH = 400;
 
 let sideView = null;
+/* v3.0 · 静默期释放侧栏时记下现场，退出静默按需重建（不重建已收起的面板）。 */
+let sideViewRestore = null;
 let sideTabId = null;
 let sideVisible = false;
 let panelReason = null;            // 'user' | 'run' | null
@@ -585,6 +623,37 @@ function viewAsWindow(view, opts) {
   };
 }
 
+/* v2.9 · 所有内嵌视图的单一创建入口。不再为每个 webContents 挂
+   dom-ready 监听、不再持有 navigator 脚本字符串，减少常驻闭包与 GC 压力。 */
+function newEmbeddedView(prefs) {
+  return new ViewClass(prefs || embeddedViewPrefs());
+}
+
+/* ==========================================================================
+ * v2.9 · 桌面版专用：离屏取数视图空闲回收
+ * 两个 dataViews 创建后以前一直常驻（只有主窗口隐藏到托盘才由 governor 释放），
+ * 每个都占一个 renderer 进程。这里用 unref 的低频巡检，空闲 90s 后销毁，
+ * 下次同步按需重建；运行中 / 任务点击期间绝不释放，不影响数据链路。
+ * ======================================================================== */
+let dataViewSweepTimer = null;
+function startDataViewSweep() {
+  if (dataViewSweepTimer) return;
+  dataViewSweepTimer = setInterval(() => {
+    if (taskClickRunning || desktopQuietRun()) return;
+    const now = Date.now();
+    for (const [key, d] of [...dataViews]) {
+      if (!RUNTIME_BUDGET.shouldReleaseIdleView(d.lastUsed, now, false)) continue;
+      destroyEmbeddedView(d && d.view, d && d.id);
+      dataViews.delete(key);
+      DBG.log('memory', '释放空闲取数视图', { key });
+    }
+  }, 30000);
+  if (dataViewSweepTimer.unref) dataViewSweepTimer.unref();
+}
+function stopDataViewSweep() {
+  if (dataViewSweepTimer) { clearInterval(dataViewSweepTimer); dataViewSweepTimer = null; }
+}
+
 function attachView(view) {
   if (!popupWin || popupWin.isDestroyed() || attachedViews.has(view)) return;
   const cv = popupWin.contentView;
@@ -618,11 +687,26 @@ function embeddedViewPrefs() {
   };
 }
 
-function ensureSideView() {
+/* v3.0 · 默认页延迟加载：以前视图一创建就 loadURL(Bing 首页)，即使面板从未
+   展开也常驻一个重量级 SPA renderer，这是静默内存 1GB+ 的主要来源之一。
+   现在只在面板真正展开 / 静默恢复且当前为 about:blank 时才加载。 */
+function loadSideViewDefault(url) {
+  if (!sideView || !sideView.webContents) return;
+  try {
+    const cur = sideView.webContents.getURL ? sideView.webContents.getURL() : '';
+    if (!cur || /^about:blank/i.test(cur)) {
+      if (url) sideView.webContents.loadURL(url);
+      else sideView.webContents.loadURL(DEFAULT_BROWSER_HOME);
+    }
+  } catch (err) {}
+}
+function ensureSideView(initialUrl) {
   if (sideView) return sideView;
-  sideView = new ViewClass(embeddedViewPrefs());
+  sideView = newEmbeddedView(embeddedViewPrefs());
   attachView(sideView);
   sideView.setBounds({ x: 0, y: 0, width: 0, height: 0 });
+  /* 创建时不预加载；只有显式给了恢复 URL 才立即回到原页面。 */
+  if (initialUrl) { try { sideView.webContents.loadURL(initialUrl); } catch (err) {} }
   sideTabId = sideView.webContents.id;
   const entry = {
     kind: 'embedded',
@@ -649,17 +733,19 @@ function ensureSideView() {
   sideView.webContents.on('did-finish-load', async () => {
     const u = sideView.webContents.getURL();
     DBG.log('panel', 'did-finish-load', { url: u });
-    /* 用户要求：保留登录网页的 html 文件。侧栏每次导航完成都存一份，
-       无论停在 Rewards 首页还是 Microsoft 登录页。 */
-    try {
-      const html = await sideView.webContents.executeJavaScript(
-        'document.documentElement.outerHTML', true);
-      DBG.captureHtml('side-panel', u, html, { source: 'visible-panel' });
-      /* 等 SPA 把积分/任务卡渲染出来再推快照（did-finish-load 常早于 React 挂载）。
-         同一视图只保留一个待执行定时器，避免连续导航堆积闭包。 */
-      scheduleViewSnapshot(sideView.webContents,
-        () => pushVisibleSnapshot('panel-loaded'), 900);
-    } catch (err) { DBG.log('panel', '侧栏 HTML 读取失败', { error: String(err.message || err) }); }
+    /* v2.9：调试关闭时不再读整页 outerHTML —— 每次导航都生成一份 600KB
+       字符串并跨 IPC 回传，是渲染进程与主进程最大的临时内存尖峰。 */
+    if (DBG.enabled) {
+      try {
+        const html = await sideView.webContents.executeJavaScript(
+          'document.documentElement.outerHTML', true);
+        DBG.captureHtml('side-panel', u, html, { source: 'visible-panel' });
+      } catch (err) { DBG.log('panel', '侧栏 HTML 读取失败', { error: String(err.message || err) }); }
+    }
+    /* 等 SPA 把积分/任务卡渲染出来再推快照（did-finish-load 常早于 React 挂载）。
+       同一视图只保留一个待执行定时器，避免连续导航堆积闭包。 */
+    scheduleViewSnapshot(sideView.webContents,
+      () => pushVisibleSnapshot('panel-loaded'), 900);
     /* 只有 URL 明确带 logout/signout 才算登出。OAuth 跳转、/earn 返回登录页
        DOM 都会命中 isLoginPageUrl，不能据此清空积分（认证票据轮换也同理）。 */
     if (/(?:\/logout|signout)/i.test(u)) markSignedOut('logout-url');
@@ -706,7 +792,7 @@ let taskResultLoadPromise = null, taskResultLoadWatcher = null;
 
 function ensureTaskResultView() {
   if (taskResultView) return taskResultView;
-  taskResultView = new ViewClass(embeddedViewPrefs());
+  taskResultView = newEmbeddedView(embeddedViewPrefs());
   attachView(taskResultView);
   /* 移到窗口外但保留正常视口：任务页需要真正加载才会被 Rewards 记一次点击 */
   taskResultView.setBounds({ x: -3200, y: -3200, width: 1180, height: 820 });
@@ -719,7 +805,7 @@ function ensureTaskResultView() {
 
 function ensureTaskView() {
   if (taskView) return taskView;
-  taskView = new ViewClass(embeddedViewPrefs());
+  taskView = newEmbeddedView(embeddedViewPrefs());
   attachView(taskView);
   taskView.setBounds({ x: 0, y: 0, width: 0, height: 0 });
   taskTabId = taskView.webContents.id;
@@ -1019,6 +1105,7 @@ function showSidePanel(url, reason, active) {
     popupWin.setSize(COLLAPSED_WIDTH + PANEL_DEFAULT_RIGHT, collapsedSize[1] || 780);
   }
   attachView(sideView);
+  if (!url) loadSideViewDefault();   // v3.0：展开时才加载，空闲不常驻 Bing SPA
   applyPanelBounds();
   if (url) {
     // 用户显式传入 URL 时一定要有可见反馈，即使面板已展开且停在同一地址。
@@ -1038,6 +1125,8 @@ function showSidePanel(url, reason, active) {
 
 function hideSidePanel() {
   if (sideView) sideView.setBounds({ x: 0, y: 0, width: 0, height: 0 });
+  /* v3.0：静默期间若面板被收起，退出静默时不要把它重建回来 */
+  if (sideViewRestore) sideViewRestore.visible = false;
   sideVisible = false;
   panelReason = null;
   if (collapsedSize && popupWin && !popupWin.isDestroyed()) {
@@ -1062,7 +1151,7 @@ function ensureDataTab(url) {
   const key = dataKeyFor(url);
   let d = dataViews.get(key);
   if (!d) {
-    const view = new ViewClass(embeddedViewPrefs());
+    const view = newEmbeddedView(embeddedViewPrefs());
     attachView(view);
     // 移到窗口外：用户看不见，但视口仍是正常的 1180×820，DOM 能完整渲染
     view.setBounds({ x: -3000, y: -3000, width: 1180, height: 820 });
@@ -1075,17 +1164,20 @@ function ensureDataTab(url) {
     tabs.set(id, entry);
     attachTabEvents(id, entry);
     view.webContents.on('did-finish-load', async () => {
+      if (!DBG.enabled) return;   // v2.9：调试关闭时零整页 HTML 分配
       const u = view.webContents.getURL();
       try {
         const html = await view.webContents.executeJavaScript('document.documentElement.outerHTML', true);
         DBG.captureHtml('data-view-' + key, u, html, { source: 'background-data-view' });
       } catch (err) { DBG.log('data-view', key + ' HTML 读取失败', { error: String(err.message || err) }); }
     });
-    d = { view, entry, id, lastNav: 0 };
+    d = { view, entry, id, lastNav: 0, lastUsed: Date.now() };
     dataViews.set(key, d);
   }
   const wc = d.view.webContents;
   const now = Date.now();
+  d.lastUsed = now;                // v2.9：刷新空闲计时
+  startDataViewSweep();
   if (url && wc.getURL() !== url) { wc.loadURL(url); d.lastNav = now; }
   else if (now - d.lastNav > 60000) { try { wc.reload(); } catch {} d.lastNav = now; }
   return tabInfo(d.id, d.entry);
@@ -1124,7 +1216,9 @@ function createBrowserTab(url, active) {
   attachTabEvents(id, entry);
   if (active !== false && !quiet) { win.show(); safeAutoFocus(win); }
   if (active !== false) activeTabId = id;
-  if (url) win.loadURL(url);
+  /* v2.7：默认浏览器主页 / 搜索引擎 = Bing。自动任务链路始终显式传 URL
+     （/dashboard、/earn、panelflyout、www.bing.com/search?q=…），不受影响。 */
+  win.loadURL(url && url !== 'about:blank' ? url : DEFAULT_BROWSER_HOME);
   broadcast('windows.onCreated', [{ id: win.id, focused: active !== false, type: 'normal' }]);
   return tabInfo(id, entry);
 }
@@ -1931,7 +2025,7 @@ ipcMain.handle('chrome:panel:state', () => panelState());
 ipcMain.handle('chrome:open:official', (_e, url) => {
   notePanelAction();
   DBG.ipc('chrome:open:official', { url });
-  return openInSidePanel(url || 'https://rewards.bing.com/dashboard', 'user');
+  return openInSidePanel(url || DEFAULT_BROWSER_HOME, 'user');
 });
 ipcMain.on('chrome:debug:log', (_e, scope, msg, data) => DBG.log('renderer:' + scope, msg, data));
 ipcMain.on('chrome:debug:page', (_e, kind, url, html, meta) => {
@@ -2520,12 +2614,40 @@ function releaseIdleViews() {
     n += destroyEmbeddedView(taskResultView, null);
     taskResultView = null;
   }
-  /* 侧栏只在面板收起时释放；展开着说明用户正在看，不能销毁 */
-  if (sideView && !sideVisible) {
+  /* v3.0 · 窗口隐藏时用户看不到侧栏，静默期无条件销毁（以前只在面板
+     收起时才释放，展开着的最小化会留一个完整 Rewards / Bing renderer）。
+     记下 URL 与显隐状态，退出静默由 restoreSideViewIfNeeded() 复原。 */
+  if (sideView) {
+    try {
+      sideViewRestore = {
+        url: sideView.webContents.getURL ? sideView.webContents.getURL() : '',
+        visible: !!sideVisible,
+        reason: panelReason || null
+      };
+    } catch (err) { sideViewRestore = { url: '', visible: false, reason: null }; }
     n += destroyEmbeddedView(sideView, sideTabId);
     sideView = null; sideTabId = null;
   }
   return n;
+}
+
+/** v3.0 · 退出静默后只重建「原本展开着」的侧栏，回到原 URL。 */
+function restoreSideViewIfNeeded() {
+  const r = sideViewRestore;
+  sideViewRestore = null;
+  if (!r || !r.visible) return 0;
+  try {
+    ensureSideView(r.url || DEFAULT_BROWSER_HOME);
+    sideVisible = true;
+    panelReason = r.reason || 'user';
+    attachView(sideView);
+    applyPanelBounds();
+    broadcast('ui:panel', [{ open: true, url: r.url, reason: panelReason }]);
+    return 1;
+  } catch (err) {
+    DBG.log('memory', '侧栏恢复失败', { error: String(err && err.message || err) });
+    return 0;
+  }
 }
 
 /** 允许 / 关闭后台节流。Electron 版本若无该运行时 API 则静默忽略。 */
@@ -2534,6 +2656,9 @@ function setAllThrottling(allow) {
   const applyWc = wc => {
     if (!wc || wc.isDestroyed()) return;
     try { if (typeof wc.setBackgroundThrottling === 'function') wc.setBackgroundThrottling(on); } catch {}
+    /* v3.0：进入静默时中止隐藏 renderer 仍在进行的页面加载，避免后台
+       持续解码图片 / 执行 SPA 定时器。已完成加载的页面不受影响。 */
+    if (on) { try { if (typeof wc.stop === 'function') wc.stop(); } catch {} }
   };
   const applyWin = w => {
     if (!w || w.isDestroyed()) return;
@@ -2550,7 +2675,25 @@ function trimStateSnapshots() {
   let cut = 0;
   for (const k of ['visibleRewardsSnapshot', 'visibleRewardsEarnSnapshot']) {
     const s = state[k];
-    if (s && typeof s === 'object') cut += trimSnapshotHtml(s, SNAPSHOT_HTML_LIMIT);
+    if (!s || typeof s !== 'object') continue;
+    /* v3.0 · 静默期不再把两份整页 HTML 留在常驻内存里（各 600KB，且
+       每次 saveState 都要序列化）。落盘副本已有裁剪版；退出静默后的
+       syncOnOpen 会重新抓官网并写回快照，解析链路不受影响。 */
+    if (typeof s.html === 'string' && s.html.length) {
+      cut += s.html.length;
+      delete s.html;
+      s.htmlQuietTrimmed = true;
+    }
+    cut += trimSnapshotHtml(s, SNAPSHOT_HTML_LIMIT);
+    if (Array.isArray(s.rows) && s.rows.length > 60) {
+      cut += s.rows.length;
+      s.rows = s.rows.slice(0, 60);
+    }
+  }
+  /* 运行日志 / 历史词同步收紧到桌面预算（与插件版 180 / 120 分别取值） */
+  if (Array.isArray(state.runLog) && state.runLog.length > RUNTIME_BUDGET.POLICY.runLogEntries) {
+    cut += state.runLog.length - RUNTIME_BUDGET.POLICY.runLogEntries;
+    state.runLog = state.runLog.slice(-RUNTIME_BUDGET.POLICY.runLogEntries);
   }
   if (cut) saveState();
   return cut;
@@ -2568,6 +2711,17 @@ const memoryGovernor = new MemoryGovernor({
     setThrottling: allow => setAllThrottling(allow),
     trimState: () => trimStateSnapshots(),
     gc: () => gcIfPossible(),
+    onEnter: () => {
+      /* v3.0 · 清 HTTP 缓存释放磁盘缓存的内存映射；不影响登录 Cookie */
+      try {
+        const s = getAppSession();
+        if (s && typeof s.clearCache === 'function') Promise.resolve(s.clearCache()).catch(() => {});
+      } catch {}
+    },
+    onExit: reason => {
+      if (reason === 'dispose' || quitting) return;
+      restoreSideViewIfNeeded();
+    },
     onLog: (scope, msg, data) => DBG.log(scope, msg, data)
   }
 });
@@ -2647,7 +2801,11 @@ function createPopup() {
   });
   /* 托盘静默：窗口隐藏才进入低占用态，重新显示立即恢复。 */
   for (const ev of ['hide', 'minimize']) popupWin.on(ev, () => governMemory('window:' + ev));
-  for (const ev of ['show', 'restore']) popupWin.on(ev, () => governMemory('window:' + ev));
+  for (const ev of ['show', 'restore']) popupWin.on(ev, () => {
+    governMemory('window:' + ev);
+    /* v3.0 · 打开主界面时触发一次同步（popup 端共享判定会跳过运行中 / 60s 内重复） */
+    broadcast('ui:opened', [{ at: Date.now() }]);
+  });
   popupWin.webContents.setWindowOpenHandler(({ url }) => {
     if (/^https?:\/\//i.test(url)) openInSidePanel(url, 'user');
     return { action: 'deny' };
@@ -2864,5 +3022,6 @@ app.on('will-quit', () => {
   fetchControllers.clear();
   try { if (taskResultLoadWatcher) taskResultLoadWatcher.cancel(); } catch {}
   try { if (DBG && typeof DBG.close === 'function') DBG.close(); } catch {}
-  saveState();
+  try { stopDataViewSweep(); } catch {}
+  flushStateSync();   // v2.9：把节流的尾随写强制落盘
 });
