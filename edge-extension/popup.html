@@ -265,16 +265,9 @@
         </label>
         <p id="auto-disabled-hint" class="auto-disabled-hint" hidden></p>
         <div id="auto-opts" class="auto-opts">
-          <div class="set-row column" data-i18n-title="auto.countHint" data-tip-role="hint" title="按今日搜索剩余分数自动决定，不超过此值">
-            <span class="set-label" data-i18n="auto.count">搜索次数上限</span>
-            <div class="chips" id="set-auto-count-chips" role="radiogroup" aria-label="Auto task searches">
-              <button type="button" role="radio" data-value="10">10</button>
-              <button type="button" role="radio" data-value="20">20</button>
-              <button type="button" role="radio" data-value="30">30</button>
-              <button type="button" role="radio" data-value="50">50</button>
-              <input type="number" id="set-auto-count" min="1" max="150" step="1" aria-label="自定义搜索次数" data-i18n-aria="a11y.customCount" data-i18n-ph="settings.other" placeholder="其他">
-            </div>
-          </div>
+          <!-- v4.3 · 搜索次数上限已移除：与拟人强度预设里的「单次配额上限」双重封顶，
+               用户填 30 实际只跑 18 次，无法预期。次数现在只由「剩余搜索配额 × 单次配额上限」决定。 -->
+          <p class="set-hint" data-i18n="auto.countNote">搜索次数由今日剩余配额与拟人强度自动决定</p>
           <div class="set-row column" data-i18n-title="auto.timesHint" data-tip-role="hint" title="可添加多个时间，自动去重排序">
             <span class="set-label" data-i18n="auto.times">启动时间</span>
             <div class="time-add">

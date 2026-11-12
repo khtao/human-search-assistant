@@ -63,11 +63,17 @@ test('v3.2 · 两端后台 syncOnOpen 分支：统一闸门 + syncNotice，严�
     assert.match(src, /reason: HSA_CORE\.SYNC_ON_OPEN\.reason/, name);
     assert.match(src, /const syncGate = HSA_CORE\.createSyncGate\(\{/, name);
     assert.match(src, /syncGate\.request\(\{ reason: HSA_CORE\.SYNC_ON_OPEN\.reason \}\)/, name);
-    assert.match(src, /strictRunActive && HSA_CORE\.strictBlockedMessage\(msg\.type, true\)/,
+    /* v4.4 · 严格守卫仍在，但手动启动 autoComplete 单独豁免（由
+       runAutoComplete 自己判断重复运行），避免残留 running 把用户锁死。 */
+    assert.match(src, /strictRunActive && msg\.type !== 'autoComplete'/,
+      name + ' 严格守卫必须豁免手动启动请求');
+    assert.match(src, /HSA_CORE\.strictBlockedMessage\(msg\.type, true\)/,
       name + ' 严格运行期拦截必须在新分支之前');
-    const guard = src.indexOf('strictRunActive && HSA_CORE.strictBlockedMessage');
+    const guard = src.indexOf('strictRunActive && msg.type !==');
     const branch = src.indexOf('msg.type === HSA_CORE.SYNC_ON_OPEN.messageType');
     assert.ok(guard >= 0 && guard < branch, name + ' 拦截应先于同步分支');
+    assert.match(src, /const startManual = async \(\) => \{/,
+      name + ' 手动启动需先自愈僵尸 running');
   }
   assert.match(EB, /sync: opts => syncRewardsUnified\(opts\)/);
   assert.match(DB, /sync: opts => desktopSyncRewards\(opts\)/);

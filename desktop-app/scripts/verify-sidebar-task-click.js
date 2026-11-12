@@ -86,8 +86,8 @@ async function main() {
     'v3.5 运行时不再有任何「是否跳过」参数；全完成零动作无 force 例外');
   ck(!BG.includes('!o.force'),
     '不存在绕过全完成停止态的 force 死参数（与插件版一致）');
-  ck(BG.includes('const sync = await syncStart(token, o.cap);')
-      && BG.indexOf('await syncStart(token, o.cap)') < BG.indexOf('if (sync.allDone)'),
+  ck(BG.includes('const sync = await syncStart(token);')
+      && BG.indexOf('await syncStart(token)') < BG.indexOf('if (sync.allDone)'),
     '自动开始按键点击后先同步积分，再判断是否全部完成');
 
   section('2. 侧栏流程接线（重载 / 关闭 / 主界面状态决策）');

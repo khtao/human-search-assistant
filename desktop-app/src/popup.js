@@ -8,7 +8,6 @@ document.addEventListener('DOMContentLoaded', () => {
   const btnAction = $('btn-action');
   const actionLabel = $('btn-action-label');
   // 首页「搜索次数」输入已移除；次数由今日 Bing 搜索剩余分数自动决定
-  const countInput = { value: '30', disabled: false, addEventListener() {} };
   /* v1.1.5：顶端主题按钮已移除（设置页里仍有主题三态切换）。
    保留一个空壳引用，避免 applyI18n / applyTheme 里的旧代码抛 TypeError。 */
   const themeBtn = $('theme-toggle') || {
@@ -53,9 +52,8 @@ document.addEventListener('DOMContentLoaded', () => {
     'loginStatus', 'loginCheckedAt', 'autoResult', 'activityDetail', 'pointsHistory'
   ];
   const DEFAULTS = {
-    defaultCount: 30,
-    pace: 'normal',
-    autoStop: true,
+    /* v4.3 · 已移除 defaultCount / pace / autoStop：首页输入框与 holdRange 早已删除，
+       这些键被写进 storage 却从不被任何运行逻辑读取。 */
     reduceMotion: false,
     cardClickIntervalSec: HSA_CORE.DEFAULTS.cardClickIntervalSec,
     /* v3.7 · 拟人搜索间隔（秒），与后台 DEFAULT_SETTINGS 同源。 */
@@ -72,7 +70,8 @@ document.addEventListener('DOMContentLoaded', () => {
     singleRunCapPct: 60, scheduleJitterMin: 20, geoCacheHours: 12,
     runLogEnabled: true
   };
-  const AUTO_DEFAULTS = { enabled: false, times: [], count: 30, level: 3 };
+  /* v4.3 · autoTasks 只保留定时开关与时间点；次数与强度另有单一真源。 */
+  const AUTO_DEFAULTS = { enabled: false, times: [] };
   const AUTO_MAX_TIMES = 10;
   const MAX_COOLDOWNS = 6;
 
@@ -90,7 +89,7 @@ document.addEventListener('DOMContentLoaded', () => {
       'panel.open': '官网', 'panel.close': '收起',
       'a11y.language': '切换语言', 'a11y.settings': '打开设置', 'a11y.theme': '切换主题',
       'a11y.progress': '今日任务进度', 'a11y.points': '积分概览', 'a11y.dismiss': '关闭',
-      'a11y.back': '返回', 'a11y.customCount': '自定义搜索次数', 'a11y.autoTime': '启动时间',
+      'a11y.back': '返回', 'a11y.autoTime': '启动时间',
       'theme.light': '浅色', 'theme.dark': '深色', 'theme.system': '跟随系统',
       'theme.toLight': '切换到浅色主题', 'theme.toDark': '切换到深色主题',
       'progress.searches': '次搜索', 'progress.tasks': '今日任务', 'progress.ptsToday': '今日积分', 'progress.cooldown': '冷却中',
@@ -157,7 +156,7 @@ document.addEventListener('DOMContentLoaded', () => {
       'settings.subtitle': '偏好 · 节奏 · 数据',
       'settings.appearanceDesc': '语言、主题与界面动效',
       'timing.title': '运行节奏', 'timing.desc': '5 项固定间隔，运行开始后整轮不变',
-      'auto.desc': '定时计划、搜索次数与启动时间',
+      'auto.desc': '定时计划与启动时间；搜索次数由今日剩余配额自动决定',
       'diag.desc': '轻量运行日志与按需实时抓取',
       'desktop.desc': '仅桌面版可用的窗口与系统选项',
       /* v3.9 · 运行设置（模式 / 强度 / 全维度拟人特征） */
@@ -195,7 +194,7 @@ document.addEventListener('DOMContentLoaded', () => {
       'settings.minutes': '分钟',
       'auto.title': '自动完成任务', 'auto.enable': '定时自动运行',
       'auto.enableHint': '到点自动点击任务卡并按剩余分数搜索，最多 10 个时间点',
-      'auto.count': '搜索次数上限', 'auto.countHint': '按今日 Bing 搜索剩余分数自动决定，不超过此值', 'auto.times': '启动时间',
+      'auto.countNote': '搜索次数由今日剩余配额与拟人强度自动决定', 'auto.times': '启动时间',
       'auto.timesHint': '留空直接点「添加」：首个默认 08:00，之后比最晚时间顺延 30 分钟，自动去重排序', 'auto.addTime': '添加',
       'auto.level': '拟人强度', 'auto.levelHint': '影响鼠标轨迹、滚动与每轮时长',
       'level.low': '低', 'level.mid': '中', 'level.high': '高',
@@ -267,7 +266,7 @@ document.addEventListener('DOMContentLoaded', () => {
       'panel.open': 'Site', 'panel.close': 'Hide',
       'a11y.language': 'Switch language', 'a11y.settings': 'Open settings', 'a11y.theme': 'Switch theme',
       'a11y.progress': 'Today\'s tasks progress', 'a11y.points': 'Points summary', 'a11y.dismiss': 'Dismiss',
-      'a11y.back': 'Back', 'a11y.customCount': 'Custom number of searches', 'a11y.autoTime': 'Start time',
+      'a11y.back': 'Back', 'a11y.autoTime': 'Start time',
       'theme.light': 'Light', 'theme.dark': 'Dark', 'theme.system': 'System',
       'theme.toLight': 'Switch to light theme', 'theme.toDark': 'Switch to dark theme',
       'progress.searches': 'searches', 'progress.tasks': 'Today\'s tasks', 'progress.ptsToday': 'pts today', 'progress.cooldown': 'cooldown',
@@ -334,7 +333,7 @@ document.addEventListener('DOMContentLoaded', () => {
       'settings.subtitle': 'Preferences · Pacing · Data',
       'settings.appearanceDesc': 'Language, theme and motion',
       'timing.title': 'Run cadence', 'timing.desc': 'Five fixed intervals, locked for each run',
-      'auto.desc': 'Schedule, search quota and start times',
+      'auto.desc': 'Schedule and start times; search count follows the remaining daily quota',
       'diag.desc': 'Lightweight logs and on-demand live captures',
       'desktop.desc': 'Desktop-only window and system options',
       /* v3.9 · Run settings */
@@ -372,7 +371,7 @@ document.addEventListener('DOMContentLoaded', () => {
       'settings.minutes': 'min',
       'auto.title': 'Auto-complete tasks', 'auto.enable': 'Scheduled runs',
       'auto.enableHint': 'Click unfinished cards, then search as needed, up to 10 start times',
-      'auto.count': 'Search cap', 'auto.countHint': 'Decided from remaining Bing search points, capped here', 'auto.times': 'Start times',
+      'auto.countNote': 'Search count follows the remaining quota and human level', 'auto.times': 'Start times',
       'auto.timesHint': 'Leave empty and tap Add: first defaults to 08:00, then +30 min from the latest time; auto-sorted and deduped', 'auto.addTime': 'Add',
       'auto.level': 'Human-like intensity', 'auto.levelHint': 'Affects mouse path, scrolling and round length',
       'level.low': 'Low', 'level.mid': 'Medium', 'level.high': 'High',
@@ -817,26 +816,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
   async function loadSettings() {
     const data = await chrome.storage.local.get(['settings']);
-    let legacyCount = null;
-    try { legacyCount = parseInt(localStorage.getItem('searchCount'), 10); } catch {}
-    const base = Object.assign({}, DEFAULTS, Number.isFinite(legacyCount) ? { defaultCount: legacyCount } : {});
-    settings = Object.assign(base, data.settings || {});
+    settings = Object.assign({}, DEFAULTS, data.settings || {});
     setReduceMotion(!!settings.reduceMotion);
-    if (!countInput.disabled) countInput.value = settings.defaultCount;
     syncSettingsUI();
     refresh();
   }
-
-  function clampCount() {
-    const v = clampInt(countInput.value, 1, 150, settings.defaultCount);
-    countInput.value = v;
-    return v;
-  }
-
-  countInput.addEventListener('change', () => {
-    saveSettings({ defaultCount: clampCount() });
-    refresh();
-  });
 
   let pendingStartUntil = 0;
   /* v2.9：全完成时在圆圈下方显示绿色小字的时长（毫秒） */
@@ -903,7 +887,8 @@ document.addEventListener('DOMContentLoaded', () => {
           }
         } catch {}
       }, 8000);
-      const res = await send('autoComplete', { level: autoTasks.level });
+      /* v4.4 · 定时配置里的强度字段已在 v4.3 删除；强度只由 settings.humanLevel 决定。 */
+      const res = await send('autoComplete', {});
       // v2.9：后台确认全完成 → 零动作，只在圆圈下方显示绿色小字。
       // 注意：正常流程返回的是 skippedCards（跳过的不给分卡片数），不能当成整轮跳过。
       if (res && res.reason === 'signedOut') {
@@ -911,9 +896,19 @@ document.addEventListener('DOMContentLoaded', () => {
         pendingStartUntil = 0;
         setAction('start', t('controls.start'), false);
         showError(t('error.signIn'));
-      } else if (res && (res.reason === 'allDone' || res.skipped === true)) {
+      } else if (res && res.reason === 'allDone') {
         clearTimeout(startWatchdogTimer);
         showAllDoneNotice();
+      } else if (res && res.ok === false) {
+        /* v4.4 · 所有失败原因都必须可见：running / strictRun / 护栏拦截 /
+           同步失败 / 无合规词 等，原来统一落进空 else，按钮停在「正在启动…」
+           直到 8 秒看门狗，用户完全不知道为什么没启动。 */
+        clearTimeout(startWatchdogTimer);
+        pendingStartUntil = 0;
+        setAction('start', t('controls.start'), false);
+        const reasonText = HSA_CORE.startFailText(res.reason, lang);
+        showError(t('error.startFailed', { msg: reasonText }));
+        setStatus(reasonText, 'idle error', false);
       } else if (!res) {
         // 后台无响应：错误横幅已由 send() 显示，按钮别一直卡在「启动中」
         clearTimeout(startWatchdogTimer);
@@ -1211,7 +1206,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
     if (running) {
       pendingStartUntil = 0;
-      countInput.disabled = true;
       if (phase === 'fetchingEndPoints') setAction('stop', t('controls.finishing'), true);
       else if (d.stopRequested) setAction('stop', t('controls.stopping'), true);
       else setAction('stop', t('controls.stop'), false);
@@ -1219,7 +1213,6 @@ document.addEventListener('DOMContentLoaded', () => {
       setAction('stop', t('controls.starting'), true);
     } else {
       uiStartAt = 0;
-      countInput.disabled = false;
       setAction('start', t('controls.start'), false);
     }
   }
@@ -1248,12 +1241,9 @@ document.addEventListener('DOMContentLoaded', () => {
         .map(v => String(v || '').trim())
         .filter(v => /^([01]\d|2[0-3]):[0-5]\d$/.test(v))
     )].sort().slice(0, AUTO_MAX_TIMES);
-    return {
-      enabled: !!src.enabled,
-      times,
-      count: clampInt(src.count, 1, 150, AUTO_DEFAULTS.count),
-      level: clampInt(src.level, 1, 3, AUTO_DEFAULTS.level)
-    };
+    /* v4.3 · count / level 已从 autoTasks 移除：
+       次数 = 剩余配额 × 单次配额上限；强度 = settings.humanLevel。 */
+    return { enabled: !!src.enabled, times };
   }
 
   let autoSavedAt = 0;
@@ -1292,12 +1282,6 @@ document.addEventListener('DOMContentLoaded', () => {
     const hint = $('auto-disabled-hint');
     if (hint) { hint.hidden = !!autoTasks.enabled; hint.textContent = t('tasks.disabledTip'); }
     opts.removeAttribute('title');
-    setSegment('set-auto-count-chips', autoTasks.count);
-    const isPreset = [10, 20, 30, 50].includes(Number(autoTasks.count));
-    const custom = $('set-auto-count');
-    if (document.activeElement !== custom) custom.value = isPreset ? '' : autoTasks.count;
-    custom.classList.toggle('custom', !isPreset);
-    setSegment('set-auto-level', autoTasks.level);
     const wrap = $('set-auto-times');
     wrap.textContent = '';
     for (const time of autoTasks.times) {
@@ -1610,14 +1594,8 @@ document.addEventListener('DOMContentLoaded', () => {
     runDiagAction('captureKeyPages', $('btn-capture-keypages'), t('diag.capturing')));
 
   $('set-auto').addEventListener('change', e => saveAutoTasks({ enabled: e.target.checked }));
-  onSegment('set-auto-count-chips', v => saveAutoTasks({ count: v }));
-  $('set-auto-count').addEventListener('change', e => {
-    if (e.target.value !== '') saveAutoTasks({ count: e.target.value });
-  });
-  onSegment('set-auto-level', v => {
-    saveAutoTasks({ level: Number(v) });
-    saveSettings({ humanLevel: Number(v) });
-  });
+  /* v4.3 · 强度只有一个真源 settings.humanLevel，不再双写定时配置里的强度。 */
+  onSegment('set-auto-level', v => saveSettings({ humanLevel: Number(v) }));
   /* v3.9 · 运行设置：模式 / 强度 / 全维度拟人特征（两端同源）。 */
 
   /* v4.2 · 单次配额上限 / 启动抖动上限同样由强度预设套用。 */
@@ -1716,7 +1694,6 @@ document.addEventListener('DOMContentLoaded', () => {
     chrome.storage.local.set({ uiLang: 'system' });
     applyI18n();
     syncSettingsUI();
-    if (!countInput.disabled) countInput.value = DEFAULTS.defaultCount;
     refresh();
   });
 

@@ -2374,6 +2374,227 @@ const CHECKS = [
     }
   }],
 
+  ['v4.3 · 无用/冲突设置项清理：两端同构、次数只剩单一真源', () => {
+    const H = require(path.join(ROOT, 'shared', 'hsa-human.js'));
+    const S = require(path.join(ROOT, 'shared', 'hsa-stealth.js'));
+    for (const k of ['eh', 'dh']) {
+      for (const gone of ['set-auto-count', 'set-auto-count-chips',
+                          'data-i18n="auto.count"', 'data-i18n-title="auto.countHint"',
+                          'aria-label="自定义搜索次数"']) {
+        assert.ok(!F[k].includes(gone), P[k] + ' 仍残留 ' + gone);
+      }
+      has(k, /data-i18n="auto\.countNote"/);
+      /* 三组预设仍完整（v4.2 不回退） */
+      assert.equal((F[k].match(/data-preset="/g) || []).length, 7);
+      assert.equal((F[k].match(/data-group="(quota|action|page)"/g) || []).length, 3);
+    }
+    for (const k of ['ep', 'dp']) {
+      for (const gone of ['countInput', 'defaultCount:', 'AUTO_DEFAULTS.count',
+                          "saveAutoTasks({ count", "saveAutoTasks({ level",
+                          'clampCount()', "'a11y.customCount'", "'auto.countHint'"]) {
+        assert.ok(!F[k].includes(gone), P[k] + ' 仍残留 ' + gone);
+      }
+      has(k, /'auto\.countNote':/);
+      has(k, /onSegment\('set-auto-level', v => saveSettings\(\{ humanLevel: Number\(v\) \}\)/);
+      has(k, /const AUTO_DEFAULTS = \{ enabled: false, times: \[\] \}/);
+    }
+    for (const k of ['eb', 'db']) {
+      for (const gone of ['defaultCount: 30', "pace: 'normal'", 'autoStop: true',
+                          'holdRange(', 'AUTO_DEFAULTS.count', 'AUTO_DEFAULTS.level',
+                          'tasks.count', 'tasks.level', 'o.cap',
+                          'cap: msg.count', '&form=QBLH']) {
+        assert.ok(!F[k].includes(gone), P[k] + ' 仍残留 ' + gone);
+      }
+      has(k, /async function presetSearchCount\((counter|pages)\) \{/);
+      has(k, /HSA_STEALTH\.capSearches\(need, need, STEALTH\.singleRunCapPct/);
+      has(k, /const cnt = await presetSearchCount\((sync\.counter|pages)\);/);
+      has(k, /const sync = await syncStart\(token\);/);
+      has(k, /HSA_HUMAN\.levelFromValue\(runSettings\.humanLevel\)\.n/);
+      has(k, /function directSearchUrl\(query\)/);
+      assert.ok(!/form=QBLH/.test(F[k]));
+    }
+    /* 次数单一真源：剩余配额 need × 强度预设 pct，不再叠加「搜索次数上限」 */
+    for (const lv of [1, 2, 3]) {
+      const cfg = H.applyRunPreset({ runMode: 'human', humanLevel: lv });
+      const need = 20;
+      assert.equal(S.capSearches(need, need, cfg.singleRunCapPct, 'human'),
+        Math.max(1, Math.round(need * cfg.singleRunCapPct / 100)),
+        '档 ' + lv + ' 次数应只由配额与预设决定');
+    }
+    assert.equal(S.capSearches(20, 20, 60, 'strict'), 20, '严格档维持原语义');
+    /* 两端共有设置 DOM 仍逐字一致 */
+    const bodyOf = x => {
+      const a = x.indexOf('<div class="settings-body">');
+      return x.slice(a, x.indexOf('</section>', a));
+    };
+    const d = bodyOf(F.dh);
+    const ds = d.indexOf('<!-- v1.3.8 · 桌面版专有功能');
+    const de = d.indexOf('id="set-reset"', ds);
+    assert.equal(bodyOf(F.eh).trim(),
+      (d.slice(0, ds) + d.slice(d.lastIndexOf('\n', de) + 1)).trim());
+    /* 全量 i18n 键零缺失 */
+    for (const [hk, jk] of [['eh', 'ep'], ['dh', 'dp']]) {
+      const keys = [...F[hk].matchAll(/data-i18n(?:-title|-aria|-ph)?="([^"]+)"/g)].map(m => m[1]);
+      for (const key of new Set(keys)) {
+        assert.ok(F[jk].includes("'" + key + "':"), P[jk] + ' 缺字典键 ' + key);
+      }
+    }
+  }],
+  ['v4.3 · 风险加固：当日运行护栏两端逐字同构、导航来源自洽、能力不回退', () => {
+    const C = require(path.join(ROOT, 'shared', 'hsa-core.js'));
+    const S = require(path.join(ROOT, 'shared', 'hsa-stealth.js'));
+    const H = require(path.join(ROOT, 'shared', 'hsa-human.js'));
+    assert.equal(S.selftest().ok, true);
+    assert.equal(H.selftest().ok, true);
+    const t0 = Date.UTC(2026, 10, 12, 4, 0, 0);
+    assert.equal(S.utc8DayKey(t0), C.hotDayKey(t0));
+    assert.equal(S.utc8DayKey(Date.UTC(2026, 10, 11, 20, 0, 0)), '2026-11-12');
+    const pol = S.runGuardPolicy(2, 'human');
+    assert.equal(pol.enabled, true);
+    assert.equal(pol.maxRuns, 3);
+    assert.equal(pol.minGapMin, 45);
+    assert.equal(S.runGuardPolicy(3, 'strict').enabled, false);
+    const st0 = S.guardState(null, t0);
+    assert.equal(S.guardDecision(st0, t0, S.runGuardPolicy(3, 'strict'), 0, false).allowed, true);
+    assert.equal(S.guardDecision(st0, t0, pol, 0.01, false).reason, 'stochastic-skip');
+    assert.equal(S.guardDecision(st0, t0, pol, 0.01, true).allowed, true);
+    const st1 = S.guardRecord(st0, t0, { reason: 'ok' });
+    assert.equal(S.guardDecision(st1, t0 + 10 * 60000, pol, 0.9, false).reason, 'min-gap');
+    const full = { day: S.utc8DayKey(t0), runs: [t0 - 4 * 3600000, t0 - 3 * 3600000, t0 - 2 * 3600000], skips: [] };
+    assert.equal(S.guardDecision(full, t0, pol, 0.9, false).reason, 'daily-run-cap');
+    /* 两端 guard 块逐字同构，且在所有运行分支之前 */
+    const blockOf = t => {
+      const a = t.indexOf('   * v4.3 · 当日运行频次护栏');
+      const b = t.indexOf('      guard: guardVerdict };', a);
+      assert.ok(a > 0 && b > a, 'guard 块缺失或位置不对');
+      return t.slice(a, b + '      guard: guardVerdict };'.length);
+    };
+    assert.equal(blockOf(F.eb), blockOf(F.db), '两端护栏接线必须逐字一致');
+    for (const k of ['eb', 'db']) {
+      for (const needle of ['HSA_STEALTH.runGuardPolicy(', 'HSA_STEALTH.guardState(',
+        'HSA_STEALTH.guardDecision(', 'HSA_STEALTH.guardRecord(',
+        "store({ runGuard:", "hsaRunLog('run-guard'", 'HSA_STEALTH.guardReasonText(',
+        'HSA_STEALTH.mulberry32(HSA_STEALTH.hashSeed(', 'guardVerdict.allowed']) {
+        assert.ok(F[k].includes(needle), P[k] + ' 缺护栏接线 ' + needle);
+      }
+      /* 不回退 v4.0 / v4.1 / v4.2 */
+      for (const needle of ['HSA_STEALTH.normalize(RUN_SETTINGS)', 'HSA_STEALTH.capSearches(',
+        'skipCardPhaseIfEmpty', 'HSA_CORE.hasClickableCards(',
+        'HSA_HUMAN.applyRunPreset(', 'HSA_CORE.todayUsedState(saved, now)',
+        'HSA_CORE.dropUsedWords(built.queries, usedAll)']) {
+        assert.ok(F[k].includes(needle), P[k] + ' 回退了 ' + needle);
+      }
+      assert.ok(!/&form=QBLH/.test(F[k]));
+    }
+    const css = fs.readFileSync(path.join(ROOT, 'shared', 'hsa-stealth.js'), 'utf8');
+    assert.match(css, /v4\.3 账号侧/);
+    for (const d of ['edge-extension/shared/hsa-stealth.js', 'desktop-app/shared/hsa-stealth.js']) {
+      assert.equal(fs.readFileSync(path.join(ROOT, d), 'utf8')
+        .replace(/^\/\* AUTO-GENERATED[^\n]*\n/, ''), css.trim() + '\n');
+    }
+  }],
+
+  ['v4.4 · 手动启动链路排查：两端五处拦截点均可自愈或可见，同构且无残留', () => {
+    const C = require(path.join(ROOT, 'shared', 'hsa-core.js'));
+    const S = require(path.join(ROOT, 'shared', 'hsa-stealth.js'));
+    assert.equal(S.selftest().ok, true);
+    for (const k of ['eb', 'db']) {
+      /* ① 消息守卫不能再吃掉 autoComplete */
+      has(k, /strictRunActive && msg\.type !== 'autoComplete'/);
+      has(k, /HSA_CORE\.strictBlockedMessage\(msg\.type, true\)/);
+      /* ② 启动分支 + 入口双自愈 */
+      has(k, /const startManual = async \(\) => \{/);
+      has(k, /HSA_CORE\.staleRunning\(rs, Date\.now\(\), 5 \* 60 \* 1000/);
+      has(k, /HSA_CORE\.staleRunning\(staleSnap, Date\.now\(\), 5 \* 60 \* 1000/);
+      has(k, /strictRunActive = false/);
+      has(k, /hsaRunLog\('stale-running-cleared'/);
+      /* ③ 停止态手动复核 */
+      has(k, /syncGate\.clearAllDone\('manual-recheck'\)/);
+      has(k, /HSA_CORE\.isAllDone\(recheck\.todayTasks/);
+      has(k, /hsaRunLog\('stopped-recheck'/);
+      /* ④ 护栏手动只警告、空卡片继续搜索、搜索阶段不再静默 */
+      has(k, /hsaRunLog\('run-guard-warn'/);
+      has(k, /HSA_STEALTH\.guardWarnText\(guardVerdict\.warn\)/);
+      has(k, /hsaRunLog\('card-phase-skipped'/);
+      has(k, /hsaRunLog\('search-phase-stopped'/);
+      /* 重复启动保护不能回退 */
+      has(k, /if \(\(await load\(\['running'\]\)\)\.running\) return \{ ok: false, reason: 'running' \}/);
+      assert.ok(!F[k].includes('autoTasks.level'), P[k] + ' 仍引用已删除的 autoTasks.level');
+    }
+    for (const k of ['ep', 'dp']) {
+      has(k, /const res = await send\('autoComplete', \{\}\)/);
+      has(k, /\} else if \(res && res\.ok === false\) \{/);
+      has(k, /HSA_CORE\.startFailText\(res\.reason, lang\)/);
+      has(k, /showError\(t\('error\.startFailed', \{ msg: reasonText \}\)\)/);
+      has(k, /setStatus\(reasonText, 'idle error', false\)/);
+      assert.ok(!F[k].includes('autoTasks.level'), P[k] + ' 仍引用已删除的 autoTasks.level');
+      assert.ok(!F[k].includes('res.skipped === true'), P[k] + ' 仍把任意 skipped 当 allDone');
+    }
+    /* 共享层四项能力 */
+    const core = fs.readFileSync(path.join(ROOT, 'shared', 'hsa-core.js'), 'utf8');
+    assert.match(core, /function staleRunning\(snap, now, maxIdleMs, ctx\)/);
+    assert.match(core, /function startFailText\(reason, lang\)/);
+    assert.match(core, /function clearAllDone\(reason\)/);
+    assert.match(core, /clearAllDone: clearAllDone/);
+    const st = fs.readFileSync(path.join(ROOT, 'shared', 'hsa-stealth.js'), 'utf8');
+    assert.match(st, /if \(manual\) \{/);
+    assert.match(st, /guardWarnText: guardWarnText/);
+    /* 两端同构：启动分支、入口自愈、停止态复核、空卡片日志 */
+    const seg = (t, a, b) => { const i = t.indexOf(a), j = t.indexOf(b, i);
+      assert.ok(i >= 0 && j > i, '块缺失 ' + a); return t.slice(i, j); };
+    const pairs = [
+      ["    const startManual = async () => {", '    startManual()\n      .then(sendResponse)'],
+      ['  /* v4.4 · 僵尸 running 自愈（两端同构', '  const gateStopped = await syncGate.guardTaskStart();'],
+      ['  const gateStopped = await syncGate.guardTaskStart();',
+       '  /* ======================================================================\n   * v4.3 · 当日运行频次护栏'],
+      ["    /* v4.4 · 「只剩搜索任务」时点击阶段短路", '    if (searches > 0 && isCurrent(token)) {']
+    ];
+    for (const [a, b] of pairs) assert.equal(seg(F.eb, a, b), seg(F.db, a, b), '两端不同构：' + a);
+    /* 失败文案 ≤15 显示宽度 */
+    for (const [r, v] of Object.entries(C.START_FAIL_TEXT)) {
+      assert.ok(C.displayWidth(v.zh) <= 15, '中文超宽 ' + r);
+      assert.ok(C.displayWidth(v.en) <= 15, '英文超宽 ' + r);
+    }
+    assert.equal(C.startFailText('min-gap', 'zh'), '距上次过近');
+    assert.equal(C.startFailText('unknown', 'en'), 'Could not start');
+    /* 手动不再被次数/间隔硬拦，定时仍硬拦 */
+    const t0 = Date.UTC(2026, 10, 12, 4, 0, 0);
+    const pol = S.runGuardPolicy(2, 'human');
+    const full = { day: S.utc8DayKey(t0),
+      runs: [t0 - 5 * 3600000, t0 - 4 * 3600000, t0 - 3 * 3600000], skips: [] };
+    assert.equal(S.guardDecision(full, t0, pol, 0.9, true).allowed, true);
+    assert.equal(S.guardDecision(full, t0, pol, 0.9, true).warn, 'daily-run-cap');
+    assert.equal(S.guardDecision(full, t0, pol, 0.9, false).allowed, false);
+    assert.equal(C.staleRunning({ running: true, lastActivity: t0 }, t0 + 10000,
+      300000, { active: true, manual: true }).stale, false);
+    assert.equal(C.staleRunning({ running: true, lastActivity: t0 }, t0 + 10000,
+      300000, { active: false, manual: true }).stale, true);
+  }],
+  ['v4.4 · 不回退：v4.1 空卡片短路、v4.2 词去重、v4.3 清理、严格档与共享清单', () => {
+    const C = require(path.join(ROOT, 'shared', 'hsa-core.js'));
+    const S = require(path.join(ROOT, 'shared', 'hsa-stealth.js'));
+    assert.equal(C.isNonClickableTaskItem({ name: '今日 Bing 搜索', section: 'search' }), true);
+    assert.equal(C.hasClickableCards([{ name: '今日 Bing 搜索', section: 'search' }],
+      [{ name: '今日 Bing 搜索', section: 'search' }], null), false);
+    assert.equal(C.strictRunPolicy().fixedNapMs, 600);
+    assert.equal(S.runGuardPolicy(3, 'strict').enabled, false);
+    for (const k of ['eb', 'db']) {
+      for (const needle of ['skipCardPhaseIfEmpty', 'HSA_CORE.hasClickableCards(',
+        'HSA_CORE.todayUsedState(saved, now)', 'HSA_CORE.dropUsedWords(built.queries, usedAll)',
+        'HSA_STEALTH.capSearches(need, need, STEALTH.singleRunCapPct',
+        'HSA_HUMAN.applyRunPreset(', "store({ runGuard:"]) {
+        assert.ok(F[k].includes(needle), P[k] + ' 回退了 ' + needle);
+      }
+      assert.ok(!F[k].includes('set-auto-count'));
+      assert.ok(!F[k].includes('&form=QBLH'));
+    }
+    const master = fs.readFileSync(path.join(ROOT, 'shared', 'hsa-stealth.js'), 'utf8');
+    for (const f of ['edge-extension/shared/hsa-stealth.js', 'desktop-app/shared/hsa-stealth.js']) {
+      assert.equal(fs.readFileSync(path.join(ROOT, f), 'utf8')
+        .replace(/^\/\* AUTO-GENERATED[^\n]*\n/, ''), master.trim() + '\n');
+    }
+  }],
+
 ];
 
 function runChecks() {

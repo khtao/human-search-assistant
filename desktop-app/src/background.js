@@ -390,7 +390,10 @@ async function nap(ms, token) {
 }
 
 function directSearchUrl(query) {
-  return `https://www.bing.com/search?q=${encodeURIComponent(String(query))}&form=QBLH`;
+  /* v4.3 · 这是「直接导航兜底」路径，并未经过 Bing 首页搜索框；旧版硬编码
+     固定的首页表单标识参数会让每轮兜底请求都带一个来源不实且恒定的值。
+     页面内正常提交时 URL 由 Bing 自己生成，这里只保留 q，来源自洽。 */
+  return `https://www.bing.com/search?q=${encodeURIComponent(String(query))}`;
 }
 
 /* --------------------------------------------------------------- 关键词清洗 */
@@ -2162,9 +2165,8 @@ function keepEarningSummary(cards) {
 }
 
 const DEFAULT_SETTINGS = {
-  defaultCount: 30,
-  pace: 'normal',
-  autoStop: true,
+  /* v4.3 · 移除 defaultCount / pace / autoStop：无任何运行逻辑读取。
+     reminder* 仅桌面保留历史提醒代码路径（无 UI 入口，运行期闹钟被严格白名单禁用）。 */
   reminderPerDay: 3,
   reminderGapHours: 2,
   reminderFrom: '08:00',
@@ -2201,9 +2203,6 @@ async function getSettings() {
     Object.assign({}, DEFAULT_SETTINGS, settings || {}));
 }
 
-function holdRange(settings) {
-  return settings.pace === 'relaxed' ? [22000, 32000] : [RESULT_HOLD_MIN, RESULT_HOLD_MAX];
-}
 
 function describeFailure(diag) {
   if (!diag) return '';
@@ -2460,10 +2459,19 @@ async function handleStart(count, params) {
   /* v3.2 · 当日全部完成：所有任务入口一律停止，跨日自动恢复。 */
   if (await syncGate.isStopped()) {
     syncGate.activity('allDone', { reason: 'start' });
-    return;
+    /* v4.4 · 不再静默吞掉搜索阶段：写日志并返回明确原因。 */
+    hsaRunLog('search-phase-stopped', {
+      actor: 'system', category: 'run-step', level: 'info', state: 'skipped',
+      zh: '停止态·跳过搜索', en: 'Stopped · search skipped',
+      detail: '当日停止态仍生效，handleStart 未进入搜索；手动启动会先复核停止态',
+      result: 'skipped', count: 0, order: 0, error: '', reason: 'allDone'
+    }).catch(() => {});
+    return { ok: false, reason: 'allDone', skipped: true, searches: 0 };
   }
   params = params || {};
-  const runLevel = clampInt(Number(params.level) || 3, 1, 3);
+  /* v4.3 · 强度单一真源：运行设置 humanLevel。 */
+  const runSettings = await getSettings();
+  const runLevel = HSA_HUMAN.levelFromValue(runSettings.humanLevel).n;
   resetHalt();
   const token = ++flowToken;
   flowActive = true;
@@ -2944,7 +2952,10 @@ chrome.permissions.onRemoved.addListener(p => {
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!msg || typeof msg.type !== 'string') return;
   /* 严格运行模式：运行期禁止刷新 / 同步 / 改设置 / 重复启动等影响运行的操作。 */
-  if (strictRunActive && HSA_CORE.strictBlockedMessage(msg.type, true)) {
+  /* v4.4 · 手动启动请求必须能到达 runAutoComplete，由它自己判断重复运行；
+     strictRunActive 由残留 running 驱动，原本会把「自动完成任务」永久吃掉。 */
+  if (strictRunActive && msg.type !== 'autoComplete'
+      && HSA_CORE.strictBlockedMessage(msg.type, true)) {
     sendResponse({ ok: false, reason: 'strictRun', message: HSA_CORE.TEXT.strictRunBlocked });
     return;
   }
@@ -2954,7 +2965,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   } else if (msg.type === 'stop') {
     handleStop();
   } else if (msg.type === 'runNow') {
-    startAutoRun({ manual: true, count: msg.count, level: msg.level, time: msg.time || null })
+    startAutoRun({ manual: true, time: msg.time || null })
       .then(sendResponse)
       .catch(err => sendResponse({ ok: false, reason: 'error', message: err.message }));
     return true;
@@ -2971,7 +2982,33 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       .catch(err => sendResponse({ ok: false, reason: 'error', message: err.message }));
     return true;
   } else if (msg.type === 'autoComplete') {
-    runAutoComplete({ manual: true, level: msg.level, cap: msg.count })
+    /* v4.4 · 启动前自愈僵尸 running；listener 保持同步函数 + return true，
+       不改成 async（Chrome MV3 不会把 async listener 的 Promise 当作异步应答）。 */
+    const startManual = async () => {
+      const rs = await load(['running', 'lastActivity', 'phase']).catch(() => ({}));
+      const verdict = HSA_CORE.staleRunning(rs, Date.now(), 5 * 60 * 1000,
+        { active: !!(flowActive || autoCompleteActive), manual: true });
+      if (rs.running === true && verdict.stale) {
+        await store({ running: false, phase: 'idle', stopRequested: false,
+          lastActivity: Date.now() }).catch(() => {});
+        strictRunActive = false;
+        hsaRunLog('stale-running-cleared', {
+          actor: 'system', category: 'result', level: 'info', state: 'recovered',
+          zh: '已清理残留运行态', en: 'Stale run state cleared',
+          detail: '残留 running=true · 原因 ' + verdict.reason
+            + ' · 空闲 ' + Math.round(verdict.idleMs / 1000) + ' 秒'
+            + ' · 手动启动重新可用', result: 'recovered',
+          count: 0, order: 0, error: '', reason: verdict.reason
+        }).catch(() => {});
+      } else if (rs.running !== true) {
+        strictRunActive = false;
+      }
+      if (flowActive || autoCompleteActive) {
+        return { ok: false, reason: 'running', message: HSA_CORE.TEXT.startRunning };
+      }
+      return runAutoComplete({ manual: true });
+    };
+    startManual()
       .then(sendResponse)
       .catch(err => sendResponse({ ok: false, reason: 'error', message: err.message }));
     return true;
@@ -3126,7 +3163,8 @@ resumeIfNeeded();
  *   · 实际执行交给 runAutoComplete：点击未完成任务卡片 + 按剩余分数自动决定搜索次数
  * ========================================================================== */
 
-const AUTO_DEFAULTS = { enabled: false, times: [], count: 30, level: 3 };
+/* v4.3 · autoTasks 只保留定时开关与时间点；次数 / 强度另有单一真源。 */
+const AUTO_DEFAULTS = { enabled: false, times: [] };
 const AUTO_MAX_TIMES = 10;
 
 function normalizeAutoTasks(raw) {
@@ -3136,9 +3174,8 @@ function normalizeAutoTasks(raw) {
       .map(v => String(v || '').trim())
       .filter(v => /^([01]\d|2[0-3]):[0-5]\d$/.test(v))
   )].sort().slice(0, AUTO_MAX_TIMES);
-  const count = Math.min(150, Math.max(1, parseInt(src.count, 10) || AUTO_DEFAULTS.count));
-  const level = clampInt(Number(src.level) || AUTO_DEFAULTS.level, 1, 3);
-  return { enabled: !!src.enabled, times, count, level };
+  /* v4.3 · count / level 已移除：次数与强度各有单一真源，避免双源冲突。 */
+  return { enabled: !!src.enabled, times };
 }
 
 async function getAutoTasks() {
@@ -3170,11 +3207,9 @@ async function startAutoRun(opts) {
   const o = opts || {};
   const st = await load(['running', 'phase']);
   if (flowActive || st.running) return { ok: false, reason: 'running' };
-  const tasks = await getAutoTasks();
-  const count = Math.min(150, Math.max(1, parseInt(o.count, 10) || tasks.count));
-  const level = clampInt(Number(o.level) || tasks.level, 1, 3);
+  /* v4.3 · 不再传递次数上限 / 强度：次数由剩余配额 × 单次配额上限决定，
+     强度统一读 settings.humanLevel，避免定时配置里的强度与运行设置脱节。 */
   const payload = {
-    level, cap: count,
     manual: !!o.manual,
     time: o.time || null,
     source: o.manual ? 'manual' : 'schedule'
@@ -3190,13 +3225,13 @@ async function startAutoRun(opts) {
         console.warn('[AutoTask] 启动异常：', err && err.message)), delayMs);
       console.info('[AutoTask] 定时启动将在 ' + Math.round(delayMs / 1000)
         + ' 秒后开始（有界抖动）');
-      return { ok: true, count, level, ...payload };
+      return { ok: true, ...payload };
     }
   }
   runAutoComplete(payload).catch(err => console.warn('[AutoTask] 启动异常：', err && err.message));
   console.info('[AutoTask] ' + (o.manual ? '手动立即运行' : '定时启动 ' + (o.time || ''))
-    + ' · 上限 ' + count + ' 次 · 强度 ' + level);
-  return { ok: true, count, level, ...payload };
+    + ' · 次数由配额与强度自动决定');
+  return { ok: true, ...payload };
 }
 
 /** 每分钟检查：当前 HH:MM 命中某个时间点且今天还没触发过，就启动。 */
@@ -3219,7 +3254,7 @@ async function maybeRunAutoTasks() {
     console.info('[AutoTask] ' + hit + ' 已有任务在运行，本次跳过');
     return;
   }
-  const res = await startAutoRun({ time: hit, count: tasks.count, level: tasks.level });
+  const res = await startAutoRun({ time: hit });
   if (!res.ok) {
     log.fired[hit] = 'skipped';
     await store({ autoTaskLog: log });
@@ -6325,7 +6360,7 @@ var autoCompleteActive = false;
  * ========================================================================== */
 
 /** 搜索次数只由「开始时」那一次官方搜索配额决定，之后整轮不再重算。 */
-async function presetSearchCount(pages, cap) {
+async function presetSearchCount(pages) {
   let max = 0, got = 0;
   if (pages && pages.earn && pages.earn.ok) {
     const c = parseSearchCounter(pages.earn.html);
@@ -6340,13 +6375,13 @@ async function presetSearchCount(pages, cap) {
     got = Number(todaySearch && todaySearch.progress) || 0;
   }
   const need = Math.ceil(Math.max(0, max - got) / POINTS_PER_SEARCH);
-  const rawCap = Number(cap);
-  const limit = Number.isFinite(rawCap) && rawCap > 0 ? Math.floor(rawCap) : (await getAutoTasks()).count;
-  /* v4.0 · 单次运行不把剩余配额一次刷满；严格档维持原语义。 */
+  /* v4.3 · 次数单一真源：剩余配额 need × 强度预设 singleRunCapPct。
+     旧的「搜索次数上限」已移除，不再叠加第二层封顶（用户填 30 实跑 18）。
+     严格档 capSearches 原样返回 need，维持 v3.7 语义。 */
   const searches = STEALTH
-    ? HSA_STEALTH.capSearches(need, limit, STEALTH.singleRunCapPct,
+    ? HSA_STEALTH.capSearches(need, need, STEALTH.singleRunCapPct,
         RUN_SETTINGS && RUN_SETTINGS.runMode)
-    : Math.max(0, Math.min(need, limit));
+    : Math.max(0, need);
   return { searches, max, got };
 }
 
@@ -6355,7 +6390,7 @@ async function presetSearchCount(pages, cap) {
  * 两页并行抓一次，同一份 HTML 同时喂给三项积分、任务列表、搜索配额与次数计算；
  * 未登录 / 两页都读不到时立即返回，绝不进入点击或搜索（修「未登录空跑」）。
  */
-async function syncStart(token, cap) {
+async function syncStart(token) {
   /* v1.3.1：所有刷新入口共用的唯一同步函数 desktopSyncRewards（A10 层）。
      一次两页抓取 → 一次性原子写回三项积分 / 今日任务 / 登录态 / 搜索配额；
      刷新过程中 UI 保持上一次完整结果，绝不先清空。 */
@@ -6373,7 +6408,7 @@ async function syncStart(token, cap) {
   const dashHtml = pages.dash.ok ? pages.dash.html : '';
   const startPoints = dashHtml ? parseBalance(dashHtml) : null;
   const todaySearch = sync.todaySearch;
-  const cnt = await presetSearchCount(pages, cap);
+  const cnt = await presetSearchCount(pages);
 
   await store({
     todayStart: todaySearch || null,
@@ -6454,8 +6489,103 @@ async function runAutoComplete(opts) {
   const o = opts || {};
   /* 同步占位：开始时同步的 await 期间禁止重复点击 */
   if (autoCompleteActive || flowActive) return { ok: false, reason: 'running' };
+  /* v4.4 · 僵尸 running 自愈（两端同构，定时入口也走这里）。上面已确认无活跃流程，
+     所以 manual 视图可直接清理；定时入口保守地要求空闲超过 5 分钟。 */
+  const staleSnap = await load(['running', 'lastActivity', 'phase']).catch(() => ({}));
+  const staleVerdict = HSA_CORE.staleRunning(staleSnap, Date.now(), 5 * 60 * 1000,
+    { active: false, manual: !!o.manual });
+  if (staleSnap.running === true && staleVerdict.stale) {
+    await store({ running: false, phase: 'idle', stopRequested: false,
+      lastActivity: Date.now() }).catch(() => {});
+    strictRunActive = false;
+    hsaRunLog('stale-running-cleared', {
+      actor: 'system', category: 'result', level: 'info', state: 'recovered',
+      zh: '已清理残留运行态', en: 'Stale run state cleared',
+      detail: '残留 running=true · 原因 ' + staleVerdict.reason
+        + ' · 空闲 ' + Math.round(staleVerdict.idleMs / 1000) + ' 秒'
+        + ' · 来源 ' + (o.manual ? '手动' : '定时'), result: 'recovered',
+      count: 0, order: 0, error: '', reason: staleVerdict.reason
+    }).catch(() => {});
+  } else if (staleSnap.running !== true) {
+    strictRunActive = false;
+  }
   const gateStopped = await syncGate.guardTaskStart();
-  if (gateStopped) return gateStopped;
+  if (gateStopped) {
+    if (!o.manual) return gateStopped;
+    /* v4.4 · 手动复核：v4.1 把搜索进度项从点击列表排除后，停止态一旦误设，
+       当日所有入口（含搜索阶段）都会被静默吞掉，用户点「自动完成任务」只看到
+       「已完成」。这里用当前任务数据重新判定，未完成就解除并继续。 */
+    const recheck = await load(['todayTasks', 'pointsSummary', 'todaySearch'])
+      .catch(() => ({}));
+    const stillDone = HSA_CORE.isAllDone(recheck.todayTasks, {
+      estimated: !!(recheck.todayTasks && recheck.todayTasks.approx),
+      quotaMissing: !(recheck.todaySearch
+        && Number.isFinite(Number(recheck.todaySearch.max))),
+      stale: !!(recheck.pointsSummary
+        && Date.now() - Number(recheck.pointsSummary.updatedAt || 0)
+          > HSA_CORE.DEFAULTS.htmlCacheTtlMs)
+    });
+    if (stillDone) return gateStopped;
+    await syncGate.clearAllDone('manual-recheck');
+    hsaRunLog('stopped-recheck', {
+      actor: 'system', category: 'result', level: 'info', state: 'resumed',
+      zh: '手动复核·继续任务', en: 'Manual recheck · resumed',
+      detail: '当日停止态与任务列表不符（进度未达 100% 或搜索项未完成），'
+        + '已解除并继续本次启动', result: 'resumed',
+      count: 0, order: 0, error: '', reason: 'manual-recheck'
+    }).catch(() => {});
+  }
+  /* ======================================================================
+   * v4.3 · 当日运行频次护栏（两端逐字同构）
+   *   共享 HSA_STEALTH.runGuardPolicy / guardState / guardDecision / guardRecord。
+   *   roll 由「UTC+8 日键 + 触发时间 + 手动/定时」确定性生成，同一时间点当天
+   *   重试不会靠随机数绕过；手动启动不参与概率跳过。
+   *   严格档 enabled=false，整块直接放行，逐字回到 v4.2 语义。
+   * ==================================================================== */
+  const guardCfg = await getSettings();
+  const guardPol = HSA_STEALTH.runGuardPolicy(guardCfg.humanLevel, guardCfg.runMode);
+  const guardNow = Date.now();
+  const guardSaved = ((await load(['runGuard']).catch(() => null)) || {}).runGuard;
+  const guardSt = HSA_STEALTH.guardState(guardSaved, guardNow);
+  const guardRoll = HSA_STEALTH.mulberry32(HSA_STEALTH.hashSeed(
+    HSA_STEALTH.utc8DayKey(guardNow) + '|' + (o.time || '') + '|'
+    + (o.manual ? 'manual' : 'schedule')))();
+  const guardVerdict = HSA_STEALTH.guardDecision(guardSt, guardNow, guardPol,
+    guardRoll, !!o.manual);
+  /* 通过护栏即计入当日一次运行（含随后同步失败 / 全完成零动作）；刻意保守，
+     宁可少跑也不让「同步→点卡→搜索→收尾同步」在一天里高频复现。 */
+  await store({ runGuard: HSA_STEALTH.guardRecord(guardSt, guardNow, guardVerdict) })
+    .catch(() => {});
+  /* v4.4 · 手动越过次数/间隔时只记警告，不阻断，用户能看见「为什么还能跑」。 */
+  if (guardVerdict.allowed && guardVerdict.warn) {
+    const warnText = HSA_STEALTH.guardWarnText(guardVerdict.warn);
+    hsaRunLog('run-guard-warn', {
+      actor: 'system', category: 'run-step', level: 'info', state: 'warn',
+      zh: warnText.zh, en: warnText.en,
+      detail: '手动启动放行 · 当日已运行 ' + guardSt.runs.length + '/'
+        + guardPol.maxRuns + ' 次 · 触发 ' + guardVerdict.warn,
+      result: 'allowed', count: 0, order: 0, error: '',
+      reason: guardVerdict.warn
+    }).catch(() => {});
+  }
+  if (!guardVerdict.allowed) {
+    const guardText = HSA_STEALTH.guardReasonText(guardVerdict.reason);
+    const guardDetail = '当日 ' + HSA_STEALTH.utc8DayKey(guardNow)
+      + ' · 已运行 ' + guardSt.runs.length + '/' + guardPol.maxRuns
+      + ' 次 · 最小间隔 ' + guardPol.minGapMin + ' 分钟'
+      + (guardVerdict.waitMs ? ' · 还需等待 ' + Math.ceil(guardVerdict.waitMs / 60000) + ' 分钟' : '')
+      + ' · ' + (o.manual ? '手动' : '定时') + '触发';
+    hsaRunLog('run-guard', {
+      actor: 'system', category: 'run-step', level: 'info', state: 'skipped',
+      zh: guardText.zh, en: guardText.en, detail: guardDetail,
+      result: 'skipped', count: 0, order: 0, error: '',
+      reason: guardVerdict.reason
+    }).catch(() => {});
+    console.info('[AutoTask] v4.3 当日运行护栏拦截：' + guardVerdict.reason
+      + ' · ' + guardDetail);
+    return { ok: false, reason: guardVerdict.reason, clicked: 0, searches: 0,
+      guard: guardVerdict };
+  }
   autoCompleteActive = true;
   /* v3.7 · 一次运行开始时读取一次拟人搜索间隔设置，之后整轮固定不变。 */
   RUN_SETTINGS = await getSettings();
@@ -6490,8 +6620,9 @@ async function runAutoComplete(opts) {
   const token = ++flowToken;
   try {
     if ((await load(['running'])).running) return { ok: false, reason: 'running' };
-    const tasks = await getAutoTasks();
-    const level = clampInt(Number(o.level) || tasks.level, 1, 3);
+    /* v4.3 · 强度只来自 settings.humanLevel；getAutoTasks 不再持有 level。 */
+    const runSettings = await getSettings();
+    const level = HSA_HUMAN.levelFromValue(runSettings.humanLevel).n;
     await store({
       running: true, phase: 'completingTasks', stopRequested: false,
       error: null, warning: null, runLevel: level, lastActivity: Date.now(),
@@ -6508,7 +6639,7 @@ async function runAutoComplete(opts) {
     }
 
     /* ① 唯一一次开始时同步：积分 + 任务列表 + 锁定搜索次数 */
-    const sync = await syncStart(token, o.cap);
+    const sync = await syncStart(token);
     if (!sync.ok) {
       await store({ running: false, phase: 'idle', stopRequested: false,
                     lastActivity: Date.now(), presetSearches: 0 });
@@ -6537,6 +6668,17 @@ async function runAutoComplete(opts) {
 
     /* ③ 搜索：次数在 ① 已锁定，中途不再同步积分 */
     const searches = sync.searches;
+    /* v4.4 · 「只剩搜索任务」时点击阶段短路，但搜索阶段必须继续且可见。 */
+    if (clickRes && clickRes.reason === 'no-clickable-cards') {
+      hsaRunLog('card-phase-skipped', {
+        actor: 'system', category: 'run-step', level: 'info', state: 'searching',
+        zh: '跳过点卡·继续搜索', en: 'Cards skipped · searching',
+        detail: '任务列表只剩搜索进度项或已完成卡；不打开 Bing 侧栏，'
+          + '继续按剩余配额搜索 ' + searches + ' 次',
+        result: 'cards-skipped', count: 0, order: 0, error: '',
+        reason: 'no-clickable-cards'
+      }).catch(() => {});
+    }
     if (searches > 0 && isCurrent(token)) {
       await handleStart(searches, {
         level, auto: !o.manual, time: o.time || null,
@@ -6592,7 +6734,8 @@ async function runAutoComplete(opts) {
  * ------------------------------------------------------------------------- */
 async function testHumanSearch(opts) {
   const o = opts || {};
-  const level = clampInt(Number(o.level) || 3, 1, 3);
+  const testSettings = await getSettings();
+  const level = HSA_HUMAN.levelFromValue(testSettings.humanLevel).n;
   const st = await load(['running']);
   if (flowActive || autoCompleteActive || st.running) return { ok: false, reason: 'running' };
 

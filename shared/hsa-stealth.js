@@ -8,6 +8,11 @@
  *   · 过程：整段粘贴 → 分块上屏 + 非均匀键间隔 + 偶发退格纠错；
  *     Enter 恒提交 → 概率性点搜索按钮（失败回退 Enter）。
  *   · 环境：出口 IP 探测结果同日缓存，减少每次运行的异常外联。
+ *   · v4.3 账号侧：当日运行次数上限 + 两次运行最小间隔 + 定时触发概率跳过，
+ *     把「同步→点卡→搜索→收尾同步」的四段式在一天里摊薄，不再高频复现。
+ *   · v4.4 手动优先：用户主动点「自动完成任务」是显式意图，次数上限 / 最小间隔
+ *     对手动只记 warn、不硬拦（否则触顶后当天再也无法启动，且拦截不占额度不会
+ *     自愈）。定时触发仍按三项硬约束摊薄。
  *
  * 硬边界（与既有决策不冲突）：
  *   ① 严格档 runMode='strict' 时，本模块所有特性恒关，逐字回到 v3.7 固定节奏。
@@ -253,6 +258,132 @@
     return { method: r() < 0.32 ? 'button' : 'enter', selectors: SUBMIT_BUTTONS };
   }
 
+  /* ======================================================================
+   * v4.3 · 当日运行频次护栏（账号侧曲线）
+   *
+   * 即使单次只跑 40~80% 配额、启动有抖动、深夜跳过，仍可能因为「多个定时
+   * 时间点 + 用户反复手动启动」在一天里反复出现同一套四段式，并把配额刷满。
+   * 真人不会一天内以几乎相同的间隔完成 N 次完整搜索任务。
+   *
+   * 三个约束（全部按 UTC+8 日界，跨运行 / 跨宿主重启生效）：
+   *   ① 当日完整运行次数上限（随强度：低 4 / 中 3 / 高 2）
+   *   ② 两次运行最小间隔（30 / 45 / 60 分钟）
+   *   ③ 定时触发按确定性概率跳过（10~15%，不补跑）；手动启动不跳过
+   *
+   * 严格档 enabled=false，逐字回到 v4.2 语义。失败/零动作的运行不占额度。
+   * ==================================================================== */
+  var GUARD_REASONS = Object.freeze({
+    'daily-run-cap': Object.freeze({ zh: '今日运行次数已达上限', en: 'Daily run cap reached' }),
+    'min-gap':       Object.freeze({ zh: '距上次运行过近', en: 'Too soon since last run' }),
+    'stochastic-skip': Object.freeze({ zh: '本次定时随机跳过', en: 'Scheduled run skipped' })
+  });
+  /* 手动越过次数/间隔时只记警告，不阻断；文案同样 ≤15 显示宽度。 */
+  var GUARD_WARN = Object.freeze({
+    'daily-run-cap': Object.freeze({ zh: '今日次数偏多', en: 'Many runs today' }),
+    'min-gap':       Object.freeze({ zh: '间隔偏短', en: 'Short gap' })
+  });
+  function guardWarnText(reason) {
+    return GUARD_WARN[String(reason)] || { zh: '', en: '' };
+  }
+  function guardReasonText(reason) {
+    return GUARD_REASONS[String(reason)] || { zh: '跳过本次运行', en: 'Run skipped' };
+  }
+  var RUN_GUARD = Object.freeze({
+    low:  Object.freeze({ maxRuns: 4, minGapMin: 30, skipRate: 0.10 }),
+    mid:  Object.freeze({ maxRuns: 3, minGapMin: 45, skipRate: 0.12 }),
+    high: Object.freeze({ maxRuns: 2, minGapMin: 60, skipRate: 0.15 })
+  });
+  /** 与 hsa-core.hotDayKey 完全同口径（UTC+8），避免两端/模块日界漂移。 */
+  function utc8DayKey(t) {
+    var ms = Number(t);
+    if (!Number.isFinite(ms) || ms <= 0) return '';
+    return new Date(ms + 8 * 3600000).toISOString().slice(0, 10);
+  }
+  function guardLevel(v) {
+    var n = Number(v);
+    if (n === 1) return 'low';
+    if (n === 3) return 'high';
+    if (n === 2) return 'mid';
+    var k = String(v || '').toLowerCase();
+    return RUN_GUARD[k] ? k : 'mid';
+  }
+  function runGuardPolicy(level, runMode) {
+    if (String(runMode) === 'strict') {
+      return { enabled: false, level: guardLevel(level), maxRuns: 0,
+        minGapMin: 0, skipRate: 0 };
+    }
+    var spec = RUN_GUARD[guardLevel(level)];
+    return { enabled: true, level: guardLevel(level),
+      maxRuns: spec.maxRuns, minGapMin: spec.minGapMin, skipRate: spec.skipRate };
+  }
+  /** 读当日记录；跨日 / 结构异常自动重置，无需任何清理定时器。 */
+  function guardState(saved, now) {
+    var day = utc8DayKey(Number.isFinite(now) ? now : Date.now());
+    var ok = saved && typeof saved === 'object' && saved.day === day
+      && Array.isArray(saved.runs) && Array.isArray(saved.skips);
+    return {
+      day: day,
+      runs: ok ? saved.runs.filter(function (x) { return Number.isFinite(Number(x)); })
+        .slice(-32) : [],
+      skips: ok ? saved.skips.filter(function (x) { return Number.isFinite(Number(x));
+        }).slice(-32) : []
+    };
+  }
+  /**
+   * 是否允许本次运行。roll ∈ [0,1)，由调用方用「日键+触发时间」的确定性哈希
+   * 生成，保证同一时间点当天重试不会被随机数绕过。
+   *
+   * v4.4：manual=true（用户主动点击）不因「当日次数上限 / 最小间隔」被硬拦 ——
+   * 这两项原本只看 runs 不看触发来源，一旦触顶，用户当天反复点都返回 ok:false，
+   * 而拦截又不占额度（见 guardRecord），状态永远不恢复，表现为「启动不了」。
+   * 手动仍计入当日 runs、仍写 warn 日志、仍受单轮配额与节奏拟人约束；
+   * 定时触发的三项硬约束一字未动。
+   */
+  function guardDecision(state, now, policy, roll, manual) {
+    var p = policy || runGuardPolicy(2, 'human');
+    if (!p.enabled) return { allowed: true, reason: 'strict-mode', waitMs: 0 };
+    var st = state || guardState(null, now);
+    var t = Number(now) || Date.now();
+    var day = utc8DayKey(t);
+    if (st.day !== day) return { allowed: true, reason: 'new-day', waitMs: 0 };
+    var last = st.runs.length ? Number(st.runs[st.runs.length - 1]) : 0;
+    var gap = p.minGapMin * 60000;
+    if (manual) {
+      var warn = '';
+      if (st.runs.length >= p.maxRuns) warn = 'daily-run-cap';
+      else if (last && t - last < gap) warn = 'min-gap';
+      return { allowed: true, reason: 'ok', waitMs: 0, warn: warn,
+        used: st.runs.length, max: p.maxRuns };
+    }
+    if (st.runs.length >= p.maxRuns) {
+      return { allowed: false, reason: 'daily-run-cap', waitMs: 0,
+        used: st.runs.length, max: p.maxRuns };
+    }
+    if (last && t - last < gap) {
+      return { allowed: false, reason: 'min-gap', waitMs: Math.max(0, gap - (t - last)),
+        lastAt: last };
+    }
+    if (Number.isFinite(roll) && clamp(roll, 0, 0.999999) < p.skipRate) {
+      return { allowed: false, reason: 'stochastic-skip', waitMs: 0, skip: true };
+    }
+    return { allowed: true, reason: 'ok', waitMs: 0, used: st.runs.length };
+  }
+  /** 把「一次实际启动的完整运行」或「一次概率跳过」计入当日记录。
+      min-gap / daily-run-cap 这类「拦截」不是运行也不是跳过，不占任何额度，
+      否则一次间隔拦截反而会让当日运行次数更快触顶。 */
+  function guardRecord(state, now, decision) {
+    var st = state || guardState(null, now);
+    var t = Number(now) || Date.now();
+    var base = guardState({ day: st.day, runs: st.runs, skips: st.skips }, t);
+    var d = decision || {};
+    if (d.allowed === false && d.reason !== 'stochastic-skip') {
+      return { day: base.day, runs: base.runs.slice(), skips: base.skips.slice() };
+    }
+    if (d.reason === 'stochastic-skip') base.skips.push(t);
+    else base.runs.push(t);
+    return { day: base.day, runs: base.runs.slice(-32), skips: base.skips.slice(-32) };
+  }
+
   /* ------------------------------------------------------------------ 环境 */
 
   function geoCacheValid(cache, nowMs, ttlHours) {
@@ -358,11 +489,76 @@
       return hashSeed('same') === hashSeed('same');
     })());
 
+    /* v4.3 · 当日运行频次护栏 */
+    ck('严格档护栏恒关且日键与 hsa-core 同口径',
+      runGuardPolicy(3, 'strict').enabled === false
+      && guardDecision(guardState(null, 0), 0, runGuardPolicy(3, 'strict'), 0, false).allowed === true
+      && utc8DayKey(Date.UTC(2026, 10, 11, 20, 0, 0)) === '2026-11-12'
+      && utc8DayKey(Date.UTC(2026, 10, 12, 4, 0, 0)) === '2026-11-12');
+    ck('三档护栏随强度收敛', (function () {
+      var l = runGuardPolicy(1, 'human'), m = runGuardPolicy(2, 'human'),
+          h = runGuardPolicy(3, 'human');
+      return l.maxRuns > m.maxRuns && m.maxRuns > h.maxRuns
+        && l.minGapMin < m.minGapMin && m.minGapMin < h.minGapMin
+        && l.skipRate < m.skipRate && m.skipRate < h.skipRate;
+    })());
+    var t0 = Date.UTC(2026, 10, 12, 4, 0, 0);
+    var pol = runGuardPolicy(2, 'human');
+    var gs0 = guardState(null, t0);
+    ck('跨日重置与结构异常降级',
+      guardState({ day: '2026-11-11', runs: [t0], skips: [] }, t0).runs.length === 0
+      && guardState({ day: utc8DayKey(t0) }, t0).runs.length === 0
+      && gs0.day === utc8DayKey(t0));
+    var gs1 = guardRecord(gs0, t0, { reason: 'ok' });
+    ck('最小间隔与当日上限', (function () {
+      var soon = guardDecision(gs1, t0 + 10 * 60000, pol, 0.9, false);
+      var later = guardDecision(gs1, t0 + 46 * 60000, pol, 0.9, false);
+      var full = { day: utc8DayKey(t0), runs: [t0 - 4 * 3600000, t0 - 3 * 3600000, t0 - 2 * 3600000], skips: [] };
+      return soon.reason === 'min-gap' && soon.waitMs === 35 * 60000
+        && later.allowed === true
+        && guardDecision(full, t0, pol, 0.9, false).reason === 'daily-run-cap';
+    })());
+    ck('间隔/上限拦截不占运行额度', (function () {
+      var one = guardRecord(gs0, t0, { reason: 'ok' });
+      var tooSoon = guardDecision(one, t0 + 10 * 60000, pol, 0.9, false);
+      var rec = guardRecord(one, t0 + 10 * 60000, tooSoon);
+      return tooSoon.reason === 'min-gap' && rec.runs.length === 1
+        && rec.skips.length === 0;
+    })());
+    ck('v4.4 手动启动不受次数上限/最小间隔硬拦，定时仍硬拦', (function () {
+      var full = { day: utc8DayKey(t0),
+        runs: [t0 - 5 * 3600000, t0 - 4 * 3600000, t0 - 3 * 3600000], skips: [] };
+      var one = guardRecord(gs0, t0, { reason: 'ok' });
+      var mCap = guardDecision(full, t0, pol, 0.9, true);
+      var mGap = guardDecision(one, t0 + 10 * 60000, pol, 0.9, true);
+      var sCap = guardDecision(full, t0, pol, 0.9, false);
+      var sGap = guardDecision(one, t0 + 10 * 60000, pol, 0.9, false);
+      return mCap.allowed === true && mCap.warn === 'daily-run-cap'
+        && mGap.allowed === true && mGap.warn === 'min-gap'
+        && sCap.allowed === false && sCap.reason === 'daily-run-cap'
+        && sGap.allowed === false && sGap.reason === 'min-gap'
+        && guardDecision(full, t0, pol, 0.01, true).reason !== 'stochastic-skip'
+        && guardWarnText('min-gap').zh === '间隔偏短'
+        && guardWarnText('unknown').zh === '';
+    })());
+    ck('定时概率跳过、手动不跳过、跳过单独记账', (function () {
+      var skip = guardDecision(gs0, t0, pol, 0.01, false);
+      var manual = guardDecision(gs0, t0, pol, 0.01, true);
+      var rec = guardRecord(gs0, t0, skip);
+      return skip.reason === 'stochastic-skip' && skip.skip === true
+        && manual.allowed === true && rec.runs.length === 0 && rec.skips.length === 1;
+    })());
+
     return out;
   }
 
   return {
     VERSION: VERSION, DEFAULTS: DEFAULTS, SUBMIT_BUTTONS: SUBMIT_BUTTONS,
+    RUN_GUARD: RUN_GUARD, GUARD_REASONS: GUARD_REASONS,
+    GUARD_WARN: GUARD_WARN, guardWarnText: guardWarnText,
+    guardReasonText: guardReasonText, utc8DayKey: utc8DayKey,
+    runGuardPolicy: runGuardPolicy, guardState: guardState,
+    guardDecision: guardDecision, guardRecord: guardRecord,
     normalize: normalize, enabled: enabled, clamp: clamp,
     mulberry32: mulberry32, hashSeed: hashSeed,
     sessionPlan: sessionPlan, capSearches: capSearches,

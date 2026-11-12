@@ -93,8 +93,11 @@ test('v3.8/v3.9 · 5 项基准间隔集中在「02 运行设置」两列网格',
     assert.ok(!auto.includes('id="set-card-interval"'),
       name + ' 自动任务组不应再放卡片点击间隔');
     assert.ok(!auto.includes('id="set-action-gap"'));
-    /* 所有原有 ID / 文案 / title 都保留，行为不变 */
-    for (const id of ['set-auto', 'set-auto-time-add', 'set-auto-count',
+    /* v4.3 · 「搜索次数上限」已删除（与单次配额上限双重封顶）；其余 ID 保留 */
+    assert.ok(!s.includes('id="set-auto-count"'), name + ' 仍保留冲突的搜索次数上限');
+    assert.ok(!s.includes('id="set-auto-count-chips"'), name + ' 仍保留次数 chips');
+    assert.ok(s.includes('data-i18n="auto.countNote"'), name + ' 缺次数说明');
+    for (const id of ['set-auto', 'set-auto-time-add',
       'set-auto-level', 'set-reduce', 'set-lang', 'set-theme',
       'set-run-log', 'btn-export-runlog', 'btn-capture-keypages']) {
       assert.ok(s.includes('id="' + id + '"'), name + ' 丢了 ' + id);

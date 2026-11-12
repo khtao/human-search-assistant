@@ -64,6 +64,16 @@ sudo chmod 4755 /opt/拟人搜索助手/chrome-sandbox
 
 侧栏读不到积分卡或没有可用的主界面任务状态时，回退到 `rewards.bing.com/dashboard`、`/earn` 两页的索引点击。
 
+### v4.4 · 手动启动链路修复（与插件版同构）
+
+两端同步排查出 5 处会让「自动完成任务」点不动的拦截点并全部修复：v4.3 当日护栏对手动硬拦、严格消息守卫吃掉 `autoComplete`、僵尸 `running` 无自愈（`watchdog` 被严格闹钟白名单禁用）、当日停止态无手动复核、popup 对失败结果静默。手动启动现在一律可达，失败原因明确显示；「只剩搜索任务」时跳过点卡、搜索阶段继续。逐项审计见 [实施说明.md](../实施说明.md) 第三十章。
+
+### v4.3 · 设置项清理与运行护栏（与插件版同构）
+
+- 移除「搜索次数上限」UI、`autoTasks.count` / `cap` 参数链、`defaultCount` / `pace` / `autoStop` / `holdRange` 死键；`autoTasks.level` 不再双写，强度统一读 `settings.humanLevel`。搜索次数 = 剩余配额 × 强度预设 `singleRunCapPct`；严格档维持原语义。
+- `runAutoComplete` 入口接入共享当日运行护栏（次数上限 / 最小间隔 / 定时概率跳过），两端接线逐字一致。
+- 桌面独有的 `reminder*` 提醒设置仅保留历史代码路径（无 UI 入口，运行期闹钟被严格白名单禁用），本轮未动以免破坏预览链路。
+
 ### v4.2 · 强度预设与当日词去重（与插件版同构）
 
 - 后台 `getSettings()` 调用共享 `HSA_HUMAN.applyRunPreset()`，7 项专业数值由拟人强度整组套用；设置页移除全部数值输入框，改成三组只读摘要（切档联动）。严格档不覆盖。

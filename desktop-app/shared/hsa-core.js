@@ -79,7 +79,11 @@
     strictRunBlocked: '自动运行中：严格模式已禁用该功能',
     strictRunBlockedEn: 'Strict run active — this feature is disabled while running',
     strictNoWords: '当日热搜中没有满足 5 字以上的搜索词，已停止（不补词、不编词、不使用本地词库）',
-    strictNoWordsEn: 'No 5+ character trending keyword today — stopped (no fallback words)'
+    strictNoWordsEn: 'No 5+ character trending keyword today — stopped (no fallback words)',
+    /* v4.4 · 手动启动被拦时的明确短原因（≤15 显示宽度），两端共享 */
+    startRunning: '已有运行在进行', startRunningEn: 'Run already active',
+    startAllDone: '今日任务已完成', startAllDoneEn: 'All done today',
+    startSyncFail: '同步未成功', startSyncFailEn: 'Sync did not finish'
   });
 
   /* U02/U03/... · 界面统一配置；U01 明确保留平台差异。 */
@@ -141,6 +145,53 @@
       'stop', 'timeout', 'max-failures', 'page-stable-wait', 'result-counting'
     ])
   });
+
+  /* v4.4 · 启动失败短文案：popup 不再对失败结果静默，两端逐字一致。 */
+  var START_FAIL_TEXT = Object.freeze({
+    'running':         Object.freeze({ zh: '已有运行在进行', en: 'Run already active' }),
+    'strictRun':       Object.freeze({ zh: '运行期禁止启动', en: 'Blocked while running' }),
+    'allDone':         Object.freeze({ zh: '今日任务已完成', en: 'All done today' }),
+    'daily-run-cap':   Object.freeze({ zh: '今日次数偏多', en: 'Many runs today' }),
+    'min-gap':         Object.freeze({ zh: '距上次过近', en: 'Too soon to run' }),
+    'stochastic-skip': Object.freeze({ zh: '定时随机跳过', en: 'Scheduled skip' }),
+    'signedOut':       Object.freeze({ zh: '请先登录', en: 'Sign in first' }),
+    'strictNoWords':   Object.freeze({ zh: '无合规热搜词', en: 'No valid keyword' }),
+    'sync-failed':     Object.freeze({ zh: '同步未成功', en: 'Sync failed' }),
+    'error':           Object.freeze({ zh: '启动异常', en: 'Start error' }),
+    'unknown':         Object.freeze({ zh: '未能启动', en: 'Could not start' })
+  });
+  function startFailText(reason, lang) {
+    var e = START_FAIL_TEXT[String(reason)] || START_FAIL_TEXT.unknown;
+    return String(lang || '').toLowerCase().indexOf('en') === 0 ? e.en : e.zh;
+  }
+
+  /**
+   * v4.4 · 僵尸 running 判定。
+   * 上次运行在写 running=true 后被浏览器回收 / 窗口关闭，watchdog 又被严格闹钟
+   * 白名单禁用，没有任何机制复位；strictRunActive 由 running 驱动，于是
+   * autoComplete 消息在到达 runAutoComplete 之前就被消息守卫吃掉，用户当天再
+   * 也点不动「自动完成任务」。
+   *   · active=true（模块级 flowActive / autoCompleteActive）→ 确实在跑，不清
+   *   · manual=true（用户主动点）→ 只要没有活跃流程就清，不依赖心跳时长
+   *   · 其余（定时入口）→ 超过 maxIdleMs 才清，保守
+   */
+  function staleRunning(snap, now, maxIdleMs, ctx) {
+    var s = snap || {};
+    var t = Number.isFinite(now) ? now : Date.now();
+    var last = Number(s.lastActivity);
+    var idle = Number.isFinite(last) && last > 0 ? Math.max(0, t - last) : 0;
+    var limit = Number.isFinite(maxIdleMs) && maxIdleMs > 0 ? maxIdleMs : 300000;
+    var c = ctx || {};
+    if (s.running !== true) return { stale: false, idleMs: idle, reason: 'not-running' };
+    if (c.active === true) return { stale: false, idleMs: idle, reason: 'active' };
+    if (c.manual === true) return { stale: true, idleMs: idle, reason: 'manual-override' };
+    if (!Number.isFinite(last) || last <= 0) {
+      return { stale: true, idleMs: idle, reason: 'no-heartbeat' };
+    }
+    return idle >= limit
+      ? { stale: true, idleMs: idle, reason: 'idle-timeout' }
+      : { stale: false, idleMs: idle, reason: 'recent' };
+  }
 
   /* UTC+8 日键：两端用同一套「当日」口径，避免时区差异。 */
   function hotDayKey(t) {
@@ -1476,6 +1527,21 @@
         return t;
       });
     }
+    /** v4.4 · 手动复核：任务数据其实未完成时解除误设的当日停止态。 */
+    function clearAllDone(reason) {
+      var t = now();
+      log('tasks-resumed', {
+        level: 'info', category: 'result', actor: 'system',
+        event: 'tasks-resumed', result: 'resumed', ok: true, state: 'recheck',
+        reason: String(reason || ''),
+        detail: '手动启动复核：任务列表未完成，解除当日停止态并继续',
+        zh: '手动复核·继续任务', en: 'Manual recheck · resumed'
+      });
+      return saveState({
+        [SYNC_GATE.allDoneKey]: 0, running: false, phase: 'idle',
+        stopRequested: false, lastActivity: t
+      });
+    }
     function guardTaskStart() {
       return loadState().then(function (snap) {
         var t = now();
@@ -1500,7 +1566,8 @@
         allDoneKey: SYNC_GATE.allDoneKey };
     }
     return {
-      request: request, noteAllDone: noteAllDone, guardTaskStart: guardTaskStart,
+      request: request, noteAllDone: noteAllDone, clearAllDone: clearAllDone,
+      guardTaskStart: guardTaskStart,
       isStopped: isStopped, activity: activity, snapshot: snapshot
     };
   }
@@ -1541,7 +1608,8 @@
     DECISIONS: DECISIONS,
     DEFAULTS: DEFAULTS,
     RESULT_STATES: RESULT_STATES,
-    TEXT: TEXT,
+    TEXT: TEXT, START_FAIL_TEXT: START_FAIL_TEXT,
+    startFailText: startFailText, staleRunning: staleRunning,
     UI: UI,
     taskCardKey: taskCardKey,
     newClickResult: newClickResult,

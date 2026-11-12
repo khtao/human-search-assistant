@@ -51,6 +51,20 @@ node scripts/sync-shared.js --check  # 只校验副本是否一致（CI / verify
 - 加载：插件 SW / popup `importScripts` 或 `<script src>`；桌面 `host.html` / `popup.html` 先加载全局，`background.js` 用 `globalThis.* || require('../shared/...')` 回退；Node 静态校验环境可直接 `require`。插件 `manifest.json` 已补 `ipwho.is` / `ipapi.co` 的 `host_permissions`。
 - 自检：`HSA_HUMAN.selftest()` / `HSA_GEO.selftest()` / `HSA_FINGERPRINT.selftest()`；单测见 `tests/v39-human-enhanced.test.js`、`tests/v39-human-enhance.test.js`，静态断言见 `scripts/verify-decisions.js` 末两组。
 
+## 手动启动保障（v4.4，两版一致）
+
+- `hsa-stealth.js` `guardDecision(..., manual=true)`：用户主动点「自动完成任务」不受「当日次数上限 / 最小间隔」硬拦，只返回 `warn` 并计入当日运行；定时触发的三项硬约束一字未动。严格档恒关。
+- `hsa-core.js` 新增 `staleRunning()`（僵尸 `running` 判定）、`startFailText()`（中英 ≤15 显示宽度的启动失败短文案）、`createSyncGate().clearAllDone()`（手动复核后解除误设的当日停止态）。
+- 两端后台 `onMessage` 豁免 `autoComplete` 进入严格守卫，`startManual` 与 `runAutoComplete` 入口双层自愈残留运行态；`handleStart` 不再静默吞掉搜索阶段；点卡短路后写「跳过点卡·继续搜索」日志。
+- 两端 popup 对 `res.ok === false` 显示明确短原因并立即复位按钮；移除对已删 `autoTasks.level` 的引用。回归 `tests/v44-manual-start.test.js`（8 组，含 `node:vm` 实跑两端启动分支）。
+
+## 当日运行护栏（v4.3，两版一致）
+
+- `hsa-stealth.js` 新增 `RUN_GUARD` / `runGuardPolicy()` / `guardState()` / `guardDecision()` / `guardRecord()` / `guardReasonText()`：按 UTC+8 日键记录当日运行与跳过，拟人档低/中/高分别最多 4/3/2 次完整运行、最小间隔 30/45/60 分钟、定时触发按 10~15% 确定性概率跳过（不补跑），手动启动不跳过。严格档恒关。
+- 两端 `runAutoComplete` 入口逐字同构接线，写 `runGuard` storage 与 `run-guard` 运行日志；被「最小间隔 / 当日上限」拦截时**不占额度**，只有实际运行与概率跳过入账。共享清单仍是 **12** 个文件。
+- `directSearchUrl()` 去掉硬编码的首页表单标识参数：直接导航兜底本就没经过搜索框，带该参数属于来源不实且恒定的请求特征。
+- 自检 `HSA_STEALTH.selftest()` 已含护栏用例；动态回归 `tests/v43-cleanup-guard.test.js`（10 组）。
+
 ## 强度预设与当日词去重（v4.2，两版一致）
 
 - `hsa-human.js`：`PRESET_GROUPS` 定义三组（quota / action / page）共 7 个键，`RUN_PRESETS` 给低 / 中 / 高三档各一组值；`applyRunPreset(settings)` 供两端 `getSettings()` 整组套用（严格档原样返回），`presetValues(level, mode)` 供设置页只读渲染。共享清单仍是 **12** 个文件。
