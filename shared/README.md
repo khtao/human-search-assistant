@@ -42,6 +42,35 @@ node scripts/sync-shared.js --check  # 只校验副本是否一致（CI / verify
 - `STRICT_RUN.keptGuardrails`：保留停止、超时、失败上限、页面稳定等待与结果计数，避免运行无法结束。
 - 单测见 `tests/strict-run.test.js`，静态落地断言见 `scripts/verify-decisions.js`。
 
+## 拟人增强档（v3.9，两版一致，默认开启）
+
+- `hsa-human.js`：纯函数引擎。`DEFAULT_SETTINGS.runMode = 'human'`；`normalizeSettings()` / `isEnabled()` 支持切回 `strict`。`createProfile(settings, seed)` 用 mulberry32 生成一次运行固定的会话画像（节奏偏差、抖动幅度、贝塞尔弯曲度、词序交换率、浏览率）。`roundBudget()` × `splitRound()` 把单轮预算低方差地分给 6 段并做总量守恒，且**同时提供 `*Ms` 别名**供运行链路取值（否则 `gapMs` 为 `undefined`，轮间等待会被吞掉）；`jitter()` 有界；`bezierPath()` 三次贝塞尔 + 过冲回正；`extraActions()` / `browsePlan()` / `wordOrder()` / `cardSpacing()` 分别负责噪声、结果页浏览、只重排不增词的词策略与卡片随机间隔。低 / 中 / 高 20 次搜索约 15 / 30 / 60 分钟。
+- `hsa-fingerprint.js`：`collect()` 读真实值 → `crossCheck()` 交叉校验（屏幕 vs 视口、DPR、CPU/GPU 档位、UA 版本 vs UA-CH brands 等）→ `patcher()` 只清 `navigator.webdriver` 与自动化全局标记、补缺失的 `window.chrome` / `permissions` / `mediaDevices` / `Notification`。**`screen` / `devicePixelRatio` / `hardwareConcurrency` / `userAgent` / `language` / `plugins` 一律不改写**，与「不做 UA 伪装」不冲突。
+- `hsa-geo.js`：`probe()` 探测出口 IP（`ipwho.is` / `ipapi.co`），`derive()` 推导自洽的时区 / 语言 / `mkt`，`crossCheck()` 检出 IP-时区 / mkt-国家错配，`scheduleFactor()` 让当地深夜自动拉长间隔，`withMarket()` 给 URL 补市场参数。探测失败降级到系统时区 / 语言，不阻断运行。
+- **严格档保留**：`hsa-core.js` 的 `STRICT_RUN` / `strictRunPolicy()` 一行未动；`runMode='strict'` 时两端逐字回到固定中心点击 + 固定 Enter + 固定间隔。词规则（当日 ≥5 字热搜、不补词 / 编词 / 复用 / 改词）、消息白名单、同步闸门、任务列表点击与全完成停止态两档都一致。
+- 加载：插件 SW / popup `importScripts` 或 `<script src>`；桌面 `host.html` / `popup.html` 先加载全局，`background.js` 用 `globalThis.* || require('../shared/...')` 回退；Node 静态校验环境可直接 `require`。插件 `manifest.json` 已补 `ipwho.is` / `ipapi.co` 的 `host_permissions`。
+- 自检：`HSA_HUMAN.selftest()` / `HSA_GEO.selftest()` / `HSA_FINGERPRINT.selftest()`；单测见 `tests/v39-human-enhanced.test.js`、`tests/v39-human-enhance.test.js`，静态断言见 `scripts/verify-decisions.js` 末两组。
+
+## 强度预设与当日词去重（v4.2，两版一致）
+
+- `hsa-human.js`：`PRESET_GROUPS` 定义三组（quota / action / page）共 7 个键，`RUN_PRESETS` 给低 / 中 / 高三档各一组值；`applyRunPreset(settings)` 供两端 `getSettings()` 整组套用（严格档原样返回），`presetValues(level, mode)` 供设置页只读渲染。共享清单仍是 **12** 个文件。
+- `hsa-core.js`：`todayUsedState()` 按 `hotDayKey()`（UTC+8）读当日已用词，`mergeUsedWords()` 兼容旧 `usedWords` 纯数组，`dropUsedWords()` 在整池合规词里剔除已用，`todayUsedPush()` 把本次词计入 `{day, words}`。两端 `buildQueries()` 同构接线，存储 key `todayUsedWords`；换日自动失效，**不依赖 24h 清理闹钟**。
+- 词规则不变：只用本次抓取的当日 ≥5 字热搜原文；不补词 / 不编词 / 不拼接 / 不复用历史词 / 不循环重复。词用完就少跑或报错停止。
+- 自检 `HSA_HUMAN.selftest()` 已含预设校验；动态回归 `tests/v42-presets-dedupe.test.js`（10 组），静态断言见 `scripts/verify-decisions.js` 末两组。
+
+## 非卡片项跳过（v4.1，两版一致）
+
+- `isNonClickableTaskItem(it)`：只回答「这项是不是卡片」。结构字段是 `search` 进度项、或名称匹配「今日 Bing 搜索 / Bing search today」等且**没有真实 http(s) 链接** → 非卡片；有链接的同名项仍按可点卡片处理。`pendingTaskItems()` 的唯一过滤扩为「非卡片 + 已完成」，其余一项不删、不合并、不重排。
+- `hasClickableCards(primary, secondary, summary)`：点击索引 / 运行态任务列表 + 主界面任务列表双来源，两者都无待点卡片才短路，避免同步失败误跳过真实卡片。两端 `hasPendingClickableCards()` / `skipCardPhaseIfEmpty()` 逐字同构，短路时写 `no-clickable-cards` 日志。
+- 主界面任务列表仍保留搜索进度项供 UI 与 `isAllDone` 判定；搜索阶段照常进行，只是不再为一张不存在的卡打开侧栏。动态回归见 `tests/v41-no-clickable-cards.test.js`。
+
+## 运行风险规避（v4.0，两版一致，拟人档默认开启）
+
+- `hsa-stealth.js`：纯函数引擎。`sessionPlan()` 把 N 轮拆成 2–4 个浏览段，段间离席总量不超过强度预算的 25%，其余回补给各段 `scale`，**总时长精确守恒**；`scaleFor(i)` 用确定性微扰让同段内每轮也不同。`capSearches()` 默认只跑剩余配额 60%，`shouldDefer()` 让定时触发在当地 0–6 点跳过（手动不受限），`scheduleJitter()` 给定时启动加有界随机偏移，`geoCacheValid()` 缓存出口 IP 结果。
+- 过程：`keystrokePlan()` 按 1–3 字分块上屏、非均匀键间隔、偶发停顿与退格纠错，**`finalText` 逐字等于输入的当日热搜原文**；`submitPlan()` 在拟人档按概率改用搜索按钮（失败回退 Enter）。两端 `stealthTypeQuery` / `stealthSubmitQuery` / `releaseFocusEmulation` 逐字同构。
+- **严格档六项特性恒关**（`runMode='strict'`）：固定节奏、整段粘贴、固定 Enter、单次跑满、无启动抖动、深夜不跳过。`hsa-core.js` 的 `STRICT_RUN` 与 `strictRunPolicy()` 一行未动。
+- 自检 `HSA_STEALTH.selftest()`；动态回归 `tests/v40-stealth.test.js`（12 组），静态断言见 `scripts/verify-decisions.js` 末两组。
+
 ## 诊断数据（两版一致）
 
 - `RUNLOG.maxEntries = 200`：`runLogAppend()` 只保留白名单轻量字段（时间、事件、状态、中英文案、页码 / 卡片 / 查询词等），网页 HTML、快照、积分明细一律不进日志；`runLogExport()` 输出 `hsa-runlog/1` JSON。

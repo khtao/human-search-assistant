@@ -204,7 +204,9 @@ test('R1–R7 · 两端源码接线一致', () => {
     assert.match(s, /logUserAction\(type, summarize\(extra\)\)/);
     assert.match(s, /HSA_CORE\.calendarReset\(\)/);
     assert.match(s, /HSA_CORE\.calendarNavAllowed\(/);
-    assert.match(s, /btn\.disabled = empty/);
+    /* v3.3：日历渲染统一进 shared/hsa-calendar.js，两端只剩共享控制器接线 */
+    assert.match(s, /HSA_CALENDAR\.createController\(/);
+    assert.match(s, /calendar\.setMode\(v\)/);
     assert.match(s, /r\.encoding === 'base64'/);
     assert.match(s, /application\/zip/);
   }

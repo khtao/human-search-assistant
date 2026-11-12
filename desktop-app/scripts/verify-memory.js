@@ -132,8 +132,12 @@ async function main() {
     ck(calls.released === 1 && calls.trimmed === 1 && calls.gc === 1,
       '进入时各执行一次：释放视图 / 裁剪 / GC');
     ck(calls.throttling[0] === true, '进入时允许后台节流');
+    /* 低频巡检会周期性再次回收视图；此处先停巡检，
+       隔离出「schedule 本身不重复释放」的幂等语义，避免 60+60ms 撞上 120ms 周期。 */
+    g._stopSweep();
     g.schedule('hide'); g.schedule('storage'); await sleep(60);
     ck(calls.released === 1, '重复 schedule 幂等，不重复释放视图');
+    g._startSweep();
 
     calls.busy = true;
     g.schedule('running:true');

@@ -98,8 +98,6 @@ const PROMOTE_SIDEBAR_IFRAME = true;
 const SIDEBAR_IFRAME_HOST = /(?:^|\.)bing\.com$/i;
 /** 点击任务卡时把载体页临时置为 active：后台标签页的 CDP 点击可能不触发 target=_blank */
 const KEEP_TASK_CLICK_ACTIVE = true;
-/** 已标记「已完成 / 已领取」的卡片默认跳过；设为 true 可强制重点 */
-const FORCE_CLICK_COMPLETED = false;
 
 /* 后台错误文案也跟随界面语言（uiLang 由弹窗写入 storage.local） */
 var bgLang = 'zh';
@@ -190,12 +188,57 @@ load(['settings']).then(s => {
 /* 追加一条运行日志：字段白名单裁剪 + 环形上限，绝不写网页 HTML / 快照。 */
 function hsaRunLog(event, info) {
   if (!runLogEnabled) return Promise.resolve();
-  const o = Object.assign({ event: String(event || 'activity'), at: Date.now() }, info || {});
+  /* v3.2 · 与插件版日志字段对齐：补上 platform，桌面旧日志该字段为空。 */
+  const o = Object.assign({ event: String(event || 'activity'), at: Date.now(),
+    platform: HSA_PLATFORM }, info || {});
   const now = Number(o.at) || Date.now();
   return load(['runLog'])
     .then(s => store({ runLog: HSA_CORE.runLogAppend(desktopTrimLog(s && s.runLog), o, now) }))
     .catch(() => {});
 }
+
+/* ======================================================================
+ * v3.2 · 统一同步闸门
+ * 与另一端使用完全相同的 HSA_CORE.createSyncGate() 实现：分档冷却、
+ * single-flight 合并、业务指纹去重、当日全部完成后停止所有任务。
+ * 宿主差异只有注入的 adapter，决策逻辑一行不差。
+ * ==================================================================== */
+function hsaSyncActivity(payload) {
+  const now = Date.now();
+  /* 可见短文案 ≤15 中文显示宽度；详细全文放 fullZh/fullEn 与日志。 */
+  const patch = {
+    activityDetail: {
+      at: now, until: 0, state: payload.state,
+      zh: payload.zh, en: payload.en,
+      fullZh: payload.fullZh, fullEn: payload.fullEn,
+      page: '/dashboard, /earn', card: '', query: '', next: '', delayMs: 0
+    }
+  };
+  hsaRunLog('sync-state', {
+    at: now, event: 'sync-state',
+    level: payload.state === 'syncFailed' ? 'error' : 'info',
+    actor: 'system', category: payload.state === 'syncFailed' ? 'error' : 'run-step',
+    state: payload.state, zh: payload.zh, en: payload.en,
+    result: payload.green ? 'ok' : '', ok: payload.state !== 'syncFailed',
+    detail: payload.fullZh, page: '/dashboard, /earn'
+  }).catch(() => {});
+  store(patch).catch(() => {});
+}
+const syncGate = HSA_CORE.createSyncGate({
+  sync: opts => desktopSyncRewards(opts),
+  load: keys => load(keys).catch(() => ({})),
+  store: patch => store(patch),
+  log: (event, info) => hsaRunLog(event, info).catch(() => {}),
+  activity: payload => hsaSyncActivity(payload),
+  now: () => Date.now(),
+  onStopAll: () => {
+    /* 只停续跑/提醒；保留 autoTaskTick / scheduledRun 的次日调度，
+       到点仍由 guardTaskStart 拦截，跨 UTC+8 日界才能自动恢复。 */
+    for (const name of ['watchdog', 'reminderTick']) {
+      try { chrome.alarms.clear(name); } catch (err) {}
+    }
+  }
+});
 
 /* 关键网页实时抓取：强制 fresh + cache:no-store，不走 120 秒 HTML 缓存，
    不读可见快照 / 面板 / 隐藏数据视图；抓到的 HTML 只随本次导出返回。 */
@@ -294,7 +337,17 @@ const ENTER_RATE = 0.5;
 const CLICK_RESULT_RATE = 0.35;
 const STOP = Symbol('stopped');
 /* 严格运行模式（单一真源 shared/hsa-core.js）：固定节奏，禁用一切运行期可变功能。 */
-const STRICT = HSA_CORE.STRICT_RUN;
+/* v3.7 · 运行节奏由设置在每次运行开始时刷新一次；运行期禁止改设置。 */
+const HSA_HUMAN = globalThis.HSA_HUMAN || (typeof require === 'function' ? require('../shared/hsa-human.js') : null);
+const HSA_STEALTH = globalThis.HSA_STEALTH || (typeof require === 'function' ? require('../shared/hsa-stealth.js') : null);
+const HSA_FINGERPRINT = globalThis.HSA_FINGERPRINT || (typeof require === 'function' ? require('../shared/hsa-fingerprint.js') : null);
+const HSA_GEO = globalThis.HSA_GEO || (typeof require === 'function' ? require('../shared/hsa-geo.js') : null);
+/* v3.9 · 一次运行固定：会话画像 / 地理一致性 / 设置快照；严格档下 HUMAN 为 null。 */
+let HUMAN = null, GEO = null, RUN_SETTINGS = null;
+/* v4.0 · 一次运行固定：风险规避设置与会话分段计划 */
+let STEALTH = null;
+let STEALTH_ON = false;
+let STRICT = HSA_CORE.strictRunPolicy();
 
 /* 拟人强度：影响鼠标轨迹密度、过冲概率、滚动幅度与每轮时长 */
 const HUMAN_PROFILES = {
@@ -458,27 +511,45 @@ async function getKeywordPool(limit) {
 
 /** 接口与原版一致：返回 { queries, usedWords, trendCount } */
 async function buildQueries(count, usedList) {
-  /* 严格运行模式：只用本次抓取的「当日热搜原文」；不足 5 字的单调词、
-     历史缓存词、本地词库、相关延伸 / autosuggest 一律不参与选词。 */
+  /* v4.2 · 搜索词一天之内不能重复：按 UTC+8 日键持久化当日已用词。
+     严格词规则不变：只用本次抓取的当日 ≥5 字热搜原文，不补词 / 不编词 /
+     不拼接 / 不复用历史词；当日合规词用完就如实少跑或停止。 */
   const pool = await getKeywordPool(Math.max(24, count * 3));
   if (!pool.items.length) {
     throw new Error(bgMsg('topics') + ' (' + pool.errors.join(' / ').slice(0, 180) + ')');
   }
-  const built = HSA_CORE.strictQueries(count, pool.items, Date.now());
-  if (!built.queries.length) {
-    throw new Error(bgMsg('strictNoWords') + ' (短词 ' + built.droppedShort
-      + ' / 非当日 ' + built.droppedStale + ')');
+  const now = Date.now();
+  const saved = ((await load(['todayUsedWords']).catch(() => null)) || {}).todayUsedWords;
+  const usedState = HSA_CORE.todayUsedState(saved, now);
+  const usedAll = HSA_CORE.mergeUsedWords([usedList || [], usedState.words]);
+  /* 先从整池取全部合规词，再剔除当日已用，最后取本次需要的条数：
+     否则前 count 个恰好都已用时会被误判为「今日无词可用」。 */
+  const built = HSA_CORE.strictQueries(pool.items.length, pool.items, now);
+  const fresh = HSA_CORE.dropUsedWords(built.queries, usedAll);
+  const queries = fresh.slice(0, count);
+  const droppedUsed = built.queries.length - fresh.length;
+  if (!queries.length) {
+    throw new Error(bgMsg('strictNoWords') + ' (当日合规词已全部用完 '
+      + usedState.words.length + ' 个，不重复 / 不补词 / 不编词；短词 '
+      + built.droppedShort + ' / 非当日 ' + built.droppedStale
+      + ' / 池内重复 ' + built.droppedDuplicate + ')');
   }
   console.info('[HumanSearch] 严格模式 · 当日热搜 ' + pool.sources.join('+')
-    + ' · 合规词 ' + built.queries.length + '/' + built.requested
+    + ' · 合规词池 ' + built.queries.length + ' · 当日已用剔除 ' + droppedUsed
+    + ' · 本次用词 ' + queries.length + '/' + count
     + ' · 丢弃短词 ' + built.droppedShort + ' / 非当日 ' + built.droppedStale
     + ' / 重复 ' + built.droppedDuplicate);
+  /* 「已排期」即占用：选入队列的词当天不再出现，跨运行也绝不重复。 */
+  const nextState = HSA_CORE.todayUsedPush(usedState, queries);
+  await store({ todayUsedWords: nextState }).catch(() => {});
   return {
-    /* 词不够就少跑几轮：不补词、不拼接、不复用、不循环重复。 */
-    queries: built.queries,
-    usedWords: (usedList || []).concat(built.queries).slice(-DESKTOP_MEM.usedWordsMax), // v2.9：上限 160
+    queries: queries,
+    usedWords: (usedList || []).concat(queries).slice(-DESKTOP_MEM.usedWordsMax),
     trendCount: pool.items.length,
-    strict: built
+    strict: built,
+    todayUsedWords: nextState,
+    droppedUsed: droppedUsed,
+    usedDay: usedState.day
   };
 }
 
@@ -783,6 +854,81 @@ function mousePath(from, to, level = 3) {
   return points;
 }
 
+/* ==========================================================================
+ * v3.9 · 拟人增强档（runMode='human'）专用 helpers；严格档完全不调用它们。
+ * ======================================================================== */
+/* 贝塞尔鼠标轨迹：CDP mouseMoved 序列优先，不可用时页面合成 mousemove。 */
+async function hsaHumanMouse(tabId, plan) {
+  try {
+    if (cdpAttached && cdpAttached.has && cdpAttached.has(Number(tabId))) {
+      for (const p of plan.points) {
+        await cdpCmd(tabId, 'Input.dispatchMouseEvent',
+          { type: 'mouseMoved', x: p.x, y: p.y, button: 'none', buttons: 0 });
+        await sleep(Math.min(p.dt, 60));
+      }
+      await sleep(plan.beforeMs || 60);
+      const [x, y] = plan.center;
+      await cdpCmd(tabId, 'Input.dispatchMouseEvent',
+        { type: 'mousePressed', x, y, button: 'left', buttons: 1, clickCount: 1 });
+      await sleep(plan.downMs || 65);
+      await cdpCmd(tabId, 'Input.dispatchMouseEvent',
+        { type: 'mouseReleased', x, y, button: 'left', buttons: 0, clickCount: 1 });
+      return true;
+    }
+  } catch (err) {}
+  try {
+    await inject(tabId, pts => {
+      for (const p of pts) {
+        const el = document.elementFromPoint(p.x, p.y) || document.body;
+        el.dispatchEvent(new MouseEvent('mousemove',
+          { bubbles: true, view: window, clientX: p.x, clientY: p.y }));
+      }
+      return true;
+    }, [plan.points]);
+  } catch (err) {}
+  await sleep(plan.beforeMs || 60);
+  return domClick(tabId, plan.center[0], plan.center[1]);
+}
+
+/* 结果页正常浏览：偶发多余动作 + 适度滚动 + 偶尔点开结果再返回 + 稳定等待。 */
+async function hsaHumanBrowse(tabId, timing, token) {
+  const bp = HSA_HUMAN.browsePlan(HUMAN, HUMAN.rng);
+  for (const ex of HSA_HUMAN.extraActions(HUMAN.rng, HUMAN.extraRate)) {
+    if (ex.action === 'pause' || ex.action === 'doubleCheck') await nap(ex.ms, token);
+    else if (ex.action === 'backScroll') await domWheel(tabId, -120).catch(() => null);
+    else {
+      await inject(tabId, () => {
+        const el = document.elementFromPoint(window.innerWidth * 0.45,
+          window.innerHeight * 0.4);
+        if (el) el.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, view: window }));
+        return true;
+      }, []).catch(() => null);
+    }
+  }
+  for (const sc of bp.scrolls) {
+    await domWheel(tabId, sc.dy).catch(() => null);
+    await nap(Math.min(sc.dt, 1200), token);
+  }
+  if (bp.openResult) {
+    /* v4.0 · 不再用 DOM 合成 click 事件，改走与搜索同一套贝塞尔真鼠标轨迹。 */
+    const rect = await inject(tabId, () => {
+      const a = document.querySelector('#b_results h2 a, .b_algo h2 a');
+      if (!a) return null;
+      const r = a.getBoundingClientRect();
+      if (!r.width || r.height < 8 || r.bottom < 0 || r.top > innerHeight) return null;
+      return { x: r.left + r.width * 0.3, y: r.top + r.height / 2 };
+    }, []).catch(() => null);
+    if (rect && HUMAN) {
+      await hsaHumanMouse(tabId, HSA_HUMAN.bezierPath([120, 140],
+        [rect.x, rect.y], HUMAN.rng, { bend: HUMAN.bezierBend })).catch(() => null);
+    }
+    await nap(Math.min(bp.returnMs, 2500), token);
+    await goBackSearch(tabId, token).catch(() => null);
+  }
+  const rest = Math.min((timing && (timing.browseMs + timing.settleMs)) || 3000, 20000);
+  await nap(rest, token);
+}
+
 /* 严格运行模式：固定中心点击，不生成拟人轨迹 / 过冲 / 随机延时。 */
 function strictClickPlan(box) {
   return { center: [box.x + box.w / 2, box.y + box.h / 2] };
@@ -829,6 +975,169 @@ async function navigateSearch(tabId, url, test, token) {
   return tab;
 }
 
+/* ==========================================================================
+ * v4.0 · 运行风险规避 helpers（两端同源，共享决策在 HSA_STEALTH）
+ *   · 拟真键入：分块上屏 + 非均匀键间隔 + 偶发退格纠错，finalText 逐字等于原词
+ *   · 提交方式：概率性点搜索按钮（失败回退 Enter）
+ *   · 焦点模拟：只覆盖输入阶段，输入结束立即释放，避免「后台却自认有焦点」常驻
+ * ======================================================================== */
+async function stealthTypeQuery(tabId, text, realInput, token) {
+  if (!STEALTH_ON || !STEALTH.stealthTyping) {
+    if (realInput) await cdpInsertText(tabId, text);
+    else await domInput(tabId, text);
+    return;
+  }
+  const kp = HSA_STEALTH.keystrokePlan(text, HUMAN.rng, { enabled: true });
+  for (const c of kp.chunks) {
+    if (c.action === 'pause') { await nap(c.delayMs, token); continue; }
+    if (c.action === 'backspace') {
+      if (realInput) { for (let i = 0; i < c.count; i++) await cdpKey(tabId, 'Backspace'); }
+      else await stealthDomBackspace(tabId, c.count);
+    } else {
+      if (realInput) await cdpCmd(tabId, 'Input.insertText', { text: c.text });
+      else await stealthDomChunk(tabId, c.text, false);
+    }
+    await nap(c.delayMs, token);
+  }
+  /* 词内容绝不改变：finalText 必须仍是当日 ≥5 字热搜原文 */
+  if (kp.finalText !== text) throw new Error('stealth-keystroke-mismatch');
+}
+
+async function stealthDomChunk(tabId, value, replaceAll) {
+  return inject(tabId, (text, replace) => {
+    const sels = ['#sb_form_q', 'textarea[name="q"]', 'input[name="q"]', '#q'];
+    let el = null;
+    for (const s of sels) { const e = document.querySelector(s); if (e && !e.disabled && !e.readOnly) { el = e; break; } }
+    el = el || document.activeElement;
+    if (!el) return false;
+    el.focus();
+    if (replace) el.value = '';
+    let ok = false;
+    try { ok = document.execCommand('insertText', false, text); } catch (e) {}
+    if (!ok) {
+      el.value += text;
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+    return true;
+  }, [value, !!replaceAll]);
+}
+
+async function stealthDomBackspace(tabId, count) {
+  return inject(tabId, n => {
+    const sels = ['#sb_form_q', 'textarea[name="q"]', 'input[name="q"]', '#q'];
+    let el = null;
+    for (const s of sels) { const e = document.querySelector(s); if (e && !e.disabled && !e.readOnly) { el = e; break; } }
+    el = el || document.activeElement;
+    if (!el) return false;
+    el.focus();
+    for (let i = 0; i < n; i++) {
+      el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Backspace', bubbles: true, cancelable: true }));
+      el.dispatchEvent(new KeyboardEvent('keyup', { key: 'Backspace', bubbles: true }));
+    }
+    if (typeof el.value === 'string') {
+      el.value = el.value.slice(0, -n);
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+    return true;
+  }, [count]);
+}
+
+async function stealthSubmitQuery(tabId, keyword, realInput, from, token) {
+  const sp = HSA_STEALTH.submitPlan(HUMAN ? HUMAN.rng : Math.random, { enabled: STEALTH_ON });
+  if (sp.method === 'button' && HUMAN) {
+    const box = await probe(tabId, HSA_STEALTH.SUBMIT_BUTTONS).catch(() => null);
+    if (box && box.box) {
+      const center = [box.box.x + box.box.w / 2, box.box.y + box.box.h / 2];
+      try {
+        await hsaHumanMouse(tabId, HSA_HUMAN.bezierPath(from || [120, 140], center,
+          HUMAN.rng, { bend: HUMAN.bezierBend }));
+        await nap(300, token);
+        const after = await chrome.tabs.get(tabId).catch(() => null);
+        if (after && isBingSearch(after.url)) return true;
+      } catch (e) {}
+    }
+  }
+  /* 严格档 / 未命中按钮：固定 Enter 提交 */
+  if (realInput) await cdpKey(tabId, 'Enter');
+  else await domKey(tabId, 'Enter');
+  return true;
+}
+
+async function releaseFocusEmulation(tabId) {
+  if (!cdpAttached || !cdpAttached.has || !cdpAttached.has(Number(tabId))) return false;
+  try {
+    await chrome.debugger.sendCommand({ tabId: Number(tabId) },
+      'Emulation.setFocusEmulationEnabled', { enabled: false });
+    return true;
+  } catch { return false; }
+}
+
+/** 定时触发：当地 0–6 点直接跳过；手动启动不受限。两端同构。 */
+async function stealthDeferScheduled(source) {
+  const cfg = await getSettings();
+  const st = HSA_STEALTH.normalize(cfg);
+  let geo = null;
+  try {
+    if (GEO && GEO.geo) {
+      geo = Object.assign({}, GEO.geo,
+        { localHour: HSA_GEO.localParts(Date.now(), GEO.geo).hour });
+    }
+  } catch (e) { geo = null; }
+  const d = HSA_STEALTH.shouldDefer(Date.now(), geo, st, false);
+  if (!d.defer) return false;
+  hsaRunLog('scheduled-skip', {
+    level: 'info', actor: 'system', category: 'run-step', state: 'deferred',
+    zh: '当地 ' + d.localHour + ' 点，定时运行按设置跳过',
+    en: 'Local ' + d.localHour + ':00, scheduled run deferred',
+    detail: JSON.stringify({ source: source, reason: d.reason,
+      retryAt: new Date(d.retryAtMs).toISOString() }),
+    result: 'deferred'
+  }).catch(() => {});
+  console.info('[AutoTask] ' + source + ' 当地 ' + d.localHour
+    + ' 点，按「避开深夜」设置跳过（手动启动不受限）');
+  return true;
+}
+
+/* ==========================================================================
+ * v4.1 · 任务列表无可点击卡片时，不进入卡片点击阶段、不打开 Bing 侧栏
+ *   · 两端逐字同构：同一份 HSA_CORE.hasClickableCards（共享决策）
+ *   · primary / secondary 两个来源都为空才短路，避免同步失败误跳过真实卡片
+ *   · 「今日 Bing 搜索」这类搜索进度项与已完成卡由共享层统一排除
+ * ======================================================================== */
+async function hasPendingClickableCards() {
+  const snap = await load(['taskClickIndex', 'todayTasks', 'runTaskStates']).catch(() => ({}));
+  const primary = Array.isArray(snap.runTaskStates) && snap.runTaskStates.length
+    ? snap.runTaskStates
+    : ((snap.taskClickIndex && Array.isArray(snap.taskClickIndex.items))
+        ? snap.taskClickIndex.items : []);
+  const secondary = (snap.todayTasks && Array.isArray(snap.todayTasks.items))
+    ? snap.todayTasks.items : [];
+  const summary = snap.todayTasks || null;
+  return {
+    ok: HSA_CORE.hasClickableCards(primary, secondary, summary),
+    primary: primary.length, secondary: secondary.length,
+    pending: HSA_CORE.buildTaskPlan(primary, [], summary).length
+  };
+}
+
+async function skipCardPhaseIfEmpty(stat) {
+  const gate = await hasPendingClickableCards();
+  if (gate.ok) return false;
+  stat.clicked = 0;
+  stat.skipped = gate.secondary;
+  stat.reason = 'no-clickable-cards';
+  const detail = '点击索引/运行态 ' + gate.primary + ' 项 · 主界面任务 '
+    + gate.secondary + ' 项 · 待点卡片 0 张（搜索进度项与已完成卡已排除）';
+  hsaRunLog('no-clickable-cards', {
+    actor: 'system', category: 'run-step', level: 'info', state: 'skipped',
+    zh: '无可点击任务卡，跳过侧栏', en: 'No clickable cards, sidebar skipped',
+    detail: detail, result: 'skipped', count: 0, order: 0
+  }).catch(() => {});
+  console.info('[AutoTask] 无可点击任务卡，不打开 Bing 侧栏 · ' + detail);
+  return true;
+}
+
 async function goBackSearch(tabId, token) {
   try { await chrome.tabs.goBack(tabId); } catch {}
   await nap(900, token);
@@ -847,9 +1156,24 @@ async function searchLoop(token) {
   let lastXY = [120, 140];
   const modeCount = { paste: 0, related: 0, home: 0, stay: 0 };
   /* 严格运行模式：拟人强度 / 随机停留不再参与运行，全部改为固定节奏。 */
-  const STRICT_POLICY = HSA_CORE.strictRunPolicy();
-  console.info('[HumanSearch] 严格运行模式：仅当日 ≥' + STRICT_POLICY.minKeywordChars
-    + ' 字热搜词，运行期禁用其它功能');
+  const STRICT_POLICY = STRICT;   /* v3.7 · 与本次运行的设置一致 */
+  /* v4.0 · 严格档恒关；拟人档启用分段节奏 / 拟真键入 / 配额上限。 */
+  STEALTH_ON = !!(HUMAN && STEALTH && HSA_STEALTH.enabled(STEALTH));
+  const planState = await load(['totalSearch']).catch(() => ({}));
+  const SESSION_PLAN = HSA_STEALTH.sessionPlan({
+    rounds: Math.max(1, Number(planState.totalSearch) || 20),
+    perRoundMs: HUMAN ? HUMAN.perRoundMs : 90000,
+    rng: HUMAN ? HUMAN.rng : HSA_STEALTH.mulberry32(1),
+    enabled: STEALTH_ON && STEALTH.burstPacing
+  });
+  if (STEALTH_ON) {
+    console.info('[HumanSearch] v4.0 风险规避：' + SESSION_PLAN.bursts.length + ' 段浏览 · 段间离席 '
+      + Math.round(SESSION_PLAN.totalBreakMs / 1000) + ' 秒 · 单次配额上限 '
+      + STEALTH.singleRunCapPct + '%');
+  }
+  console.info('[HumanSearch] ' + (HUMAN ? '拟人增强档 ' + HUMAN.level : '严格运行模式')
+    + '：仅当日 ≥' + STRICT_POLICY.minKeywordChars + ' 字热搜词'
+    + (HUMAN ? '，全维度噪声 + 地理作息自洽' : '，运行期禁用其它功能'));
 
   try {
     tabId = await openOrNavigate('searchTabId', HOME_URL, true);
@@ -860,6 +1184,22 @@ async function searchLoop(token) {
     realInput = await cdpAttach(tabId);
     await keepSearchTabAwake(tabId);
     console.info('[HumanSearch] 输入方式：' + (realInput ? 'CDP 真实键鼠' : '页面内合成事件'));
+    /* v3.9 · 环境指纹：读真实值 → 交叉一致性校验 → 去自动化标记 / 补对象存在性。
+       数值字段一律不改写；失败不阻断运行。 */
+    if (HUMAN && HUMAN.fingerprintCheck) {
+      try {
+        const snap = await inject(tabId, HSA_FINGERPRINT.collect, []);
+        const report = HSA_FINGERPRINT.crossCheck(snap);
+        const patched = await inject(tabId, HSA_FINGERPRINT.patcher, []);
+        hsaRunLog('fingerprint', {
+          level: 'info', actor: 'system', category: 'diagnostic', state: 'fingerprint',
+          zh: '环境指纹交叉校验：' + (report.ok ? '自洽' : report.conflicts.length + ' 项冲突'),
+          en: 'Fingerprint cross-check: ' + (report.ok ? 'consistent' : report.conflicts.length + ' conflicts'),
+          detail: JSON.stringify({ conflicts: report.conflicts, fields: report.fields,
+            cleaned: patched && patched.cleaned, added: patched && patched.added }).slice(0, 1200)
+        }).catch(() => {});
+      } catch (err) {}
+    }
   } catch (err) {
     if (err === STOP) throw err;
     tabId = await openOrNavigate('searchTabId', HOME_URL, true);
@@ -872,6 +1212,15 @@ async function searchLoop(token) {
     await keepSearchTabAwake(tabId);
     bail(token);
     const st = await load(['currentSearch', 'totalSearch', 'searchQueue', 'stopRequested']);
+    /* v3.9 · 拟人档：强度预算 × 会话偏差 × 当地作息系数 → 6 段随机但均匀分配。 */
+    const HUMAN_BUDGET = HUMAN ? Math.round(HSA_HUMAN.roundBudget(HUMAN,
+      GEO && GEO.geo ? HSA_GEO.scheduleFactor(Date.now(), GEO.geo).factor : 1)
+      * (STEALTH_ON ? SESSION_PLAN.scaleFor(Math.max(0, Number(st.currentSearch) || 0)) : 1)) : 0;
+    const HUMAN_TIMING = HUMAN
+      ? HSA_HUMAN.splitRound(HUMAN_BUDGET, HUMAN).segments : null;
+    const napMs = key => (HUMAN && HUMAN_TIMING && HUMAN_TIMING[key]
+      ? HSA_HUMAN.jitter(HUMAN_TIMING[key], HUMAN.jitterAmp, HUMAN.rng)
+      : STRICT.fixedNapMs);
     const current = st.currentSearch || 0;
     if (st.stopRequested || current >= st.totalSearch) return;
     const baseQuery = st.searchQueue && st.searchQueue[current];
@@ -897,25 +1246,29 @@ async function searchLoop(token) {
         }
         if (!box) throw new Error('找不到 Bing 搜索框');
 
-        /* 严格运行模式：固定中心点击，不使用拟人轨迹与过冲。 */
-        const plan = strictClickPlan(box.box);
-        lastXY = plan.center;
-        if (realInput) await cdpClickAt(tabId, plan.center[0], plan.center[1]);
-        else await domClick(tabId, plan.center[0], plan.center[1]);
-        await nap(STRICT.fixedNapMs, token);
+        /* v3.9 · 拟人档：贝塞尔轨迹 + 随机均匀分段间隔；严格档仍固定中心点击。 */
+        const clickCenter = [box.box.x + box.box.w / 2, box.box.y + box.box.h / 2];
+        if (HUMAN) await hsaHumanMouse(tabId,
+          HSA_HUMAN.bezierPath(lastXY, clickCenter, HUMAN.rng, { bend: HUMAN.bezierBend }));
+        else if (realInput) await cdpClickAt(tabId, clickCenter[0], clickCenter[1]);
+        else await domClick(tabId, clickCenter[0], clickCenter[1]);
+        lastXY = clickCenter;
+        await nap(napMs('move'), token);
 
         // 关键一步：粘贴前清空
         if (realInput) await cdpClearInput(tabId);
         else await domClearInput(tabId);
-        await nap(STRICT.fixedNapMs, token);
+        await nap(napMs('type'), token);
 
-        if (realInput) await cdpInsertText(tabId, keyword);
-        else await domInput(tabId, keyword);
-        await nap(STRICT.fixedNapMs, token);
+        /* v4.0 · 分块拟真键入（finalText 仍逐字等于当日热搜原文） */
+        await stealthTypeQuery(tabId, keyword, realInput, token);
+        await nap(napMs('submit'), token);
 
         /* 严格运行模式：固定 Enter 提交，不随机切换按钮 / 回车。 */
-        if (realInput) await cdpKey(tabId, 'Enter');
-        else await domKey(tabId, 'Enter');
+        /* v4.0 · 拟人档概率性点搜索按钮，失败固定回退 Enter */
+        await stealthSubmitQuery(tabId, keyword, realInput, lastXY, token);
+        /* 输入阶段结束即释放焦点模拟，避免「后台标签却自认为有焦点」整轮常驻 */
+        await releaseFocusEmulation(tabId);
         const result = await waitForTab(tabId, isBingSearch, PAGE_TIMEOUT, true);
         searched = !!result && isBingSearch(result.url);
         if (!searched) {
@@ -931,13 +1284,16 @@ async function searchLoop(token) {
       lastQuery = keyword;
       await store({ currentQuery: keyword });
       console.info(`[HumanSearch] [${current + 1}/${st.totalSearch}] ${keyword} · ${method}`
-        + ' · 严格模式');
+        + (HUMAN ? ' · 拟人增强' : ' · 严格模式'));
       hsaRunLog('search', {
         level: 'info', actor: 'system', category: 'run-step',
         state: 'searching', query: keyword, page: 'bing-search',
         zh: '第 ' + (current + 1) + '/' + st.totalSearch + ' 轮搜索：' + keyword,
         en: 'Search ' + (current + 1) + '/' + st.totalSearch + ': ' + keyword,
-        detail: '严格模式：当日 ≥5 字热搜原文「' + keyword + '」→ 固定点击 → 输入 → Enter → 页面稳定等待',
+        detail: (HUMAN ? '拟人增强档（' + HUMAN.level + '）：' : '严格模式：')
+          + '当日 ≥5 字热搜原文「' + keyword + '」→ '
+          + (HUMAN ? '贝塞尔轨迹点击 → 输入 → Enter → 结果页浏览 + 噪声'
+                   : '固定点击 → 输入 → Enter → 页面稳定等待'),
         result: 'query submitted', count: current + 1
       }).catch(() => {});
       bail(token);
@@ -951,14 +1307,16 @@ async function searchLoop(token) {
     if (!searched) {
       failures++;
       if (failures >= MAX_FAILURES) throw new Error(bgMsg('network'));
-      await nap(STRICT.fixedNapMs, token);
+      await nap(napMs('submit'), token);
       continue;
     }
     failures = 0;
 
-    /* 严格运行模式：禁用滚动 / 点结果 / 随机停留，只保留页面稳定等待（T07）。 */
+    /* v3.9 · 拟人档：结果页正常浏览（滚动 / 偶发多余动作 / 偶尔点开结果再返回）；
+       严格档仍只保留页面稳定等待。 */
     try {
-      await nap(STRICT_POLICY.pageStableWaitMs, token);
+      if (HUMAN) await hsaHumanBrowse(tabId, HUMAN_TIMING, token);
+      else await nap(STRICT_POLICY.pageStableWaitMs, token);
     } catch (err) {
       if (err === STOP || haltFlag) throw STOP;
     }
@@ -971,12 +1329,25 @@ async function searchLoop(token) {
        autoStop、冷却等待都需要中途积分信号，与新流程冲突，一并停用。
        这里仍只写 currentSearch 供进度环显示，不触发界面数值刷新。 */
     if (current + 1 < st.totalSearch && !haltFlag) {
-      await nap(STRICT.fixedRoundIntervalMs, token);
+      await nap(HUMAN && HUMAN_TIMING ? HUMAN_TIMING.gapMs : STRICT.fixedRoundIntervalMs, token);
+      /* v4.0 · 段间离席：一次较长停顿，模拟真人离开再回来（已计入强度预算） */
+      const breakMs = STEALTH_ON ? SESSION_PLAN.breakAfter(current) : 0;
+      if (breakMs > 0) {
+        hsaRunLog('session-break', {
+          level: 'info', actor: 'system', category: 'run-step', state: 'paused',
+          zh: '浏览段间停顿 ' + Math.round(breakMs / 1000) + ' 秒',
+          en: 'Session break ' + Math.round(breakMs / 1000) + 's',
+          detail: '第 ' + (current + 1) + ' 轮后进入段间离席', result: 'paused'
+        }).catch(() => {});
+        await nap(breakMs, token);
+      }
     }
   }
 
-  console.info('[HumanSearch] 严格运行模式：当日热搜词 ' + modeCount.paste + ' 次'
-    + ' · 禁用改词 / 回首页 / 拟人随机 / 滚动 / 点结果');
+  console.info('[HumanSearch] ' + (HUMAN ? '拟人增强档：当日热搜词 ' : '严格运行模式：当日热搜词 ')
+    + modeCount.paste + ' 次 · '
+    + (HUMAN ? '贝塞尔轨迹 / 随机均匀间隔 / 结果页浏览 / 偶发多余动作'
+             : '禁用改词 / 回首页 / 拟人随机 / 滚动 / 点结果'));
 }
 
 /* 提醒预览用的主题词也改走真实热搜池（失败时不编词，退回 Bing 首页）。 */
@@ -1801,13 +2172,33 @@ const DEFAULT_SETTINGS = {
   reminderSeconds: 5,
   reduceMotion: false,
   cardClickIntervalSec: HSA_CORE.DEFAULTS.cardClickIntervalSec,
-  /* v1.3.8-s2：设置项反转为「不跳过已完成任务卡」，默认关闭 = 默认跳过已完成卡 */
-  notSkipCompletedCards: false
+  /* v3.7 · 拟人搜索间隔（秒）；固定节奏、不引入随机，两端同源。 */
+  actionGapSec: HSA_CORE.intervalDefaultSec('actionGapMs'),
+  pageStableSec: HSA_CORE.intervalDefaultSec('pageStableWaitMs'),
+  roundGapSec: HSA_CORE.intervalDefaultSec('roundGapMs'),
+  roundWaitSec: HSA_CORE.intervalDefaultSec('roundWaitMs'),
+  /* v3.9 · 拟人增强档（严格档仍完整保留，runMode='strict' 即切回固定节奏） */
+  runMode: HSA_HUMAN.DEFAULT_SETTINGS.runMode,
+  humanLevel: HSA_HUMAN.DEFAULT_SETTINGS.humanLevel,
+  humanNoise: HSA_HUMAN.DEFAULT_SETTINGS.humanNoise,
+  humanBrowse: HSA_HUMAN.DEFAULT_SETTINGS.humanBrowse,
+  humanSession: HSA_HUMAN.DEFAULT_SETTINGS.humanSession,
+  fingerprintCheck: HSA_HUMAN.DEFAULT_SETTINGS.fingerprintCheck,
+  geoConsistency: HSA_HUMAN.DEFAULT_SETTINGS.geoConsistency,
+  /* v4.0 · 风险规避（严格档恒关，拟人档默认开启） */
+  stealthTyping: HSA_STEALTH.DEFAULTS.stealthTyping,
+  burstPacing: HSA_STEALTH.DEFAULTS.burstPacing,
+  avoidNightRun: HSA_STEALTH.DEFAULTS.avoidNightRun,
+  singleRunCapPct: HSA_STEALTH.DEFAULTS.singleRunCapPct,
+  scheduleJitterMin: HSA_STEALTH.DEFAULTS.scheduleJitterMin,
+  geoCacheHours: HSA_STEALTH.DEFAULTS.geoCacheHours
 };
 
 async function getSettings() {
   const { settings } = await load(['settings']);
-  return Object.assign({}, DEFAULT_SETTINGS, settings || {});
+  /* v4.2 · 七项专业数值由「拟人强度」三组预设统一套用；严格档原样返回。 */
+  return HSA_HUMAN.applyRunPreset(
+    Object.assign({}, DEFAULT_SETTINGS, settings || {}));
 }
 
 function holdRange(settings) {
@@ -2041,7 +2432,8 @@ async function prepareQueue(token, count) {
   const built = await buildQueries(count, usedWords);
   if (isCurrent(token) && built.queries.length) {
     await store({
-      searchQueue: built.queries,
+      searchQueue: (HUMAN && HUMAN.session)
+        ? HSA_HUMAN.wordOrder(built.queries, HUMAN) : built.queries,
       usedWords: built.usedWords,
       totalSearch: Math.min(count, built.queries.length)
     });
@@ -2065,6 +2457,11 @@ async function ensureQueue(token) {
 
 async function handleStart(count, params) {
   if (flowActive) return;
+  /* v3.2 · 当日全部完成：所有任务入口一律停止，跨日自动恢复。 */
+  if (await syncGate.isStopped()) {
+    syncGate.activity('allDone', { reason: 'start' });
+    return;
+  }
   params = params || {};
   const runLevel = clampInt(Number(params.level) || 3, 1, 3);
   resetHalt();
@@ -2644,30 +3041,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   } else if (msg.type === HSA_CORE.SYNC_ON_OPEN.messageType) {
     /* v3.0 · 打开主界面同步一次：立即应答，同步完成后写 syncNotice。 */
-    desktopSyncRewards({ fresh: true, noTabs: true,
-      reason: HSA_CORE.SYNC_ON_OPEN.reason })
-      .then(r => store({ syncNotice: {
-        at: Date.now(), reason: HSA_CORE.SYNC_ON_OPEN.reason, ok: !!r.ok,
-        changed: (r.changed || []).length
-      } }))
-      .catch(err => store({ syncNotice: {
-        at: Date.now(), reason: HSA_CORE.SYNC_ON_OPEN.reason, ok: false,
-        error: String(err && err.message || err)
-      } }));
+    syncGate.request({ reason: HSA_CORE.SYNC_ON_OPEN.reason }).catch(() => {});
   } else if (msg.type === 'refreshTasks' || msg.type === 'refreshPoints') {
     /* v1.3.3：立即应答（后台同步可能要重新加载两页，不能让弹窗等 IPC 超时）；
        同步真正完成后写 syncNotice → storage.onChanged → 圆圈下方绿字
        「已同步积分」。整条刷新链路仍是唯一的 desktopSyncRewards。 */
     const reason = msg.type === 'refreshPoints' ? 'refreshPoints' : 'manual-refresh';
-    desktopSyncRewards({ fresh: true, noTabs: true, reason: reason })
-      .then(r => store({ syncNotice: {
-        at: Date.now(), reason: reason, ok: !!r.ok,
-        changed: (r.changed || []).length
-      } }))
-      .catch(err => store({ syncNotice: {
-        at: Date.now(), reason: reason, ok: false,
-        error: String(err && err.message || err)
-      } }));
+    syncGate.request({ reason: reason }).catch(() => {});
   } else if (msg.type === 'refreshToday') {
     refreshToday();
   } else if (msg.type === 'dumpSidebar') {
@@ -2708,7 +3088,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
        直接复用（fresh=false）；手动刷新、开始与收尾同步强制实时读两页。 */
     const reason = msg.reason || 'login-return';
     const fresh = HSA_CORE.syncCachePolicy(reason).fresh;
-    desktopSyncRewards({ fresh: fresh, reason: reason })
+    syncGate.request({ reason: reason, force: !fresh })
       .then(r => sendResponse({ ok: !!r.ok, reason: r.reason }))
       .catch(err => sendResponse({ ok: false, reason: 'error',
         message: String(err && err.message || err) }));
@@ -2800,6 +3180,19 @@ async function startAutoRun(opts) {
     source: o.manual ? 'manual' : 'schedule'
   };
   // 长流程不阻塞消息响应；与 start/runNow 一样 fire-and-forget
+  /* v4.0 · 定时启动随机抖动；手动立即运行不受影响，严格档恒 0。 */
+  if (!o.manual) {
+    const cfg = await getSettings();
+    const delayMs = HSA_STEALTH.scheduleJitter(0, Math.random,
+      HSA_STEALTH.normalize(cfg).scheduleJitterMin, cfg.runMode);
+    if (delayMs > 0) {
+      setTimeout(() => runAutoComplete(payload).catch(err =>
+        console.warn('[AutoTask] 启动异常：', err && err.message)), delayMs);
+      console.info('[AutoTask] 定时启动将在 ' + Math.round(delayMs / 1000)
+        + ' 秒后开始（有界抖动）');
+      return { ok: true, count, level, ...payload };
+    }
+  }
   runAutoComplete(payload).catch(err => console.warn('[AutoTask] 启动异常：', err && err.message));
   console.info('[AutoTask] ' + (o.manual ? '手动立即运行' : '定时启动 ' + (o.time || ''))
     + ' · 上限 ' + count + ' 次 · 强度 ' + level);
@@ -2813,6 +3206,7 @@ async function maybeRunAutoTasks() {
   const now = autoHHMM();
   const hit = tasks.times.find(t => t === now);
   if (!hit) return;
+  if (await stealthDeferScheduled('定时 ' + hit)) return;
 
   const log = await getAutoLog();
   if (log.fired[hit]) return;                       // 同分钟不重复
@@ -3686,7 +4080,9 @@ function ybInject(action, payload) {
     try { return new URL(h, location.href).href; } catch (e) { return h; }
   };
   var doneWords = /已完成|已领取|Completed|Claimed/i;
-  var bannedText = /可用积分|今日积分|可领取|兑换|还差|管理奖励|连续打卡|显示更多|重置|积分商城徽标/i;
+  /* v3.6 · 扫描只负责定位，不再按业务词排除卡片；
+     是否点击完全由任务列表（pendingTaskItems）决定。 */
+  var bannedText = /$^/;   /* 永不命中，保留调用结构以降低回归风险 */
   /* 任务链接指纹：取自用户提供的 dashboard / earn 两份真实保存页，不猜 class */
   var TASK_HREF = /(?:PUBL=RewardsDO|PROGRAMNAME=BingDailyOfferIN|OCID=ML2|form=ML2[A-Z0-9]*|CREA=ML2|rnoreward=1|BTEPOKey|REWARDSQUIZ_DailySet|\/spotlight\/imagepuzzle|rewards\.bing\.com\/earn)/i;
   var BAD_HREF = /(?:\/redeem|\/referandearn|\/apps\/wallpaper|\/earn\/quest\/|^javascript:|form=hpcapt|\/images\/|\/videos\/|\/maps|\/news\/)/i;
@@ -4357,15 +4753,8 @@ function ybInject(action, payload) {
       /* 完成态：文本 / aria-label / 卡片内完成徽章，三处都查 */
       var aria = String(hit.el.getAttribute('aria-label') || '') + ' '
         + (function () { try { return clean(hit.el.querySelector('[class*="completed"],[class*="claimed"]')) || ''; } catch (e) { return ''; } })();
+      /* v3.5 · 完成态与积分只做诊断，备用扫描不再决定是否点击。 */
       var done = DONE_CARD.test(hit.text) || DONE_CARD.test(aria);
-      if (done && !includeDone) {
-        skipped.push({ title: title, points: pts, reason: '已完成/已领取' });
-        continue;
-      }
-      if (!(pts > 0)) {
-        skipped.push({ title: title, points: pts, reason: '0 分（不给积分）' });
-        continue;
-      }
       /* 分区：必须在「每日设置」之后、「在 MICROSOFT 必应上搜索」之前 */
       if (zone.start > 0 && hit.r.top < zone.start - 10) {
         skipped.push({ title: title, points: pts, reason: '在每日任务区之上（头部/积分概览）' });
@@ -4373,10 +4762,6 @@ function ybInject(action, payload) {
       }
       if (zone.end < 1e9 && hit.r.top > zone.end - 10) {
         skipped.push({ title: title, points: pts, reason: '在搜索进度/Star bonus 区（不给分）' });
-        continue;
-      }
-      if (out.length >= MAX_TASK_CARDS) {
-        skipped.push({ title: title, points: pts, reason: '超出每日任务集 3 张上限（推广/更多活动）' });
         continue;
       }
       out.push({
@@ -4418,8 +4803,8 @@ function ybInject(action, payload) {
       if (!text || bannedText.test(text)) continue;
       var r = a.getBoundingClientRect();
       if (r.width < 40 || r.height < 24) continue;          // 排除隐藏/零尺寸节点
+      /* v3.5 · 完成态只做诊断。 */
       var done = doneWords.test(text);
-      if (done && !includeDone) continue;
       var pm = /\+\s*(\d{1,4})(?!\d)/.exec(text);
       var badge = a.querySelector && a.querySelector('[class*="bg-statusSuccessRewardsBg"]');
       var points = pm ? parseInt(pm[1], 10) : 0;
@@ -4447,8 +4832,8 @@ function ybInject(action, payload) {
         var o = offers[j];
         var label = String(o.getAttribute('aria-label') || '').toLowerCase();
         if (!/offer/.test(label)) continue;
+        /* v3.5 · 完成态只做诊断。 */
         var odone = !/not completed/.test(label) || /offer completed/.test(label);
-        if (odone && !includeDone) continue;
         var orc = o.getBoundingClientRect();
         if (orc.width < 8 || orc.height < 8) continue;
         var otr = topRect(o);
@@ -4819,7 +5204,7 @@ async function promoteSidebarIframe(tabId, token, stat) {
     await waitForTab(t.id, () => true, PAGE_TIMEOUT, true);
     await nap(SETTLE_MS, token);
     const scan = await inject(t.id, ybInject,
-      ['sidebar.scan', { exclude: [], force: FORCE_CLICK_COMPLETED }]);
+      ['sidebar.scan', { exclude: [], force: false }]);
     const n = scan && Array.isArray(scan.items) ? scan.items.length : 0;
     console.info('[AutoTask] iframe 独立页扫描：' + n + ' 张待点、候选 '
       + (scan ? scan.candidates : 0) + ' 个 · ' + (scan ? scan.title : ''));
@@ -4839,7 +5224,7 @@ async function promoteSidebarIframe(tabId, token, stat) {
 /** 合并所有 frame 的扫描结果，按 每日活动 → 日常任务 → 其它 排序。 */
 async function mergeSidebarScans(tabId, token) {
   const frames = await injectAllFrames(tabId, ybInject,
-      ['sidebar.scan', { exclude: [], force: FORCE_CLICK_COMPLETED }]);
+      ['sidebar.scan', { exclude: [], force: false }]);
   const items = [];
   let candidates = 0;
   const headerHits = new Set();
@@ -5038,7 +5423,11 @@ async function taskClickSpacing(token) {
   let seconds;
   try { const cfg = await getSettings(); seconds = Number(cfg.cardClickIntervalSec); }
   catch (err) {}
-  const interval = HSA_CORE.clampIntervalSec(seconds) * 1000;
+  const baseInterval = HSA_CORE.clampIntervalSec(seconds) * 1000;
+  /* v3.9 · 拟人档：卡片按随机间隔一个一个开，节奏接近人手动点开（两端同源）。 */
+  const cardSpace = HUMAN ? HSA_HUMAN.cardSpacing(HUMAN, HUMAN.rng, baseInterval,
+    GEO && GEO.geo ? HSA_GEO.scheduleFactor(Date.now(), GEO.geo).factor : 1) : null;
+  const interval = cardSpace ? cardSpace.delayMs : baseInterval;
   const left = interval - (Date.now() - lastTaskClickAt);
   if (lastTaskClickAt && left > 0) await nap(left, token);
   if (token != null && !isCurrent(token)) throw STOP;
@@ -5071,7 +5460,7 @@ async function clickCardsOnPage(url, level, token, done, stat) {
     }
     if (ready.timeout) stat.loadSlow = (stat.loadSlow || 0) + 1;
 
-    const probeState = await inject(tabId, ybInject, ['rewards.list', { exclude: [], force: FORCE_CLICK_COMPLETED }]);
+    const probeState = await inject(tabId, ybInject, ['rewards.list', { exclude: [], force: false }]);
     if (probeState && probeState.signedOut) {
       stat.signedOut = true;
       console.warn('[AutoTask] ' + pageLabel + ' 显示的是登录页，跳过本页（另一页仍会继续）');
@@ -5092,7 +5481,7 @@ async function clickCardsOnPage(url, level, token, done, stat) {
     // 放宽到 5 轮 × 1.2s，等 Next.js hydration 把卡片渲染出来
     for (let pass = 0; pass < 5 && isCurrent(token); pass++) {
       const res = await inject(tabId, ybInject,
-        ['rewards.list', { exclude: Array.from(done), force: FORCE_CLICK_COMPLETED }]);
+        ['rewards.list', { exclude: Array.from(done), force: false }]);
       lastRes = res;
       if (!res) { await nap(1200, token); continue; }
       if (res.signedOut) { stat.signedOut = true; break; }
@@ -5885,6 +6274,8 @@ async function completePendingTaskCards(level, token) {
     clicked: 0, skipped: 0, real: false, openedTabs: 0, pages: [],
     signedOut: false, fallbackOpened: 0, domClick: 0
   };
+  /* v4.1 · 先判定是否还有可点击卡片；为空则不打开任何侧栏。 */
+  if (await skipCardPhaseIfEmpty(stat)) return stat;
   if (TASK_MODE === 'human') {
     console.info('[AutoTask] 任务模式：打开页面 → 滚动 → 鼠标点击卡片（不使用 CDP / 不抓 HTML）');
     await humanClickTasks(token, stat);
@@ -5921,10 +6312,10 @@ var autoCompleteActive = false;
 /**
  * 一次完整的自动完成任务：
  *   ① 自动开始按键点击后先同步积分状态；积分与任务都已完成则零动作直接返回
- *      （唯一例外：开启「不跳过已完成任务卡」仍发起点击流程）
+ *      （v3.3：设置项已移除，全完成恒零动作）
  *   ② 点击流程开启时主动重新加载 Bing Rewards 侧栏页面，按 DOM 顺序点击积分卡，
  *      结束时关闭页面；点哪张只取决于主界面任务状态，不看侧栏显示
- *      （默认关闭「不跳过」= 跳过已完成卡只点未完成；开启则点全部积分卡）
+ *      （v3.3：恒跳过已完成卡，只点未完成积分卡）
  *   ③ 再进行日常搜索（按剩余搜索分数决定次数）→ ④ 收尾同步
  * 侧栏读不到积分卡时才回退到 dashboard/earn 两页的索引点击。
  * 定时触发与首页按钮都走这里；与正式运行互斥，点「停止」可中断。
@@ -5951,7 +6342,12 @@ async function presetSearchCount(pages, cap) {
   const need = Math.ceil(Math.max(0, max - got) / POINTS_PER_SEARCH);
   const rawCap = Number(cap);
   const limit = Number.isFinite(rawCap) && rawCap > 0 ? Math.floor(rawCap) : (await getAutoTasks()).count;
-  return { searches: Math.max(0, Math.min(need, limit)), max, got };
+  /* v4.0 · 单次运行不把剩余配额一次刷满；严格档维持原语义。 */
+  const searches = STEALTH
+    ? HSA_STEALTH.capSearches(need, limit, STEALTH.singleRunCapPct,
+        RUN_SETTINGS && RUN_SETTINGS.runMode)
+    : Math.max(0, Math.min(need, limit));
+  return { searches, max, got };
 }
 
 /**
@@ -5963,7 +6359,7 @@ async function syncStart(token, cap) {
   /* v1.3.1：所有刷新入口共用的唯一同步函数 desktopSyncRewards（A10 层）。
      一次两页抓取 → 一次性原子写回三项积分 / 今日任务 / 登录态 / 搜索配额；
      刷新过程中 UI 保持上一次完整结果，绝不先清空。 */
-  const sync = await desktopSyncRewards({ fresh: true, reason: 'start', token: token });
+  const sync = await syncGate.request({ reason: 'start', force: true, token: token });
   const pages = sync.pages;
   if (!sync.ok) {
     /* 不清空已有积分与任务列表：未确认 / 页面抖动时 UI 保持上一次完整结果 */
@@ -6016,7 +6412,7 @@ async function syncStart(token, cap) {
  */
 async function presetSyncFinish(st, searches, start) {
   /* v1.3.1：收尾与开始、手动刷新走同一套 desktopSyncRewards，一次抓取一次原子写回 */
-  const sync = await desktopSyncRewards({ fresh: true, reason: 'finish' });
+  const sync = await syncGate.request({ reason: 'finish', force: true });
   const finalPoints = sync.ok && sync.pages.dash.ok ? parseBalance(sync.pages.dash.html) : null;
   const finalToday = sync.ok ? sync.todaySearch : null;
   const exact = !!st.startKnown && finalPoints !== null;
@@ -6046,10 +6442,10 @@ async function presetSyncFinish(st, searches, start) {
 /**
  * 一次完整的自动完成任务（v1.3.0 流程 / v1.3.8-s2 侧栏点击）：
  *   ① 开始时同步一次积分与任务列表，并按官方搜索配额预先锁定搜索次数；
- *      积分与任务都完成则零动作返回（开启「不跳过已完成任务卡」除外）
+ *      积分与任务都完成则零动作返回（v3.3：无例外）
  *   ② 通过 Bing Rewards 侧栏逐个点击积分卡片：流程开启主动重载页面、
  *      结束关闭页面；点哪张只看主界面任务状态，不看侧栏完成标记
- *      （默认跳过已完成卡；开启「不跳过」则点全部积分卡；不给分卡排除）
+ *      （v3.3：恒跳过已完成卡；不给分卡排除）
  *   ③ 再按锁定次数跑拟人搜索；搜索中间不读积分、不刷任务列表
  *   ④ 结束后同步一次，把最终结果显示到界面
  * 定时触发与首页按钮都走这里；与正式运行互斥，点「停止」可中断。
@@ -6058,14 +6454,43 @@ async function runAutoComplete(opts) {
   const o = opts || {};
   /* 同步占位：开始时同步的 await 期间禁止重复点击 */
   if (autoCompleteActive || flowActive) return { ok: false, reason: 'running' };
+  const gateStopped = await syncGate.guardTaskStart();
+  if (gateStopped) return gateStopped;
   autoCompleteActive = true;
+  /* v3.7 · 一次运行开始时读取一次拟人搜索间隔设置，之后整轮固定不变。 */
+  RUN_SETTINGS = await getSettings();
+  STRICT = HSA_CORE.strictRunPolicy(RUN_SETTINGS);
+  /* v4.0 · 一次运行锁定风险规避设置，运行期仍禁止改设置。 */
+  STEALTH = HSA_STEALTH.normalize(RUN_SETTINGS);
+  /* v3.9 · 一次运行固定会话画像；出口 IP 地理探测失败时由 hsa-geo 优雅降级。 */
+  HUMAN = HSA_HUMAN.isEnabled(RUN_SETTINGS)
+    ? HSA_HUMAN.createProfile(RUN_SETTINGS,
+        HSA_HUMAN.hashSeed(Date.now() + '|' + (++flowToken))) : null;
+  if (HUMAN) {
+    const geoFetch = (u, o) => Promise.race([
+      (typeof fetch === 'function' ? fetch(u, o)
+        : Promise.reject(new Error('no-fetch'))),
+      new Promise((_, rej) => setTimeout(() => rej(new Error('geo-timeout')), 2500))
+    ]);
+    /* v4.0 · 出口 IP 结果同日缓存，避免每次运行都向第三方地理服务发请求。 */
+    const geoCache = ((await load(['hsaGeoCache']).catch(() => null)) || {}).hsaGeoCache;
+    if (HSA_STEALTH.geoCacheValid(geoCache, Date.now(), STEALTH.geoCacheHours)) {
+      GEO = geoCache.value;
+    } else {
+      GEO = HUMAN.geoConsistency
+        ? await HSA_GEO.probe(geoFetch, null, Date.now()).catch(() => null) : null;
+      if (GEO) await store({ hsaGeoCache: { at: Date.now(), value: GEO } }).catch(() => {});
+    }
+    console.info('[HumanSearch] 拟人增强档 ' + HUMAN.level + ' · 目标 '
+      + HSA_HUMAN.SEARCHES + ' 次 ≈ ' + HUMAN.targetMinutes + ' 分钟'
+      + (GEO && GEO.geo ? ' · ' + GEO.geo.mkt + ' / ' + GEO.geo.timezone : ''));
+  } else {
+    GEO = null;
+  }
   const token = ++flowToken;
   try {
     if ((await load(['running'])).running) return { ok: false, reason: 'running' };
     const tasks = await getAutoTasks();
-    /* v1.3.8-s2：「不跳过已完成任务卡」开启时，即使积分与任务全部完成也要发起点击流程 */
-    const autoSettings = await getSettings();
-    const notSkipCompletedCards = !!autoSettings.notSkipCompletedCards;
     const level = clampInt(Number(o.level) || tasks.level, 1, 3);
     await store({
       running: true, phase: 'completingTasks', stopRequested: false,
@@ -6090,19 +6515,23 @@ async function runAutoComplete(opts) {
       console.warn('[AutoTask] 开始时同步失败（' + sync.reason + '），未登录或页面不可读，零动作返回');
       return { ok: false, reason: sync.reason, clicked: 0, searches: 0 };
     }
-    /* 自动开始按键 → 先同步积分；积分与任务都已完成时不做任何其他动作。
-       唯一例外：开启「不跳过已完成任务卡」，此时仍要发起点击任务卡片流程。 */
-    if (sync.allDone && !o.force && !notSkipCompletedCards) {
+    /* v3.3 · 自动开始按键 → 先同步积分；积分与任务都已完成时零动作。
+       与插件版完全一致：不再有绕过全完成停止态的设置项或 force 死参数。 */
+    if (sync.allDone) {
       console.info('[AutoTask] 同步后积分与任务均已全部完成，零动作：不重载页面、不点卡片、不搜索');
       await store({ running: false, phase: 'completed', stopRequested: false,
                     lastActivity: Date.now() });
-      /* T09=D：ok:true + skipped:true + reason:allDone，界面显示「已完成，无需动作」。 */
-      return HSA_CORE.allDoneResult({ source: 'start-sync' });
+      /* v3.2 · 当日全部完成：停止所有任务与定时同步，跨 UTC+8 日界自动解除。 */
+      await syncGate.noteAllDone('all-tasks-done');
+      return HSA_CORE.allDoneResult({ source: 'start-sync', stopped: true });
     }
-    if (sync.allDone && notSkipCompletedCards) {
-      console.info('[AutoTask] 积分与任务已完成，但「不跳过已完成任务卡」已开启：仍发起点击流程');
+    /* v3.9 · 会话画像词策略：与插件版同构，只轻微重排当日热搜原文。 */
+    if (HUMAN && HUMAN.session) {
+      const q = await load(['searchQueue']).catch(() => null);
+      if (q && Array.isArray(q.searchQueue) && q.searchQueue.length > 1) {
+        await store({ searchQueue: HSA_HUMAN.wordOrder(q.searchQueue, HUMAN) }).catch(() => {});
+      }
     }
-
     /* ② 点击任务卡片 */
     const clickRes = await completePendingTaskCards(level, token);
 
@@ -6631,6 +7060,11 @@ async function desktopSyncRewards(opts) {
   const todayTasks = summarizeTaskItems(items, { approx: approx, signedOut: false });
   const todaySearch = counter || prevSearch || null;
   const taskClickIndex = buildTaskClickIndex(pages, cards);
+  /* v3.7 · 点击索引的完成态来自 HTML 解析，SPA 抓取时常缺失；
+     用主界面任务列表（todayTasks）覆盖，保证「自动跳过已完成」真正生效。
+     插件版的 runTaskStates 走同一个共享函数，两端同步逻辑相同。 */
+  taskClickIndex.items = HSA_CORE.applyTaskCompletion(taskClickIndex.items, todayTasks);
+  taskClickIndex.pendingCount = taskClickIndex.items.filter(x => !x.completed).length;
 
   const candidate = {
     pointsSummary: pointsSummary, todayTasks: todayTasks,
@@ -6663,21 +7097,22 @@ async function desktopSyncRewards(opts) {
 
 /* 上传版里所有旧刷新入口统一落到同一套逻辑（函数体不动，只换绑定）。 */
 refreshTodayTasks = async function (token, pages, opts) {
-  const r = await desktopSyncRewards({
-    pages: pages || undefined, fresh: true, reason: 'refreshTasks',
+  const r = await syncGate.request({
+    pages: pages || undefined, reason: 'refreshTasks', force: true,
     token: token, skipInjection: !!(opts && opts.skipInjection)
   });
   return { ok: r.ok, signedOut: r.signedOut, count: (r.todayTasks.items || []).length };
 };
 refreshPointsOnly = async function () {
-  return desktopSyncRewards({ fresh: true, reason: 'refreshPoints' });
+  return syncGate.request({ reason: 'refreshPoints' });
 };
 refreshPointsSummary = async function (pages) {
-  const r = await desktopSyncRewards({ pages: pages || undefined, fresh: true, reason: 'points' });
+  const r = await syncGate.request({ pages: pages || undefined,
+    reason: 'points', force: true });
   return !!r.signedOut;
 };
 refreshToday = async function () {
-  return desktopSyncRewards({ fresh: true, reason: 'refreshToday' });
+  return syncGate.request({ reason: 'refreshToday' });
 };
 
 /* ==========================================================================
@@ -6715,14 +7150,14 @@ completePendingTaskCards = async function (level, token) {
   });
 
   const clickSettings = await getSettings();
-  /* 设置项已反转为「不跳过已完成任务卡」：默认关闭 → 默认跳过已完成卡。
-     下发给主进程的仍是内部指令 skipCompletedCards（是否跳过）。 */
-  const notSkipCompletedCards = !!clickSettings.notSkipCompletedCards;
-  const skipCompletedCards = !notSkipCompletedCards;
+  /* v3.5 · 主进程严格按预设列表点击，不再接收任何「是否跳过」参数。 */
   let r = null;
   try {
     r = await Promise.race([
-      panel.clickAll(clickIndex, { skipCompletedCards: skipCompletedCards, cardClickIntervalSec: clickSettings.cardClickIntervalSec }),
+      panel.clickAll(clickIndex, { cardClickIntervalSec: clickSettings.cardClickIntervalSec,
+        runMode: RUN_SETTINGS && RUN_SETTINGS.runMode,
+        humanLevel: RUN_SETTINGS && RUN_SETTINGS.humanLevel,
+        geoFactor: GEO && GEO.geo ? HSA_GEO.scheduleFactor(Date.now(), GEO.geo).factor : 1 }),
       sleep(Math.max(180000, ((Array.isArray(clickIndex.items) ? clickIndex.items.length : 8) + 10) *
         Math.min(60, Math.max(1, Number(clickSettings.cardClickIntervalSec) || 10)) * 1000 + 120000))
         .then(() => ({ ok: false, reason: 'timeout' }))
@@ -6805,7 +7240,7 @@ restoreUserFocus = async function () { /* 桌面版不抢回系统焦点 */ };
  * v1.3.8 · 精简运行详情 + 积分历史（只追加包装与监听，不改任何核心函数体）
  *
  *  · 详情是单行双语文本，直接显示在 popup 原有的状态行（绿色字位置），
- *    不再新增文本框。文案只保留「做什么 / 在哪 / 下一步 / 多久」。
+ *    不再新增文本框。v3.5 起文案只描述「当前动作」，不提示下一步。
  *  · 延迟动作写 until（= at + delayMs），popup 把 {s} 替换为剩余秒数倒计时。
  *  · 每次同步把「今日积分」按本地日期写入 pointsHistory，供日历按日/周/月汇总。
  *  · 静默开关只由桌面主进程用于视图 bounds；后台业务链路完全不感知，
@@ -6819,19 +7254,12 @@ function desktopActivityShort(u) {
   return String(u || '').replace(/^https?:\/\/(www\.|cn\.)?/, '')
     .replace('rewards.bing.com', 'Rewards').slice(0, 42);
 }
-async function desktopActivityWrite(info) {
-  const o = info || {};
-  const zh = Array.isArray(o.zh) ? o.zh.join(' · ') : String(o.zh || '');
-  const en = Array.isArray(o.en) ? o.en.join(' · ') : String(o.en || '');
-  const now = Date.now();
-  const delayMs = Math.max(0, Math.round(Number(o.delayMs) || 0));
-  const payload = {
-    at: now, until: delayMs ? now + delayMs : 0,
-    state: o.state || 'running', zh: zh, en: en,
-    page: o.page || '', card: o.card || '', next: o.next || '',
-    delayMs: delayMs, query: o.query || ''
-  };
-  const key = payload.state + '|' + delayMs + '|' + zh + '|' + en;
+async function desktopActivityWrite(runState, ctx) {
+  /* v3.5 · 可见文案、详细全文、next 全部由共享 runActivity 生成；
+     与插件版 hsaActivityPush、主进程 desktopActivityPush 逐字一致。 */
+  const payload = HSA_CORE.runActivity(runState, ctx || {});
+  const now = payload.at;
+  const key = payload.state + '|' + payload.delayMs + '|' + payload.zh + '|' + payload.en;
   if (key === desktopActivityLast.key && now - desktopActivityLast.at < 1000) {
     return Promise.resolve();
   }
@@ -6842,9 +7270,11 @@ async function desktopActivityWrite(info) {
       const cur = await load(['runLog']);
       patch.runLog = HSA_CORE.runLogAppend(desktopTrimLog(cur && cur.runLog), {
         at: now, event: 'activity', level: payload.state === 'error' ? 'error' : 'info',
+        platform: HSA_PLATFORM, actor: 'system', category: 'run-step',
         state: payload.state, zh: payload.zh, en: payload.en,
+        detail: payload.fullZh, order: payload.order, list: payload.list,
         page: payload.page, card: payload.card, next: payload.next,
-        query: payload.query, delayMs: delayMs
+        query: payload.query, delayMs: payload.delayMs
       }, now);
     } catch (err) {}
   }
@@ -6886,87 +7316,67 @@ function desktopActivityTaskNames(items, limit) {
 }
 
 /* ① 同步：正在同步 → 同步完成（绿色字），并落下当日积分历史 */
+/* v3.2 · 同步状态文案统一由 syncGate（HSA_CORE.STATUS_LINES）生成；
+   这里只保留与插件版 recordPointsHistory 等价的积分历史落盘。 */
 const desktopActivityOrigSync = desktopSyncRewards;
 desktopSyncRewards = async function (opts) {
-  await desktopActivityWrite({
-    state: 'syncing', page: '/dashboard, /earn',
-    zh: '正在同步 · /dashboard + /earn 读取积分',
-    en: 'Syncing · reading /dashboard + /earn'
-  });
   const r = await desktopActivityOrigSync(opts);
   await desktopActivityRecordHistory(r);
-  const ps = (r && r.pointsSummary) || {};
-  await desktopActivityWrite({
-    state: (r && r.ok) ? 'synced' : 'syncFailed', page: '/dashboard, /earn',
-    zh: (r && r.ok)
-      ? '同步完成 · 今日 ' + desktopActivityFmt(ps.today) + ' 分 / 可用 ' + desktopActivityFmt(ps.available) + ' 分'
-      : '同步未完成 · 保留上次积分数据',
-    en: (r && r.ok)
-      ? 'Synced · today ' + desktopActivityFmt(ps.today) + ' / ' + desktopActivityFmt(ps.available) + ' pts available'
-      : 'Sync incomplete · kept last points'
-  });
   return r;
 };
 
 /* ② 自动执行任务：开始 / 结束，文案精简为一行 */
 const desktopActivityOrigAuto = runAutoComplete;
 runAutoComplete = async function (opts) {
-  await desktopActivityWrite({
-    state: 'autoStart',
-    zh: '开始自动任务 · 同步积分 → 侧栏点击卡片 → 补全搜索',
-    en: 'Auto-start · sync points → sidebar cards → searches'
-  });
+  syncGate.activity('autoStart', { reason: opts && opts.manual ? 'manual' : 'schedule' });
   const r = await desktopActivityOrigAuto(opts);
   const skipped = !!(r && (r.skipped === true || r.reason === 'allDone'));
-  await desktopActivityWrite({
-    state: skipped ? 'allDone' : 'done',
-    zh: skipped ? '全部完成 · 今日任务已做满，无需额外动作'
-      : '任务完成 · 点击 ' + desktopActivityFmt(r && r.clicked) + ' 张卡片 / 搜索 '
-        + desktopActivityFmt(r && r.searches) + ' 次',
-    en: skipped ? 'All done · daily tasks are complete'
-      : 'Done · ' + desktopActivityFmt(r && r.clicked) + ' cards / '
-        + desktopActivityFmt(r && r.searches) + ' searches'
-  });
+  if (skipped) syncGate.activity('allDone', { reason: 'auto-complete' });
+  else syncGate.activity('done', { clicked: r && r.clicked,
+    searches: r && r.searches, reason: 'auto-complete' });
   return r;
 };
 
-/* ③ 任务卡片：点哪张、下一步 */
+/* ③ 任务卡片：严格按预设点击列表，只提示当前动作 */
 const desktopActivityOrigCards = completePendingTaskCards;
 completePendingTaskCards = async function (level, token) {
-  const snap = await load(['taskClickIndex']).catch(() => ({}));
+  const snap = await load(['taskClickIndex', 'todayTasks']).catch(() => ({}));
   const idxItems = (snap && snap.taskClickIndex && snap.taskClickIndex.items) || [];
-  /* 严格按任务列表顺序：不截断成前两张，逐项记下顺序供运行日志核对。 */
-  const ordered = HSA_CORE.taskListNames(HSA_CORE.taskListOrder(idxItems));
+  /* v3.7 · 与主进程 buildTaskPlan 同源：主界面完成态 + 只跳过已完成。
+     提示词里的 m 恒等于实际待点计划长度，不再出现 9/17 式不一致。 */
+  const ordered = HSA_CORE.taskPlanNames(idxItems, snap.todayTasks);
   const names = ordered.join('、');
   const listDetail = ordered.map((n, i) => (i + 1) + '.' + n).join(' → ') || '(空)';
-  await desktopActivityWrite({
-    state: 'clicking', page: '/dashboard, /earn', card: names,
-    zh: '任务列表 ' + ordered.length + ' 张（按顺序）：' + (names || '/dashboard + /earn') + ' · 依次打开确认',
-    en: 'Task list ' + ordered.length + ' (in order): ' + (names || '/dashboard + /earn') + ' · open in order'
+  /* v4.1 · 列表为空时不推送「点卡 0/0」，由原始入口统一短路并写跳过日志。 */
+  if (!ordered.length && !(await hasPendingClickableCards()).ok)
+    return desktopActivityOrigCards(level, token);
+  await desktopActivityWrite('taskList', {
+    page: '/dashboard, /earn', card: names, m: ordered.length,
+    list: names, order: listDetail
   });
   hsaRunLog('task-list', {
     actor: 'system', category: 'run-step', level: 'info', state: 'clicking',
-    zh: '任务列表顺序 ' + ordered.length + ' 张', en: 'Task list order: ' + ordered.length + ' cards',
+    zh: HSA_CORE.runActivity('taskList', { m: ordered.length }).zh,
+    en: HSA_CORE.runActivity('taskList', { m: ordered.length }).en,
     detail: listDetail, count: ordered.length, order: 0
   }).catch(() => {});
   const r = await desktopActivityOrigCards(level, token);
   const clicked = Number(r && r.clicked) || 0;
-  const skippedNote = clicked === 0 ? '（无可执行卡片：已全部完成或侧栏不可用）' : '';
-  const skippedNoteEn = clicked === 0 ? ' (nothing to click: all done or panel unavailable)' : '';
-  await desktopActivityWrite({
-    state: 'clicking', card: names,
-    zh: '已按列表顺序点击 ' + desktopActivityFmt(clicked) + '/' + ordered.length
-      + ' 张卡片' + skippedNote + ' · 下一步：按剩余分数搜索',
-    en: 'Clicked ' + desktopActivityFmt(clicked) + '/' + ordered.length
-      + ' cards in list order' + skippedNoteEn + ' · Next: search'
+  /* v3.6 · 计划 = 任务列表跳过已完成；failed / 未确认写进详细全文，
+     可见文案只报当前点卡进度，m 恒等于待点列表长度。 */
+  const failed = Number(r && r.clickFailed) || 0;
+  const notDone = Math.max(0, ordered.length - clicked);
+  await desktopActivityWrite('cardsDone', {
+    card: names, n: clicked, m: ordered.length, list: listDetail,
+    reason: notDone ? ('未完成 ' + notDone + ' 张（定位失败 ' + failed + ' 张）') : ''
   });
   hsaRunLog('task-list-result', {
     actor: 'system', category: 'result', level: clicked ? 'info' : 'warn',
     state: 'done', result: clicked > 0 ? 'ok' : 'skipped',
-    zh: '任务卡执行结果 ' + clicked + '/' + ordered.length,
-    en: 'Task card result ' + clicked + '/' + ordered.length,
+    zh: HSA_CORE.runActivity('cardsDone', { n: clicked, m: ordered.length }).zh,
+    en: HSA_CORE.runActivity('cardsDone', { n: clicked, m: ordered.length }).en,
     detail: listDetail, count: clicked, order: 0,
-    error: clicked === 0 ? skippedNote : ''
+    error: clicked === 0 ? '无可点击卡片（侧栏不可用或定位失败）' : ''
   }).catch(() => {});
   return r;
 };
@@ -6974,10 +7384,8 @@ completePendingTaskCards = async function (level, token) {
 /* ④ 打开页面：只写简短页面名 */
 const desktopActivityOrigOpen = openOrNavigate;
 openOrNavigate = async function (key, url, active) {
-  await desktopActivityWrite({
-    state: 'opening', page: String(url || ''),
-    zh: '打开页面 · ' + desktopActivityShort(url) + ' · 等待任务卡渲染',
-    en: 'Opening · ' + desktopActivityShort(url) + ' · waiting for cards'
+  await desktopActivityWrite('opening', {
+    page: String(url || ''), reason: desktopActivityShort(url)
   });
   return desktopActivityOrigOpen(key, url, active);
 };
@@ -6987,10 +7395,8 @@ const desktopActivityOrigNap = nap;
 nap = async function (ms, token) {
   const wait = Math.max(0, Math.round(Number(ms) || 0));
   if (wait >= 800) {
-    await desktopActivityWrite({
-      state: 'waiting', delayMs: wait, next: '继续下一步',
-      zh: '{s} 秒后继续 · 下一步：核对积分',
-      en: 'Continuing in {s}s · Next: check points'
+    await desktopActivityWrite('waiting', {
+      delayMs: wait, sec: Math.ceil(wait / 1000), reason: '卡片点击间隔'
     });
   }
   return desktopActivityOrigNap(ms, token);
@@ -7005,19 +7411,13 @@ chrome.storage.onChanged.addListener((changes, area) => {
     load(['currentSearch', 'totalSearch', 'phase']).then(s => {
       const cur = Number(s && s.currentSearch) || 0;
       const total = Number(s && s.totalSearch) || 0;
-      return desktopActivityWrite({
-        state: 'searching', query: q, page: 'Bing /search',
-        zh: '搜索 ' + (cur || 1) + '/' + (total || '?') + ' · 关键词「' + q + '」· 之后核对积分',
-        en: 'Search ' + (cur || 1) + '/' + (total || '?') + ' · "' + q + '" · then check points'
+      return desktopActivityWrite('searching', {
+        query: q, page: 'Bing /search', n: cur || 1, m: total || 0
       });
     }).catch(() => {});
   }
   const ph = changes.phase;
   if (ph && ph.newValue === 'completed') {
-    desktopActivityWrite({
-      state: 'synced',
-      zh: '同步完成 · 积分与任务状态已刷新',
-      en: 'Synced · points and tasks refreshed'
-    }).catch(() => {});
+    desktopActivityWrite('synced', { reason: '积分与任务状态已刷新' }).catch(() => {});
   }
 });

@@ -25,7 +25,9 @@
     "https://weibo.com/*",
     "https://www.toutiao.com/*",
     "https://www.zhihu.com/*",
-    "https://rss.sina.com.cn/*"
+    "https://rss.sina.com.cn/*",
+    "https://ipwho.is/*",
+    "https://ipapi.co/*"
   ],
   "action": {
     "default_popup": "popup.html",

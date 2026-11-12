@@ -17,7 +17,8 @@ const TARGETS = [
 ];
 const FILES = ['hsa-core.js', 'hsa-recovery.js', 'hsa-shared.css',
                'hsa-zip.js', 'hsa-hover-tip.js', 'hsa-pull-refresh.js',
-               'decisions.json'];
+               'hsa-calendar.js', 'hsa-human.js', 'hsa-fingerprint.js',
+               'hsa-geo.js', 'hsa-stealth.js', 'decisions.json'];
 const HEADER = '/* AUTO-GENERATED from shared/ — do not edit; run node scripts/sync-shared.js */\n';
 
 function body(src) {
@@ -25,7 +26,7 @@ function body(src) {
   return s.startsWith(HEADER) ? s.slice(HEADER.length) : s;
 }
 function generated(src, name) {
-  if (name.endsWith('.json')) return src; // JSON 不能带注释
+  if (name.endsWith(".json")) return src; // JSON 不能带注释
   return HEADER + src;
 }
 function read(p) { return fs.readFileSync(p, 'utf8'); }

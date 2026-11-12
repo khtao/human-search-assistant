@@ -19,14 +19,15 @@ const HOST = read('desktop-app/host.html');
 const EH = read('desktop-app/src/popup.html');
 const EP = read('desktop-app/src/popup.js');
 
-test('v2.9 · 两端运行时已无任何浏览器伪装', () => {
+test('v3.7 · 桌面版标准 Chrome 标识；插件版仍不做任何身份改写', () => {
   const files = { 'edge-extension/background.js': EB,
-    'desktop-app/src/background.js': DB, 'desktop-app/main.js': DM,
+    'desktop-app/src/background.js': DB,
     'desktop-app/preload.js': PRE, 'desktop-app/host.html': HOST };
   for (const [name, src] of Object.entries(files)) {
     for (const pat of [/userAgentFallback/, /setUserAgent/, /navigatorScript/,
-      /EDGE_IDENTITY/, /edge-identity/, /SOURCE_UA/, /HSA_APPLY_EDGE_IDENTITY/,
-      /chrome:edge:profile/, /getEdgeProfile/, /applyFetchHeaders/]) {
+      /CHROME_IDENTITY_SCRIPT/, /EDGE_IDENTITY/, /edge-identity/, /SOURCE_UA/,
+      /HSA_APPLY_EDGE_IDENTITY/, /chrome:edge:profile/, /getEdgeProfile/,
+      /applyFetchHeaders/]) {
       assert.doesNotMatch(src, pat, name + ' 仍有 ' + pat);
     }
   }
@@ -34,17 +35,24 @@ test('v2.9 · 两端运行时已无任何浏览器伪装', () => {
     assert.doesNotMatch(src, /'User-Agent':/, name + ' 仍伪造 UA 请求头');
     assert.match(src, /Referer: 'https:\/\/weibo\.com\/'/, name + ' 应保留站点必需 Referer');
   }
+  /* 桌面主进程：只去 Electron 标记，UA / CH / navigator 同源 */
+  assert.match(DM, /const CHROME_BUILD_VERSION = String\(process\.versions\.chrome/);
+  assert.match(DM, /app\.userAgentFallback = CHROME_UA/);
+  assert.match(DM, /const CHROME_CH_UA = '"Chromium";v="'/);
+  assert.match(DM, /function applyChromeIdentityHeaders\(\)/);
+  assert.match(DM, /app\.on\('web-contents-created'/);
+  assert.doesNotMatch(DM, /WEBGL_debug_renderer_info|defineProperty\(screen/);
+  assert.doesNotMatch(DM, /'Electron;v=/);
   assert.equal(fs.existsSync(path.join(ROOT, 'desktop-app/lib/edge-identity.js')), false);
   assert.equal(fs.existsSync(path.join(ROOT, 'tests/edge-identity.test.js')), false);
   for (const p of ['desktop-app/electron-builder.yml', 'desktop-app/electron-builder.win.yml']) {
     assert.doesNotMatch(read(p), /edge-identity\.js/);
     assert.match(read(p), /lib\/runtime-budget\.js/);
   }
-  /* 默认 Bing 是起始页设置，不是伪装 */
   assert.match(DM, /const DEFAULT_BROWSER_HOME = 'https:\/\/www\.bing\.com\/\?mkt=zh-CN'/);
-  assert.match(EH, /不做任何身份伪装/);
-  assert.match(EP, /'desktop\.edgeValue': '默认主页 · Bing'/);
-  assert.match(EP, /'desktop\.edgeValue': 'Home · Bing'/);
+  assert.match(EH, /标准 Chrome 标识/);
+  assert.match(EP, /'desktop\.edgeValue': 'Chrome 标识 · Bing'/);
+  assert.match(EP, /'desktop\.edgeValue': 'Chrome · Bing'/);
 });
 
 test('v2.9 · 插件版预算：缓存收紧、日志/历史词裁剪（纯函数）', () => {
@@ -188,7 +196,7 @@ test('v2.9 · 主进程接线：节流 / 调试期零整页 HTML / 空闲巡检 
   assert.doesNotMatch(DM, /newEdgeView|edgeViews|applyEdgeProfile/);
 });
 
-test('v2.9 · 默认 Bing 与官网链路不变，共享清单仍 7 个文件', () => {
+test('v2.9 · 默认 Bing 与官网链路不变，共享清单 12 个文件（含 hsa-calendar.js）', () => {
   assert.match(DM, /win\.loadURL\(url && url !== 'about:blank' \? url : DEFAULT_BROWSER_HOME\)/);
   assert.match(DM, /openInSidePanel\('https:\/\/rewards\.bing\.com\/dashboard', 'user'\)/);
   for (const p of ['edge-extension/background.js', 'desktop-app/src/background.js']) {
@@ -199,5 +207,5 @@ test('v2.9 · 默认 Bing 与官网链路不变，共享清单仍 7 个文件', 
   const sync = read('scripts/sync-shared.js');
   assert.doesNotMatch(sync, /edge-profile|mv3-budget|runtime-budget/);
   assert.equal((sync.match(/const FILES = \[([\s\S]*?)\];/)[1]
-    .match(/\.js'|\.css'|\.json'/g) || []).length, 7);
+    .match(/\.js'|\.css'|\.json'/g) || []).length, 12);
 });

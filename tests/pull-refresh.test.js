@@ -150,7 +150,10 @@ test('v2.5 · 两端接线一致：指示器 / 共享脚本 / 字典 / 严格模
     assert.match(s, /enabled: \(\) => !body\.classList\.contains\('settings-open'\)/);
     assert.match(s, /blocked: \(\) => strictRunGuard\('refreshTasks'\)/);
     assert.match(s, /await send\('refreshTasks'\)/);
-    assert.match(s, /logUserAction\('pull-refresh'/);
+    /* v3.2 · 一次手势只留一条用户日志（send 统一埋点） */
+    assert.doesNotMatch(s, /logUserAction\('pull-refresh'/);
+    assert.doesNotMatch(s, /logUserAction\('pull-refresh-trigger'/);
+    assert.match(s, /一次下拉手势只留一条/);
     for (const k of ['pull.idle', 'pull.pull', 'pull.armed',
       'pull.refreshing', 'pull.done', 'pull.error', 'pull.blocked']) {
       assert.ok(s.includes("'" + k + "'"), p + ' 缺少字典键 ' + k);
@@ -225,12 +228,12 @@ test('v2.6 · applet 主题视觉：50px 透明区 / 三点 ball-beat / 交错�
     assert.match(s, /class="pull-text" data-pull-text/);
     assert.doesNotMatch(s, /pull-arrow/);
   }
-  /* 零第三方依赖：只复刻主题视觉；v2.8 起共享清单仍为 7 个文件 */
+  /* 零第三方依赖：只复刻主题视觉；v3.3 起共享清单为 12 个文件 */
   const sync = read('scripts/sync-shared.js');
   assert.match(sync, /hsa-pull-refresh\.js/);
   assert.doesNotMatch(sync, /minirefresh/);
   const files = sync.match(/const FILES = \[([\s\S]*?)\];/)[1];
-  assert.equal((files.match(/\.js'|\.css'|\.json'/g) || []).length, 7);
+  assert.equal((files.match(/\.js'|\.css'|\.json'/g) || []).length, 12);
 });
 
 test('v2.6 · default 主题文案语义与两端字典一致', () => {

@@ -19,19 +19,21 @@ const DM = read('desktop-app/main.js');
 const PRE = read('desktop-app/preload.js');
 const GOV = read('desktop-app/lib/memory-governor.js');
 
-test('v3.0 · 共享判定：运行中例外、60s 节流、强制新数据、严格白名单兜底', () => {
+test('v3.2 · 共享判定：运行中例外、30 分钟冷却、强制新数据、严格白名单兜底', () => {
   assert.equal(CORE.SYNC_ON_OPEN.messageType, 'syncOnOpen');
   assert.equal(CORE.SYNC_ON_OPEN.reason, 'ui-open');
-  assert.equal(CORE.SYNC_ON_OPEN.minGapMs, 60000);
+  assert.equal(CORE.SYNC_ON_OPEN.minGapMs, 30 * 60 * 1000);
   assert.equal(CORE.SYNC_ON_OPEN.storageKey, 'syncOnOpenAt');
   assert.equal(CORE.syncOnOpenAllowed(false, null, 1000000), true);
   assert.equal(CORE.syncOnOpenAllowed(false, 0, 1000000), true);
   assert.equal(CORE.syncOnOpenAllowed(true, null, 1000000), false, '运行中一律例外');
   assert.equal(CORE.syncOnOpenAllowed(true, 1, 1000000), false);
-  assert.equal(CORE.syncOnOpenAllowed(false, 940001, 1000000), false, '59999ms 内重复被拦');
-  assert.equal(CORE.syncOnOpenAllowed(false, 940000, 1000000), true, '正好 60s 放行');
-  assert.equal(CORE.syncOnOpenAllowed(false, 1, 1000000), true, '很久没同步放行');
+  assert.equal(CORE.syncOnOpenAllowed(false, 400000, 1000000), false, '10 分钟内重复打开被拦');
+  assert.equal(CORE.syncOnOpenAllowed(false, -800000, 1000000), true, '正好 30 分钟放行');
+  assert.equal(CORE.syncOnOpenAllowed(false, -800001, 1000000), true, '超过 30 分钟放行');
   assert.equal(CORE.syncOnOpenAllowed(false, null, 1000000, 5000), true, '可注入最小间隔');
+  assert.equal(CORE.SYNC_GATE.manualGapMs, 10 * 1000);
+  assert.equal(CORE.SYNC_GATE.internalGapMs, 2 * 1000);
   assert.equal(CORE.syncCachePolicy('ui-open').fresh, true);
   assert.equal(CORE.strictBlockedMessage('syncOnOpen', true), true);
   assert.equal(CORE.strictBlockedMessage('syncOnOpen', false), false);
@@ -55,19 +57,23 @@ test('v3.0 · 两端 popup 同一套 requestSyncOnOpen，桌面额外监听窗�
   assert.match(DM, /for \(const ev of \['show', 'restore'\]\)/);
 });
 
-test('v3.0 · 两端后台 syncOnOpen 分支：一次 fresh 同步 + syncNotice，严格期由白名单拦截', () => {
+test('v3.2 · 两端后台 syncOnOpen 分支：统一闸门 + syncNotice，严格期由白名单拦截', () => {
   for (const [name, src] of [['插件', EB], ['桌面', DB]]) {
     assert.match(src, /msg\.type === HSA_CORE\.SYNC_ON_OPEN\.messageType/, name);
     assert.match(src, /reason: HSA_CORE\.SYNC_ON_OPEN\.reason/, name);
-    assert.match(src, /fresh: true/, name);
+    assert.match(src, /const syncGate = HSA_CORE\.createSyncGate\(\{/, name);
+    assert.match(src, /syncGate\.request\(\{ reason: HSA_CORE\.SYNC_ON_OPEN\.reason \}\)/, name);
     assert.match(src, /strictRunActive && HSA_CORE\.strictBlockedMessage\(msg\.type, true\)/,
       name + ' 严格运行期拦截必须在新分支之前');
     const guard = src.indexOf('strictRunActive && HSA_CORE.strictBlockedMessage');
     const branch = src.indexOf('msg.type === HSA_CORE.SYNC_ON_OPEN.messageType');
     assert.ok(guard >= 0 && guard < branch, name + ' 拦截应先于同步分支');
   }
-  assert.match(EB, /syncRewardsUnified\(\{ fresh: true, noTabs: true,/);
-  assert.match(DB, /desktopSyncRewards\(\{ fresh: true, noTabs: true,/);
+  assert.match(EB, /sync: opts => syncRewardsUnified\(opts\)/);
+  assert.match(DB, /sync: opts => desktopSyncRewards\(opts\)/);
+  const coreSrc = read('shared/hsa-core.js');
+  assert.match(coreSrc, /syncNotice: notice/);
+  assert.match(coreSrc, /createSyncGate: createSyncGate/);
 });
 
 test('v3.0 · 侧栏不再创建即预加载 Bing SPA，只在展开/恢复时加载', () => {

@@ -49,15 +49,18 @@ test('v3.1 · 源码级：res.text() 结果不再被 slice 截断，缓存只收
   assert.doesNotMatch(DB, /htmlCacheMaxBytes: 256 \* 1024/);
 });
 
-test('v3.1 · 同步绝不打开 rewards 标签页：全部同步入口带 noTabs', () => {
+test('v3.2 · 同步绝不打开 rewards 标签页：闸门统一注入 noTabs', () => {
   assert.match(EB,
     /if \(!cards\.length && pages\.reachable && !\(o\.skipInjection\) && !o\.noTabs\)/);
-  const calls = EB.match(/syncRewardsUnified\(\{[^}]*\}\)/g) || [];
-  assert.ok(calls.length >= 6, '应覆盖全部同步入口，实际 ' + calls.length);
-  for (const c of calls) assert.match(c, /noTabs: true/, '同步入口漏了 noTabs: ' + c);
+  assert.match(read('shared/hsa-core.js'),
+    /Object\.assign\(\{\}, o, \{ fresh: true, noTabs: true \}\)/,
+    '闸门统一注入 noTabs');
+  assert.match(EB, /const syncGate = HSA_CORE\.createSyncGate\(\{/);
+  assert.ok((EB.match(/syncGate\.request\(/g) || []).length >= 5);
+  assert.doesNotMatch(EB, /syncRewardsUnified\(\{ fresh: true/);
   /* 打开主界面 / 手动刷新 / 下拉刷新 */
   assert.match(EB, /msg\.type === HSA_CORE\.SYNC_ON_OPEN\.messageType/);
-  assert.match(EB, /syncRewardsUnified\(\{ fresh: true, noTabs: true, reason: reason \}\)/);
+  assert.match(EB, /syncGate\.request\(\{ reason: reason \}\)/);
   assert.match(EP, /await send\('refreshTasks'\)/);
   /* 自动运行的积分读取 / 搜索点击仍可用 openOrNavigate */
   assert.match(EB, /async function readRewardsPage\(/);
@@ -65,12 +68,13 @@ test('v3.1 · 同步绝不打开 rewards 标签页：全部同步入口带 noTab
   assert.match(EB, /async function openOrNavigate\(/);
 });
 
-test('v3.1 · 桌面版同样护栏：跳过隐藏取数视图，透传 noTabs', () => {
+test('v3.2 · 桌面版同样护栏：跳过隐藏取数视图，闸门透传 noTabs', () => {
   assert.match(DB, /if \(opts && opts\.noTabs\)/);
   assert.match(DB, /error: 'no-tabs sync'/);
   assert.match(DB, /noTabs: o\.noTabs/);
-  assert.match(DB, /desktopSyncRewards\(\{ fresh: true, noTabs: true,/);
-  assert.match(DB, /desktopSyncRewards\(\{ fresh: true, noTabs: true, reason: reason \}\)/);
+  assert.match(DB, /sync: opts => desktopSyncRewards\(opts\)/);
+  assert.match(DB, /syncGate\.request\(\{ reason: reason \}\)/);
+  assert.doesNotMatch(DB, /desktopSyncRewards\(\{ fresh: true/);
   /* 面板 / 快照等只读降级保留 */
   assert.match(DB, /desktopFetchFromPanel\(path\)/);
   assert.match(DB, /desktopFetchFromSnapshot\(path\)/);

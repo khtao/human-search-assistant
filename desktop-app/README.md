@@ -43,7 +43,8 @@ sudo chmod 4755 /opt/拟人搜索助手/chrome-sandbox
 - **运行详情**：进度圆圈下方的状态行实时显示同步、点击第几张卡片、下一步动作、搜索关键词与倒计时。
 - **系统托盘**：关闭窗口后驻留托盘，托盘菜单可显示主界面或退出。
 - **桌面专属设置**：「开机自动启动」一项可切换，另有一行只读信息「内置浏览器：Microsoft Edge · Bing」。「静默完成任务」与「侧栏在独立窗口显示」开关均已移除；官网侧栏固定内嵌在主窗口右侧，自带独立滚动条，主界面与设置共用另一根滚动条。
-- **无浏览器伪装（v2.9）**：`edge-identity.js` 已删除；不再设置全局 / 逐视图 UA、不再注册请求头改写钩子、不再注入页面身份覆盖脚本、后台热搜请求也不再伪造 `User-Agent`。内置浏览器使用 Electron 自身真实标识，每次网络请求少一次头改写回调，每个 webContents 少一个常驻 `dom-ready` 闭包。默认主页 `https://www.bing.com/?mkt=zh-CN`、默认搜索 `https://www.bing.com/search?q=` 保留（起始页设置，不是身份伪装）；登录、积分同步、任务侧栏仍显式使用 Rewards 原始 URL。
+- **标准 Chrome 标识（v3.7）**：桌面版内置浏览器只去掉 Electron 自身标记，呈现为正常 Chrome。UA 用真实 `process.versions.chrome` 与真实 OS 构造（`app.userAgentFallback`）；`webRequest.onBeforeSendHeaders` 只对 Bing / Rewards / Microsoft 域注入同源 `sec-ch-ua` / `sec-ch-ua-platform`；外部网页 `dom-ready` 注入短脚本对齐 `navigator.userAgentData` 并清理意外暴露的 Node 全局（`nodeIntegration:false` + `contextIsolation:true` 本已隔离）。三处同源，**不伪造** WebGL / 字体 / 屏幕 / 硬件指纹，也不复用外部 Edge Cookie；旧的 `edge-identity.js`（伪造 Microsoft Edge）保持删除。插件版不做任何身份改写。默认主页 `https://www.bing.com/?mkt=zh-CN`、默认搜索 `https://www.bing.com/search?q=` 保留；登录、积分同步、任务侧栏仍显式使用 Rewards 原始 URL。
+- **统一同步闸门 / 状态文案（v3.2）**：桌面版与插件版共用 `shared/hsa-core.js` 的 `createSyncGate()`（adapter 注入宿主差异，决策零差异）：`ui-open` 30 分钟冷却、`refreshTasks` 10 秒、`start/finish` 2 秒且强制新数据；并发合并、指纹去重、当日全部完成停止全部任务。桌面旧版 `desktopActivityOrigSync` / `OrigAuto` 里的长文案已删除，改由闸门写入两端同构的 `activityDetail`（短文案 + `fullZh/fullEn` 详细全文）；`hsaRunLog` 补 `platform`，`desktopActivityWrite` 补 `platform/actor/category`，日志字段与插件版对齐。
 - **打开主界面同步一次（v3.0）**：popup 初始化与窗口 `show` / `restore` 时各请求一次 `syncOnOpen`，共享判定 `HSA_CORE.syncOnOpenAllowed` 保证「运行中跳过 + 60s 节流」；主进程通过 `ui:opened` 广播通知常驻隐藏的 popup。静默期清理掉的页面快照由这次同步补回。
 - **静默态内存压缩（v3.0）**：`MemoryGovernor` 进入静默时无条件释放**全部**内嵌 `WebContentsView`（含原本展开的侧栏），只保留 host 与 popup 两个必需 renderer；`sideViewRestore` 记录 URL/显隐，退出静默 `onExit` 按需重建，`dispose` 不重建。侧栏创建不再预加载 `DEFAULT_BROWSER_HOME`，改为 `loadSideViewDefault()` 在面板真正展开时加载。静默期 `trimStateSnapshots()` 直接 `delete s.html` 移除两份 600KB 整页快照并收紧 runLog；`setAllThrottling(true)` 额外 `wc.stop()`；`onEnter` 清 HTTP 缓存；巡检 2 分钟且重复回收视图。
 - **桌面版内存/效率专项（与插件版分别优化）**：`lib/runtime-budget.js` 提供纯逻辑 —— ① `makeWriteThrottle` 把「每条日志一次全量 state 美化 JSON 同步写盘」改为紧凑 JSON + 前导立即写 / 150ms 尾随合并，退出前 `flushStateSync()` 强刷；② `diskState()` 只在落盘副本里把两份页面 HTML 快照裁到 256KB、文本裁到 32KB、日志裁到 240 条，**内存态保持完整**；③ `shouldReleaseIdleView()` 配合 `main.js` 的 30s `unref` 巡检，把空闲 90s 的离屏取数 `WebContentsView` 销毁，下次同步按需重建（运行中 / 任务点击期间绝不释放）；④ 调试开关关闭时跳过每次导航的整页 `outerHTML` 读取，消除渲染进程与主进程的大字符串尖峰。后台脚本另把历史词 1000→160；官网 HTML 上限在 v3.1 恢复为 applet 版的 600KB（v2.9 误压到 256KB 会截断响应体、导致积分/任务解析失败，插件版表现为同步时弹出 rewards 官网标签），打开同步 / 手动刷新另加 `noTabs` 护栏跳过隐藏取数视图。
@@ -63,19 +64,55 @@ sudo chmod 4755 /opt/拟人搜索助手/chrome-sandbox
 
 侧栏读不到积分卡或没有可用的主界面任务状态时，回退到 `rewards.bing.com/dashboard`、`/earn` 两页的索引点击。
 
-### 「不跳过已完成任务卡」
+### v4.2 · 强度预设与当日词去重（与插件版同构）
 
-设置项默认**关闭**，即默认跳过已完成的任务卡，只真实点击未完成卡片；开启后点击所有积分卡（含已完成），并且**即使积分与任务全部完成也照常发起点击流程**（搜索配额已满时不会重复搜索）。
+- 后台 `getSettings()` 调用共享 `HSA_HUMAN.applyRunPreset()`，7 项专业数值由拟人强度整组套用；设置页移除全部数值输入框，改成三组只读摘要（切档联动）。严格档不覆盖。
+- `buildQueries()` 从整池取合规词 → 按 UTC+8 日界剔除当日已用 → 取本次条数 → 写 `todayUsedWords`。跨运行、跨宿主重启都不重复。
+- 两端共有设置 DOM 仍逐字一致，桌面专有组排在最后；共享 CSS 新增三组摘要样式并同步到两端副本。
 
-| 设置 | 点击清单（以上传的测试侧栏为例） |
-| --- | --- |
-| 默认关闭 | 即将举行的体育赛事 → 古代印加奇迹 |
-| 开启 | 即将举行的体育赛事 → 曼谷凉爽微风旱季 → 古代印加奇迹 → 探险火星 → 古代建筑 → 你是否知道答案？ → 完成此拼图 |
+### v4.1 · 无可点击卡片时不打开侧栏（与插件版同构）
+
+- 共享 `HSA_CORE.isNonClickableTaskItem()` 把「今日 Bing 搜索」等搜索进度项排除出点击计划；`hasClickableCards()` 双来源判定。
+- 后台 `completePendingTaskCards` 入口（覆盖 `human / tasklist / sidebar / rewards` 全部模式）先短路；主进程 `chrome:task:clickAll` 在 `showSidePanel()` 与 `loadSidebarFlyout()` 之前也短路，返回 `sidebarOpened:false`。
+- 包装层在待点列表为 0 时不推送「点卡 0/0」；短路写 `no-clickable-cards` 运行日志。主界面任务列表与搜索配额判定不变。
+
+### v4.0 · 运行风险规避（与插件版同构）
+
+- 共享 `shared/hsa-stealth.js`，`host.html` 与插件 `background.js` 同步加载；后台 `runAutoComplete` 一次运行锁定 `STEALTH`，`searchLoop` 用 `SESSION_PLAN` 缩放六段预算并在段末离席。
+- 定时链路：`maybeRunAutoTasks()` 命中时间点后先做深夜跳过，`startAutoRun()` 非手动分支加启动抖动；插件侧在 `rebuildAutoAlarm()` 与 `onScheduledRun()` 做同样两件事（宿主注入方式不同，决策函数同源）。
+- 结果页点开结果改走贝塞尔真鼠标轨迹；提交后释放 `Emulation.setFocusEmulationEnabled`，避免后台标签「自认有焦点」整轮常驻。`main.js` 的卡片拟人链路未改。
+- 设置页 02「运行设置」新增拟真键入 / 分段浏览节奏 / 避开深夜 3 个开关与单次配额上限、启动抖动上限 2 个数值项；两端共有 DOM 逐字一致。严格档六项特性恒关。
+
+### v3.9 · 全维度拟人增强（与插件版同构）
+
+- **运行设置**：02 组把「运行节奏 + 拟人强度」合并，新增运行模式（严格 / 拟人增强）、5 个拟人特征开关、5 项基准间隔。默认拟人增强档 / 中强度（20 次搜索 ≈ 30 分钟）。
+- **搜索拟人化**：强度预算 → 6 段随机均匀分配；贝塞尔轨迹 + 时间抖动 + 偶发多余动作 + 结果页浏览 + 会话画像词策略；地理作息系数参与每轮预算。
+- **卡片拟人化**：`main.js` 两条点击路径都先走贝塞尔轨迹，`waitClickSpacing` 改用 `HSA_HUMAN.cardSpacing()` 随机间隔；参数由后台 `panel.clickAll` 透传 `runMode / humanLevel / geoFactor`。
+- **指纹 / 地理**：拟人档启动时在搜索标签页注入 `HSA_FINGERPRINT.collect / patcher` 做交叉校验与清理；`HSA_GEO.probe()` 探测出口 IP 并降级。
+- 三个新共享模块由 `sync-shared.js` 同步到 `desktop-app/shared/`，`host.html` 额外加载供后台使用。严格档代码路径完整保留。
+
+### v3.8 · 设置页重新分类与美化
+
+- 分组顺序与插件版完全一致：01 外观 / 02 运行节奏 / 03 自动任务 / 04 积分日历 / 05 数据与诊断；**06 桌面版专有**排在最后（开机自启、Chrome 标识只读说明）。共有 DOM 两端逐字一致。
+- 5 项固定间隔从「自动完成任务」拆出，集中到「运行节奏」两列网格，纵向占用减少约一半；全部数字输入统一样式。
+- 样式只在 `shared/hsa-shared.css` 维护，由 `sync-shared.js` 同步到两端，避免再出现两端各写一套的情况。
+
+### v3.7 · 完成态权威化 / 拟人搜索间隔 / 标准 Chrome 标识
+
+- **跳过已完成真正生效**：旧版运行时计划只取 `taskClickIndex.items`（从 SPA HTML 解析，完成标记常缺失 → 已完成的卡照点）。同步阶段现在用主界面 `todayTasks.items` 经 `HSA_CORE.applyTaskCompletion()` 覆盖完成态；两端运行时统一走 `buildTaskPlan()`，状态行走 `taskPlanNames()`。插件版 `runTaskStates` 走同一个共享函数，两端逻辑相同。
+- **拟人搜索间隔可配置**：设置页新增键鼠动作间隔 / 页面稳定等待 / 搜索轮间间隔 / 单轮等待 4 项（秒），与卡片点击间隔共用 `INTERVALS` 与 `strictRunPolicy(settings)`；一次运行读取一次，仍是固定节奏，不恢复随机拟人行为。
+- **标准 Chrome 标识**：见上方「标准 Chrome 标识」条目，仅桌面版。
+
+### v3.6 · 只按任务列表点击 / 全完成零动作
+
+桌面版与插件版都以同步生成的任务列表（`taskClickIndex.items` / 插件 `runTaskStates`）为**唯一依据**。共享 `HSA_CORE.pendingTaskItems()` 的**唯一过滤条件**是列表项自带的完成标记（`completed` / `done`）——自动跳过已完成任务卡；`planTaskClicks()` 除此之外一项不删、不合并、不重排。0 分、`kind`（推荐 / 兑换 / 推广）、`scored`、`syncMatched`、侧栏 DOM 完成标记、标题 / URL 黑名单全部降为诊断字段。页面 DOM 扫描只补定位，回退路径也只用任务列表项（不再把实时 DOM 卡 push 进计划）；匹配不到记失败但保留，状态行 `m` 恒等于待点列表长度。
+
+积分与任务**全部完成**时仍由 `sync.allDone` 零动作返回，并由 `syncGate.noteAllDone()` 当日停止所有任务与定时同步（跨 UTC+8 日界自动恢复）；没有任何设置项或 `force` 参数能绕过该停止态。`sidebar-task-cards.js` 的 `planSidebarClicks(cards, skipCompleted)` 只作为库级/离线验证能力保留，运行时不再调用。
 
 ### 判定规则
 
-- **点哪张只看主界面任务状态**：完成与否由同步得到的 `todayTasks.items` 与 `taskClickIndex.items` 决定，**不以下拉侧栏上显示的「已完成 / 未完成」为依据**。侧栏 DOM 的完成标记只作诊断，同步里查不到的卡片按未完成处理。
-- **智能排除不给分卡片**：搜索配额、推荐 / 邀请、兑换 / 奖品、推广活动、签到进度条以及 0 分卡片都不会进入点击计划。
+- **点哪张只看任务列表**：v3.7 起完成态以主界面 `todayTasks.items` 为权威（同步阶段覆盖到点击索引），唯一过滤是「已完成」，其余一项不删；侧栏 DOM 的完成标记、积分徽章、卡片类型、黑名单都只作诊断，不参与决策；DOM 扫描仅用来把列表项定位到真实可点元素。
+- **不使用其它判别方式**：搜索配额、推荐 / 邀请、兑换 / 奖品、推广活动、签到进度条以及 0 分卡片都不再被扫描层排除；是否点击只看任务列表。
 - **真鼠标点击**：统一走 CDP `Input.dispatchMouseEvent`，点击前重算坐标并做遮挡检查，不使用 `el.click()` 或直接导航任务 URL。
 
 `HSA_SIDEBAR_TEST_FILE=<保存页路径>` 可让应用直接加载本地侧栏页面做人工验证。

@@ -58,8 +58,19 @@ document.addEventListener('DOMContentLoaded', () => {
     autoStop: true,
     reduceMotion: false,
     cardClickIntervalSec: HSA_CORE.DEFAULTS.cardClickIntervalSec,
-    runLogEnabled: true,
-    notSkipCompletedCards: false
+    /* v3.7 · 拟人搜索间隔（秒），与后台 DEFAULT_SETTINGS 同源。 */
+    actionGapSec: HSA_CORE.intervalDefaultSec('actionGapMs'),
+    pageStableSec: HSA_CORE.intervalDefaultSec('pageStableWaitMs'),
+    roundGapSec: HSA_CORE.intervalDefaultSec('roundGapMs'),
+    roundWaitSec: HSA_CORE.intervalDefaultSec('roundWaitMs'),
+    /* v3.9 · 运行设置（严格档仍可选；默认拟人增强档 / 中强度） */
+    runMode: 'human', humanLevel: 2,
+    humanNoise: true, humanBrowse: true, humanSession: true,
+    fingerprintCheck: true, geoConsistency: true,
+    /* v4.0 · 风险规避（与 shared/hsa-stealth.js DEFAULTS 同源） */
+    stealthTyping: true, burstPacing: true, avoidNightRun: true,
+    singleRunCapPct: 60, scheduleJitterMin: 20, geoCacheHours: 12,
+    runLogEnabled: true
   };
   const AUTO_DEFAULTS = { enabled: false, times: [], count: 30, level: 3 };
   const AUTO_MAX_TIMES = 10;
@@ -135,10 +146,55 @@ document.addEventListener('DOMContentLoaded', () => {
       'pace.normal': '标准', 'pace.relaxed': '舒缓',
       'settings.autostop': '到达每日上限即停止', 'settings.autostopHint': 'Bing 搜索计满后提前结束',
       'settings.automation': '自动化',
-      'settings.seconds': '秒', 'auto.cardInterval': '卡片点击间隔', 'auto.cardIntervalHint': '相邻两张卡片的 CDP 鼠标点击至少间隔设定秒数（1–60 秒）',
-      'auto.notSkipCompleted': '不跳过已完成任务卡', 'auto.notSkipCompletedHint': '默认关闭：跳过已完成任务卡，只点未完成卡片；开启后点所有积分卡，且积分与任务全部完成时仍发起点击流程',
+      'settings.seconds': '秒', 'auto.cardInterval': '卡片点击间隔', 'auto.cardIntervalHint': '相邻两张任务卡片的点击间隔（1–60 秒）',
+      /* v3.7 · 拟人搜索间隔（固定节奏，两端同源） */
+      'auto.intervals': '拟人搜索间隔',
+      'auto.actionGap': '键鼠动作间隔', 'auto.actionGapHint': '每次点击 / 输入 / 回车之间的固定间隔（0.1–5 秒）',
+      'auto.pageStable': '页面稳定等待', 'auto.pageStableHint': '搜索提交后等待结果页稳定的固定时间（0.5–15 秒）',
+      'auto.roundGap': '搜索轮间间隔', 'auto.roundGapHint': '两轮搜索之间的固定间隔（1–60 秒）',
+      'auto.roundWait': '单轮等待', 'auto.roundWaitHint': '单轮搜索流程内的固定等待（0.5–15 秒）',
+      /* v3.8 · 设置页重排：分组标题与副标题（两端同源） */
+      'settings.subtitle': '偏好 · 节奏 · 数据',
+      'settings.appearanceDesc': '语言、主题与界面动效',
+      'timing.title': '运行节奏', 'timing.desc': '5 项固定间隔，运行开始后整轮不变',
+      'auto.desc': '定时计划、搜索次数与启动时间',
+      'diag.desc': '轻量运行日志与按需实时抓取',
+      'desktop.desc': '仅桌面版可用的窗口与系统选项',
+      /* v3.9 · 运行设置（模式 / 强度 / 全维度拟人特征） */
+      'run.title': '运行设置',
+      'run.desc': '模式、强度与拟人特征；间隔按强度预算随机均匀分配',
+      'run.mode': '运行模式', 'run.modeStrict': '严格', 'run.modeHuman': '拟人增强',
+      'run.modeHint': '严格档为固定节奏；拟人增强档启用全维度噪声',
+      'run.levelHint': '低 15 分钟 / 中 30 分钟 / 高 60 分钟（完成 20 次自动搜索）',
+      'run.levelNote': '低 15 分钟 · 中 30 分钟 · 高 60 分钟（20 次搜索）',
+      'run.noise': '动作噪声',
+      'run.noiseHint': '时间抖动、三次贝塞尔鼠标轨迹（含过冲）、偶发多余动作',
+      'run.browse': '结果页浏览',
+      'run.browseHint': '适度滚动、偶尔点开一条结果再返回、鼠标移动',
+      'run.session': '会话画像与词策略',
+      'run.sessionHint': '一次运行固定画像；当日 ≥5 字热搜原文轻微重排',
+      'run.fingerprint': '环境指纹自检',
+      'run.fingerprintHint': '读真实值交叉校验；去自动化标记、补缺失对象，不硬编码硬件值',
+      'run.geo': '地理一致性',
+      'run.geoHint': '出口 IP / 时区 / 语言 / 搜索市场 / 当地作息自洽，探测失败降级',
+      'run.baseIntervalsDesc': '基准间隔：严格档为固定值；拟人档作为随机均匀分配的基准',
+      'run.presetDesc': '七项专业参数已按强度收进三组，切档即整组生效，无需逐项调整',
+      'run.groupQuota': '配额与启动', 'run.groupAction': '动作节奏', 'run.groupPage': '页面与轮次',
+      'run.presetStrictNote': '严格档沿用固定默认值，不套用以上预设',
+      'run.riskDesc': '风险规避：降低自动化行为的可区分性，不承诺不被判定',
+      'run.typing': '拟真键入',
+      'run.typingHint': '分块上屏、非均匀键间隔与偶发退格纠错；词内容逐字不变',
+      'run.burst': '分段浏览节奏',
+      'run.burstHint': '把一轮搜索拆成数个浏览段，段间一次较长离席，总时长仍守恒',
+      'run.night': '避开深夜',
+      'run.nightHint': '定时运行在当地 0–6 点直接跳过；手动启动不受限',
+      'run.cap': '单次配额上限',
+      'run.capHint': '单次运行最多跑剩余搜索配额的百分比，避免一次刷满',
+      'run.jitter': '启动抖动上限',
+      'run.jitterHint': '定时启动时间随机抖动上限，避免每天同一秒启动',
+      'settings.minutes': '分钟',
       'auto.title': '自动完成任务', 'auto.enable': '定时自动运行',
-      'auto.enableHint': '到点自动点击积分任务卡片，并按剩余分数搜索；关闭总开关时仍可配置时间点',
+      'auto.enableHint': '到点自动点击任务卡并按剩余分数搜索，最多 10 个时间点',
       'auto.count': '搜索次数上限', 'auto.countHint': '按今日 Bing 搜索剩余分数自动决定，不超过此值', 'auto.times': '启动时间',
       'auto.timesHint': '留空直接点「添加」：首个默认 08:00，之后比最晚时间顺延 30 分钟，自动去重排序', 'auto.addTime': '添加',
       'auto.level': '拟人强度', 'auto.levelHint': '影响鼠标轨迹、滚动与每轮时长',
@@ -194,8 +250,8 @@ document.addEventListener('DOMContentLoaded', () => {
       'desktop.title': '桌面版', 'desktop.autoLaunch': '开机自动启动',
       'desktop.autoLaunchHint': '登录系统后自动运行桌面版',
       'desktop.onlyDesktop': '该设置仅桌面版可用，浏览器插件中不可设置',
-      'desktop.edge': '内置浏览器', 'desktop.edgeValue': '默认主页 · Bing',
-      'desktop.edgeHint': '内置浏览器不做任何 UA / 客户端提示 / navigator 伪装，使用 Electron 自身标识；默认主页与搜索引擎为 Bing，登录与积分页面仍按官网地址打开',
+      'desktop.edge': '内置浏览器', 'desktop.edgeValue': 'Chrome 标识 · Bing',
+      'desktop.edgeHint': '内置浏览器使用标准 Chrome 标识（去掉 Electron 标记）：UA、客户端提示与 navigator 取同一份真实 Chromium 版本和操作系统，不伪造硬件指纹；默认主页与搜索引擎为 Bing，登录与积分页面仍按官网地址打开',
       'desktop.autoLaunchOn': '已开启开机自动启动', 'desktop.autoLaunchOff': '已关闭开机自动启动'
     },
     en: {
@@ -203,6 +259,7 @@ document.addEventListener('DOMContentLoaded', () => {
       'login.checking': 'Not verified', 'login.in': 'Signed in', 'login.out': 'Not signed in',
       'login.action': 'Sign in',
       'login.hint': "Open the official sign-in page on the right; points and tasks are read from that same page",
+      'login.tip': 'Click to toggle sidebar · double-click to open Rewards',
       'ring.tipTitle': "Today at a glance", 'ring.tipHint': 'Hover to show · press the main button to start',
       'a11y.login': 'Sign-in status; click to sign in or re-check',
       'a11y.panel': 'Show or hide the official Rewards page on the right',
@@ -266,10 +323,55 @@ document.addEventListener('DOMContentLoaded', () => {
       'pace.normal': 'Normal', 'pace.relaxed': 'Relaxed',
       'settings.autostop': 'Stop at daily limit', 'settings.autostopHint': 'End early once Bing search is maxed',
       'settings.automation': 'Automation',
-      'settings.seconds': 'sec', 'auto.cardInterval': 'Card click interval', 'auto.cardIntervalHint': 'Minimum time between CDP mouse clicks on cards (1–60 seconds)',
-      'auto.notSkipCompleted': 'Do not skip completed task cards', 'auto.notSkipCompletedHint': 'Off by default: skip completed cards; when on, click every scored card even if all points and tasks are done',
+      'settings.seconds': 'sec', 'auto.cardInterval': 'Card click interval', 'auto.cardIntervalHint': 'Minimum time between clicks on task cards (1–60 seconds)',
+      /* v3.7 · Human-search intervals (fixed cadence, shared by both builds) */
+      'auto.intervals': 'Search intervals',
+      'auto.actionGap': 'Action gap', 'auto.actionGapHint': 'Fixed gap between click / type / Enter (0.1–5 sec)',
+      'auto.pageStable': 'Page settle', 'auto.pageStableHint': 'Fixed wait for the result page to settle (0.5–15 sec)',
+      'auto.roundGap': 'Round gap', 'auto.roundGapHint': 'Fixed gap between two search rounds (1–60 sec)',
+      'auto.roundWait': 'Round wait', 'auto.roundWaitHint': 'Fixed wait inside one search round (0.5–15 sec)',
+      /* v3.8 · Settings regroup */
+      'settings.subtitle': 'Preferences · Pacing · Data',
+      'settings.appearanceDesc': 'Language, theme and motion',
+      'timing.title': 'Run cadence', 'timing.desc': 'Five fixed intervals, locked for each run',
+      'auto.desc': 'Schedule, search quota and start times',
+      'diag.desc': 'Lightweight logs and on-demand live captures',
+      'desktop.desc': 'Desktop-only window and system options',
+      /* v3.9 · Run settings */
+      'run.title': 'Run settings',
+      'run.desc': 'Mode, level and human traits; intervals randomized but evenly allocated',
+      'run.mode': 'Run mode', 'run.modeStrict': 'Strict', 'run.modeHuman': 'Human+',
+      'run.modeHint': 'Strict uses fixed cadence; Human+ enables full-spectrum noise',
+      'run.levelHint': 'Low 15 min / Medium 30 min / High 60 min (20 searches)',
+      'run.levelNote': 'Low 15 min · Medium 30 min · High 60 min (20 searches)',
+      'run.noise': 'Action noise',
+      'run.noiseHint': 'Time jitter, cubic bezier mouse paths with overshoot, occasional extra actions',
+      'run.browse': 'Result browsing',
+      'run.browseHint': 'Gentle scrolling, occasional result open + back, mouse moves',
+      'run.session': 'Session profile & word order',
+      'run.sessionHint': 'One profile per run; mild reorder of ≥5-char trending words',
+      'run.fingerprint': 'Fingerprint check',
+      'run.fingerprintHint': 'Cross-check real values; strip automation markers, fill missing objects',
+      'run.geo': 'Geo consistency',
+      'run.geoHint': 'Align IP, timezone, language, market and local hours; degrade gracefully',
+      'run.baseIntervalsDesc': 'Base intervals: fixed in strict, budget baseline in human+',
+      'run.presetDesc': 'Seven advanced values are grouped into three presets; switching a level applies the whole set',
+      'run.groupQuota': 'Quota & start', 'run.groupAction': 'Action rhythm', 'run.groupPage': 'Page & rounds',
+      'run.presetStrictNote': 'Strict mode keeps fixed defaults and does not use these presets',
+      'run.riskDesc': 'Risk mitigation: reduce bot-like signals, no guarantee of detection',
+      'run.typing': 'Human typing',
+      'run.typingHint': 'Chunked input, uneven key gaps, occasional backspace; query unchanged',
+      'run.burst': 'Burst pacing',
+      'run.burstHint': 'Split a run into browsing bursts with one long break; total time preserved',
+      'run.night': 'Avoid deep night',
+      'run.nightHint': 'Skip scheduled runs at local 0–6; manual starts are unaffected',
+      'run.cap': 'Per-run quota cap',
+      'run.capHint': 'Max share of remaining search quota used in one run',
+      'run.jitter': 'Start jitter',
+      'run.jitterHint': 'Bounded random offset for scheduled start time',
+      'settings.minutes': 'min',
       'auto.title': 'Auto-complete tasks', 'auto.enable': 'Scheduled runs',
-      'auto.enableHint': 'Click scored cards and search at the set times; times stay editable when the switch is off',
+      'auto.enableHint': 'Click unfinished cards, then search as needed, up to 10 start times',
       'auto.count': 'Search cap', 'auto.countHint': 'Decided from remaining Bing search points, capped here', 'auto.times': 'Start times',
       'auto.timesHint': 'Leave empty and tap Add: first defaults to 08:00, then +30 min from the latest time; auto-sorted and deduped', 'auto.addTime': 'Add',
       'auto.level': 'Human-like intensity', 'auto.levelHint': 'Affects mouse path, scrolling and round length',
@@ -325,8 +427,8 @@ document.addEventListener('DOMContentLoaded', () => {
       'desktop.title': 'Desktop', 'desktop.autoLaunch': 'Launch at login',
       'desktop.autoLaunchHint': 'Start the desktop app after signing in to the system',
       'desktop.onlyDesktop': 'This option is desktop-only and disabled in the extension',
-      'desktop.edge': 'Built-in browser', 'desktop.edgeValue': 'Home · Bing',
-      'desktop.edgeHint': 'No UA / client-hint / navigator spoofing — the built-in browser uses Electron own identity; Bing is the default home page and search engine, sign-in and points pages still open at their official URLs',
+      'desktop.edge': 'Built-in browser', 'desktop.edgeValue': 'Chrome · Bing',
+      'desktop.edgeHint': 'The built-in browser presents a standard Chrome identity with Electron markers removed; UA, client hints and navigator share one real Chromium version and OS, with no hardware-fingerprint spoofing; Bing stays the default home page and search engine',
       'desktop.autoLaunchOn': 'Launch at login enabled', 'desktop.autoLaunchOff': 'Launch at login disabled'
     }
   };
@@ -346,6 +448,12 @@ document.addEventListener('DOMContentLoaded', () => {
     return s;
   };
 
+  /* v3.4 · 字典未命中时保留 HTML 里的静态文案，绝不把 key 原文显示给用户。
+     插件版曾因缺 lang.zh / lang.en 把语言按钮显示成 "lang.zh / lang.en"。 */
+  const hasI18n = key =>
+    !!(I18N[lang] && Object.prototype.hasOwnProperty.call(I18N[lang], key)) ||
+    Object.prototype.hasOwnProperty.call(I18N.zh, key);
+
   /* v1.0.9 · 右侧官网面板按钮：桌面版显示并可切换，扩展版无该能力则隐藏。
      面板状态由主进程广播 ui:panel（窗口 resize / 自动运行时也会同步）。 */
   function setPanelButton(open) {
@@ -362,11 +470,17 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function applyI18n() {
     root.setAttribute('lang', lang === 'zh' ? 'zh-CN' : 'en');
-    document.title = t('app.title');
-    for (const el of document.querySelectorAll('[data-i18n]')) el.textContent = t(el.dataset.i18n);
-    for (const el of document.querySelectorAll('[data-i18n-title]')) el.title = t(el.dataset.i18nTitle);
-    for (const el of document.querySelectorAll('[data-i18n-aria]')) el.setAttribute('aria-label', t(el.dataset.i18nAria));
-    for (const el of document.querySelectorAll('[data-i18n-ph]')) el.placeholder = t(el.dataset.i18nPh);
+    if (hasI18n('app.title')) document.title = t('app.title');
+    /* v3.4 · 只有字典确实收录该键时才覆盖 DOM；否则保留 HTML 静态文案，
+       任何语言下都不会把 "lang.zh" 这类 key 泄漏到界面。 */
+    for (const el of document.querySelectorAll('[data-i18n]'))
+      if (hasI18n(el.dataset.i18n)) el.textContent = t(el.dataset.i18n);
+    for (const el of document.querySelectorAll('[data-i18n-title]'))
+      if (hasI18n(el.dataset.i18nTitle)) el.title = t(el.dataset.i18nTitle);
+    for (const el of document.querySelectorAll('[data-i18n-aria]'))
+      if (hasI18n(el.dataset.i18nAria)) el.setAttribute('aria-label', t(el.dataset.i18nAria));
+    for (const el of document.querySelectorAll('[data-i18n-ph]'))
+      if (hasI18n(el.dataset.i18nPh)) el.placeholder = t(el.dataset.i18nPh);
     setPanelButton(panelOpen);
     const label = root.getAttribute('data-theme') === 'dark' ? t('theme.toLight') : t('theme.toDark');
     themeBtn.setAttribute('aria-label', label);
@@ -833,8 +947,22 @@ document.addEventListener('DOMContentLoaded', () => {
   function showSyncedNotice() {
     syncedNoticeUntil = Date.now() + 8000;
     oneShotRefresh(8100);
-    setStatus(t('status.synced'), 'completed all-done', false);
-    statusEl.setAttribute('aria-label', t('status.synced'));
+    /* v3.2 · 绿色状态提示重构：可见短文案 ≤15 字且带积分数值，
+       完整来源/耗时/系统时间放 aria-label 与悬浮提示，两端完全相同。 */
+    const apply = ps => {
+      const l = lang === 'en' ? 'en' : 'zh';
+      const ctx = { today: ps && ps.today, available: ps && ps.available,
+        at: Date.now(), source: (ps && ps.dataSourceLabel) || '官网实时' };
+      const short = HSA_CORE.statusText('synced', ctx, l);
+      const full = HSA_CORE.statusFull('synced', ctx, l);
+      setStatus(short, 'completed all-done', false, full);
+      statusEl.setAttribute('aria-label', full);
+    };
+    try {
+      chrome.storage.local.get(['pointsSummary'])
+        .then(s => apply(s && s.pointsSummary))
+        .catch(() => apply(null));
+    } catch (err) { apply(null); }
   }
 
 
@@ -862,15 +990,20 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function setStatus(text, cls, isQuery, title) {
-    const key = `${cls}|${isQuery ? 'q' : ''}|${text}|${lang}`;
+    /* v3.2 · 可见文本统一压到 ≤15 个中文字符（英文等显示长度）；
+       详细全文放 title / aria-label，悬浮提示（已在最上层）可读完整信息。 */
+    const full = String(title || text || '');
+    const short = HSA_CORE.clampStatus(String(text == null ? '' : text));
+    const key = `${cls}|${isQuery ? 'q' : ''}|${short}|${lang}`;
     if (statusEl.dataset.key === key) return;
     /* v1.3.1：状态文字直接替换，不做宽度补间 / 文字弹跳，刷新时界面更安静 */
     statusEl.dataset.key = key;
     statusEl.style.width = '';
     statusEl.className = 'status ' + cls + (isQuery ? ' show-query' : '');
-    statusText.textContent = text;
-    if (title) statusEl.title = title;
+    statusText.textContent = short;
+    if (full && full !== short) statusEl.title = full;
     else statusEl.removeAttribute('title');
+    statusEl.setAttribute('aria-label', full || short);
   }
 
   function setTip(id, title, lines, note) {
@@ -977,9 +1110,10 @@ document.addEventListener('DOMContentLoaded', () => {
     /* v1.3.8：运行详情直接复用这个状态行（原绿色小字所在位置），不新增文本框 */
     const act = activityLine(d, cls);
     if (act) {
-      setStatus(act.text, act.cls, false);
-      statusEl.setAttribute('aria-label', act.text);
-      statusEl.title = act.text; // 长句被省略时，悬停仍可读到全文
+      const a = act.detail || {};
+      const full = (lang === 'en' ? a.fullEn : a.fullZh) || a.fullZh || act.text;
+      setStatus(act.text, act.cls, false, full);
+      statusEl.setAttribute('aria-label', full);
       if (act.until) scheduleCountdown(act.until, act.template, act.cls);
       else stopCountdown();
     } else {
@@ -987,7 +1121,11 @@ document.addEventListener('DOMContentLoaded', () => {
       if (noticeActive) {
         setStatus(t('status.allDone'), 'completed all-done', false);
       } else if (syncedActive) {
-        setStatus(t('status.synced'), 'completed all-done', false);
+        const ps = d.pointsSummary || {};
+        const l = lang === 'en' ? 'en' : 'zh';
+        const ctx = { today: ps.today, available: ps.available, at: Date.now() };
+        setStatus(HSA_CORE.statusText('synced', ctx, l), 'completed all-done',
+          false, HSA_CORE.statusFull('synced', ctx, l));
       } else if (d.cooldownGaveUp && !running) {
         // 等待次数用尽仍无法增加积分：明确告知已提前结束
         setStatus(t('status.gaveUp'), 'completed all-done', false);
@@ -1343,20 +1481,48 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
+  /* v4.2 · 三组预设只读摘要：只跟随拟人强度，不接受逐项编辑。 */
+  function renderRunPreset() {
+    const box = $('run-preset-groups');
+    const strictNote = $('run-preset-strict');
+    if (!box) return;
+    const pre = HSA_HUMAN.presetValues(settings.humanLevel, settings.runMode);
+    box.hidden = !pre;
+    if (strictNote) strictNote.hidden = !!pre;
+    if (!pre) return;
+    const vals = pre.values || {};
+    for (const el of box.querySelectorAll('[data-preset]')) {
+      const v = vals[el.getAttribute('data-preset')];
+      if (v != null) el.textContent = String(v);
+    }
+  }
+
   function syncSettingsUI() {
     setSegment('set-theme', savedThemeMode());
     setSegment('set-lang', langMode);
     $('set-reduce').checked = !!settings.reduceMotion;
     $('set-run-log').checked = settings.runLogEnabled !== false;
-    $('set-not-skip-completed').checked = !!settings.notSkipCompletedCards;
-    $('set-card-interval').value = HSA_CORE.clampIntervalSec(settings.cardClickIntervalSec);
-    /* 搜索次数 / 节奏 / 每日上限使用自动任务设置；桌面和插件 UI 保持一致。 */
+    /* v3.9 · 运行设置回填；v4.2 · 数值项由强度预设只读展示。 */
+    setSegment('set-run-mode', settings.runMode === 'strict' ? 'strict' : 'human');
+    setSegment('set-auto-level',
+      String(HSA_HUMAN.levelFromValue(settings.humanLevel).n));
+    for (const [id, key] of [
+      ['set-human-noise', 'humanNoise'], ['set-human-browse', 'humanBrowse'],
+      ['set-human-session', 'humanSession'], ['set-fingerprint', 'fingerprintCheck'],
+      ['set-geo', 'geoConsistency'],
+      ['set-stealth-typing', 'stealthTyping'], ['set-stealth-burst', 'burstPacing'],
+      ['set-stealth-night', 'avoidNightRun']
+    ]) {
+      const el = $(id);
+      if (el) el.checked = settings[key] !== false;
+    }
+    renderRunPreset();
     syncAutoUI();
     renderPointsCalendar();
   }
 
   onSegment('set-lang', v => setLang(v));
-  onSegment('cal-mode', v => { calMode = v; renderPointsCalendar(); });
+  onSegment('cal-mode', v => calendar.setMode(v));
   $('cal-prev').addEventListener('click', () => moveCalendar(-1));
   $('cal-next').addEventListener('click', () => moveCalendar(1));
   onSegment('set-theme', mode => applyTheme(mode));
@@ -1372,13 +1538,8 @@ document.addEventListener('DOMContentLoaded', () => {
     saveSettings({ runLogEnabled: e.target.checked });
   });
 
-  $('set-not-skip-completed').addEventListener('change', e =>
-    saveSettings({ notSkipCompletedCards: e.target.checked }));
-  $('set-card-interval').addEventListener('change', e => {
-    const interval = HSA_CORE.clampIntervalSec(e.target.value);
-    e.target.value = interval;
-    saveSettings({ cardClickIntervalSec: interval });
-  });
+  /* v4.2 · 以上 5 项间隔已改由拟人强度三组预设统一套用，不再逐项编辑。 */
+
 
   /* 自动完成任务设置 */
   /* 诊断数据：导出运行日志 / 实时抓取关键网页（设置页操作）。
@@ -1453,7 +1614,30 @@ document.addEventListener('DOMContentLoaded', () => {
   $('set-auto-count').addEventListener('change', e => {
     if (e.target.value !== '') saveAutoTasks({ count: e.target.value });
   });
-  onSegment('set-auto-level', v => saveAutoTasks({ level: Number(v) }));
+  onSegment('set-auto-level', v => {
+    saveAutoTasks({ level: Number(v) });
+    saveSettings({ humanLevel: Number(v) });
+  });
+  /* v3.9 · 运行设置：模式 / 强度 / 全维度拟人特征（两端同源）。 */
+
+  /* v4.2 · 单次配额上限 / 启动抖动上限同样由强度预设套用。 */
+  onSegment('set-run-mode', v => saveSettings({ runMode: v }));
+  const HSA_FEATURE_INPUTS = [
+    ['set-human-noise', 'humanNoise'], ['set-human-browse', 'humanBrowse'],
+    ['set-human-session', 'humanSession'], ['set-fingerprint', 'fingerprintCheck'],
+    ['set-geo', 'geoConsistency'],
+    ['set-stealth-typing', 'stealthTyping'], ['set-stealth-burst', 'burstPacing'],
+    ['set-stealth-night', 'avoidNightRun']
+  ];
+  for (const [id, key] of HSA_FEATURE_INPUTS) {
+    const el = $(id);
+    if (!el) continue;
+    el.addEventListener('change', () => {
+      if (strictRunGuard('saveSettings')) { syncSettingsUI(); return; }
+      saveSettings({ [key]: el.checked });
+    });
+  }
+
 
   /* 启动时间：不手动输入时按默认规则生成
      · 第一个时间点 = 当地时间 08:00
@@ -1576,247 +1760,32 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   /* ------------------------------------------------------------------
-   * v1.3.8 · 积分日历（支付宝收益日历风格）
-   *  · 日 / 周 / 月三种汇总，统一圆角正方形格子
-   *  · 格子只显示积分，不显示日期数字；日期放在悬停提示里
-   *  · 过去无积分 = 浅灰；未来 = 不显示方块；有积分 = 淡蓝；今日 = 细描边
+   * v3.3 · 积分日历：模型 / 渲染 / 导航 / 复位全部由 shared/hsa-calendar.js
+   * 统一实现，桌面版与插件版逐字一致。可折叠、紧凑零空白：
+   *   · 日视图只列当月有积分的日期；周视图裁剪到当月边界绝不跨月；
+   *   · 月视图只列有积分的月；三种视图都不铺空白占位格；
+   *   · 打开设置自动复位到日视图 / 最近有积分月并展开。
    * ---------------------------------------------------------------- */
-  let calMode = 'day';
-  let calCursor = new Date();
-  let lastCalHist = {};
-  let calNavTimer = null;
-  let calRenderId = 0;
-  const pad2 = n => String(n).padStart(2, '0');
-  const dkey = d => d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate());
-  const addDays = (d, n) => {
-    const x = new Date(d.getFullYear(), d.getMonth(), d.getDate());
-    x.setDate(x.getDate() + n);
-    return x;
-  };
-  const mondayOf = d => addDays(d, -((d.getDay() + 6) % 7));
-  const histValue = (h, k) => {
-    const e = h && h[k];
-    if (!e) return null;
-    const v = Number(e.today != null ? e.today : e.points);
-    return Number.isFinite(v) ? v : null;
-  };
-  const ptsText = n => Number(n || 0).toLocaleString();
-  const calDateLabel = d => lang === 'en'
-    ? ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][d.getMonth()]
-      + ' ' + d.getDate()
-    : (d.getMonth() + 1) + '月' + d.getDate() + '日';
-
-  function calCell(value, cls, tip, tag) {
-    const cell = document.createElement('div');
-    cell.className = 'cal-cell ' + cls;
-    cell.setAttribute('role', 'gridcell');
-    cell.textContent = value == null ? '·' : ptsText(value);
-    if (tip) { cell.dataset.tip = tip; cell.dataset.tipRole = 'cell'; }
-    if (tag) {
-      const el = document.createElement('span');
-      el.className = 'cal-tag';
-      el.textContent = tag;
-      cell.appendChild(el);
-    }
-    return cell;
-  }
-  function dayClass(k, value, todayK) {
-    if (k > todayK) return 'cal-day cal-blank';
-    return 'cal-day ' + (value > 0 ? 'cal-has' : 'cal-past-empty')
-      + (k === todayK ? ' cal-today' : '');
-  }
-  // Week: spacious horizontal cards with a 7-day activity strip. Month:
-  // twelve balanced summary cards. Both are real DOM, not canvas snapshots.
-  function periodCell(value, cls, tag, tip, detail) {
-    const cell = document.createElement('div');
-    cell.className = 'cal-cell ' + cls;
-    cell.setAttribute('role', 'gridcell');
-    if (tip) { cell.dataset.tip = tip; cell.dataset.tipRole = 'cell'; }
-    const heading = document.createElement('span');
-    heading.className = 'cal-period-name';
-    heading.textContent = tag;
-    const points = document.createElement('strong');
-    points.className = 'cal-period-points';
-    points.textContent = value != null && value > 0 ? ptsText(value) : '—';
-    const days = document.createElement('span');
-    days.className = 'cal-period-days';
-    days.textContent = detail && detail.subtext || '';
-    cell.append(heading, points, days);
-    if (detail && Array.isArray(detail.daily)) {
-      const strip = document.createElement('div');
-      strip.className = 'cal-week-strip';
-      for (const d of detail.daily) {
-        const bar = document.createElement('span');
-        bar.className = 'cal-week-dot' + (d.future ? ' is-future' : d.value > 0 ? ' is-earned' : '');
-        bar.title = d.label + ' · ' + (d.value > 0 ? ptsText(d.value) : '0');
-        bar.setAttribute('aria-label', bar.title);
-        strip.appendChild(bar);
-      }
-      cell.appendChild(strip);
-    }
-    return cell;
-  }
-
-  async function renderPointsCalendar() {
-    const renderId = ++calRenderId;
-    const grid = $('cal-grid');
-    if (!grid) return;
-    let s = {};
-    try { s = await chrome.storage.local.get(['pointsHistory', 'pointsSummary']); } catch {}
-    if (renderId !== calRenderId) return;
-    const hist = Object.assign({}, (s && s.pointsHistory) || {});
-    lastCalHist = Object.assign({}, hist);
-    const ps = (s && s.pointsSummary) || {};
-    const now = new Date();
-    const todayK = dkey(now);
-    if (!hist[todayK] && Number.isFinite(ps.today)) {
-      hist[todayK] = { today: ps.today, at: Date.now() };
-    }
-    const weekdays = $('cal-weekdays');
-    if (weekdays) {
-      weekdays.textContent = '';
-      if (calMode === 'day') {
-        const names = lang === 'en'
-          ? ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
-          : ['一', '二', '三', '四', '五', '六', '日'];
-        for (const n of names) {
-          const sp = document.createElement('span');
-          sp.textContent = n;
-          weekdays.appendChild(sp);
-        }
-      }
-    }
-    const range = $('cal-range'), sum = $('cal-summary');
-    const heroTotal = $('cal-total'), heroLabel = $('cal-hero-label');
-    grid.className = 'cal-grid cal-' + calMode;
-    grid.textContent = '';
-    const y = calCursor.getFullYear(), m = calCursor.getMonth();
-    // Period values determine which cards are highlighted; daily values determine
-    // the true day-average, day-maximum, and number of earning days in every view.
-    const vals = [];
-    const earningDays = [];
-    if (calMode === 'day') {
-      if (range) range.textContent = y + ' / ' + pad2(m + 1);
-      const start = mondayOf(new Date(y, m, 1));
-      for (let i = 0; i < 42; i++) {
-        const d = addDays(start, i);
-        const inMonth = d.getMonth() === m;
-        const k = dkey(d);
-        const v = inMonth ? histValue(hist, k) : null;
-        const blank = !inMonth || k > todayK;
-        if (inMonth && v > 0 && k <= todayK) { vals.push(v); earningDays.push(v); }
-        const tip = blank ? '' : (v > 0
-          ? t('calendar.cellTip', { date: calDateLabel(d), points: ptsText(v) })
-          : t('calendar.noPointsTip', { date: calDateLabel(d) }));
-        grid.appendChild(calCell(blank ? null : (v > 0 ? v : null),
-          blank ? 'cal-day cal-blank' : dayClass(k, v, todayK), tip));
-      }
-    } else if (calMode === 'week') {
-      if (range) range.textContent = y + ' / ' + pad2(m + 1);
-      const first = new Date(y, m, 1);
-      const start = mondayOf(first);
-      const daysInMonth = new Date(y, m + 1, 0).getDate();
-      const weeks = Math.ceil((((first.getDay() + 6) % 7) + daysInMonth) / 7);
-      for (let w = 0; w < weeks; w++) {
-        let total = 0, hit = 0;
-        const weekStart = addDays(start, w * 7);
-        const weekEnd = addDays(weekStart, 6);
-        const daily = [];
-        for (let i = 0; i < 7; i++) {
-          const d = addDays(weekStart, i), k = dkey(d);
-          const within = d.getMonth() === m && k <= todayK;
-          const v = within ? histValue(hist, k) : null;
-          if (v > 0) { total += v; hit++; earningDays.push(v); }
-          daily.push({value:v || 0, label:calDateLabel(d), future: !within});
-        }
-        if (hit) vals.push(total);
-        const tag = t('calendar.weekLabel', {n:w + 1}) + '  ·  '
-          + pad2(weekStart.getMonth() + 1) + '/' + pad2(weekStart.getDate())
-          + ' – ' + pad2(weekEnd.getMonth() + 1) + '/' + pad2(weekEnd.getDate());
-        const future = dkey(weekStart) > todayK;
-        const cls = 'cal-week ' + (future ? 'cal-blank' : hit ? 'cal-has' : 'cal-past-empty');
-        const tip = future ? '' : (hit
-          ? t('calendar.cellTip', {date:tag, points:ptsText(total)})
-          : t('calendar.noPointsTip', {date:tag}));
-        const details = {daily:daily, subtext:t('calendar.earnedDays', {n:hit})};
-        grid.appendChild(periodCell(future ? null : total, cls, tag, tip, details));
-      }
-    } else {
-      if (range) range.textContent = String(y);
-      for (let mm = 0; mm < 12; mm++) {
-        let total = 0, hit = 0;
-        const prefix = y + '-' + pad2(mm + 1);
-        const future = prefix > todayK.slice(0, 7);
-        for (const k of Object.keys(hist)) {
-          if (k.slice(0, 7) !== prefix || k > todayK) continue;
-          const v = histValue(hist, k);
-          if (v > 0) { total += v; hit++; earningDays.push(v); }
-        }
-        if (hit) vals.push(total);
-        const tag = t('calendar.monthLabel', {n:mm + 1});
-        const cls = 'cal-month ' + (future ? 'cal-blank' : hit ? 'cal-has' : 'cal-past-empty');
-        const tip = future ? '' : (hit
-          ? t('calendar.cellTip', {date:tag, points:ptsText(total)})
-          : t('calendar.noPointsTip', {date:tag}));
-        grid.appendChild(periodCell(future ? null : total, cls, tag, tip,
-          {subtext:future ? '' : t('calendar.earnedDays', {n:hit})}));
-      }
-    }
-    const total = vals.reduce((a, b) => a + b, 0);
-    // A week/month contains multiple earning days: report actual daily
-    // averages and daily peaks instead of averaging whole period totals.
-    const avg = earningDays.length ? Math.round(total / earningDays.length) : 0;
-    const max = earningDays.length ? Math.max.apply(null, earningDays) : 0;
-    if (heroTotal) heroTotal.textContent = ptsText(total);
-    if (heroLabel) heroLabel.textContent = t(calMode === 'month'
-      ? 'calendar.yearLabel' : 'calendar.totalLabel');
-    if (sum) {
-      sum.textContent = t('calendar.summary', {
-        total: ptsText(total), avg: ptsText(avg), max: ptsText(max), n: earningDays.length
-      }) + (earningDays.length ? '' : ' · ' + t('calendar.empty'));
-    }
-    setSegment('cal-mode', calMode);
-    /* 禁止跳转到完全没有积分记录的周期：按钮禁用 + moveCalendar 二次校验。 */
-    const hasPointsIn = step =>
-      HSA_CORE.calendarNavAllowed(hist, calMode, y, m, step, todayK);
-    for (const [id, step] of [['cal-prev', -1], ['cal-next', 1]]) {
-      const btn = $(id);
-      if (!btn) continue;
-      const empty = !hasPointsIn(step);
-      btn.disabled = empty;
-      btn.classList.toggle('cal-nav-empty', empty);
-      btn.setAttribute('data-empty', String(empty));
-      btn.setAttribute('aria-description', empty ? t('calendar.navEmpty') : '');
-    }
-  }
-
-  /* 每次打开设置：积分日历自动复位到当天 / 日视图（两版一致）。 */
-  function resetCalendar() {
-    const r = HSA_CORE.calendarReset();
-    calCursor = r.cursor;
-    calMode = r.mode;
-    renderPointsCalendar();
-  }
+  const calendar = globalThis.HSA_CALENDAR.createController({
+    doc: document, $: $, t: t, mount: false,
+    getLang: () => lang,
+    setSegment: setSegment,
+    onSegment: onSegment,
+    storage: chrome.storage.local,
+    logUserAction: logUserAction,
+    navAllowed: (hist, mode, y, m, step, todayK) =>
+      HSA_CORE.calendarNavAllowed(hist, mode, y, m, step, todayK),
+    resetBase: () => HSA_CORE.calendarReset()
+  });
+  function renderPointsCalendar() { return calendar.render(); }
+  function resetCalendar() { return calendar.reset(); }
+  function moveCalendar(step) { return calendar.move(step); }
   function calNavNotice() {
+    /* 导航被拦截：写 calendar-nav-blocked 用户日志并显示 calendar.navBlocked。 */
+    logUserAction('calendar-nav-blocked', 'calendar nav blocked');
     const el = $('cal-nav-msg');
-    if (!el) return;
-    el.textContent = t('calendar.navBlocked');
-    el.hidden = false;
-    clearTimeout(calNavTimer);
-    calNavTimer = setTimeout(() => { el.hidden = true; }, 2600);
-  }
-  function moveCalendar(step) {
-    const y = calCursor.getFullYear(), m = calCursor.getMonth();
-    /* 禁止跳转到完全没有积分记录的日期 / 周期（共享纯逻辑，两端口径一致）。 */
-    if (!HSA_CORE.calendarNavAllowed(lastCalHist, calMode, y, m, step, dkey(new Date()))) {
-      calNavNotice();
-      logUserAction('calendar-nav-blocked', calMode + ' step=' + step);
-      return;
-    }
-    calCursor = calMode === 'month'
-      ? new Date(y + step, m, 1)
-      : new Date(y, m + step, 1);
-    renderPointsCalendar();
+    if (el) el.textContent = t('calendar.navBlocked');
+    return calendar.notice();
   }
 
   /* 桌面版专有设置：扩展端没有这组 DOM，直接返回。 */
@@ -1871,12 +1840,9 @@ document.addEventListener('DOMContentLoaded', () => {
         error: t('pull.error'), blocked: t('pull.blocked')
       }),
       onRefresh: async () => {
+        /* v3.2 · 一次下拉手势只留一条用户操作日志（send 已统一埋点）。 */
         await send('refreshTasks');
         refresh();
-        logUserAction('pull-refresh', '下拉刷新页面（手势触发）');
-      },
-      onLog: (phase, detail) => {
-        if (phase === 'trigger') logUserAction('pull-refresh-trigger', detail);
       }
     });
   }

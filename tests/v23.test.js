@@ -106,7 +106,8 @@ test('v2.3 · 日历：无积分记录的周期禁止跳转，打开设置自动
   assert.ok(r.cursor instanceof Date);
   for (const p of ['edge-extension/popup.js', 'desktop-app/src/popup.js']) {
     const s = read(p);
-    assert.match(s, /HSA_CORE\.calendarNavAllowed\(lastCalHist/);
+    assert.match(s, /HSA_CORE\.calendarNavAllowed\(/);
+    assert.match(s, /HSA_CALENDAR\.createController\(/);
     assert.match(s, /logUserAction\('calendar-nav-blocked'/);
     assert.match(s, /function openSettings\(\)[\s\S]{0,220}resetCalendar\(\)/);
     assert.match(s, /HSA_CORE\.calendarReset\(\)/);
@@ -130,10 +131,14 @@ test('v2.3 · 任务卡严格按任务列表顺序依次执行', () => {
   assert.match(main, /HSA_CORE\.taskListNames\(/);
   assert.match(read('desktop-app/lib/sidebar-task-cards.js'), /domOrder/);
   const bg = read('desktop-app/src/background.js');
-  assert.match(bg, /HSA_CORE\.taskListNames\(HSA_CORE\.taskListOrder\(idxItems\)\)/);
+  /* v3.6 · 包装层列表长度与实际计划同源：都走 pendingTaskItems */
+  assert.match(bg, /HSA_CORE\.taskPlanNames\(idxItems, snap\.todayTasks\)/);
   assert.match(bg, /hsaRunLog\('task-list'/);
   assert.match(bg, /hsaRunLog\('task-list-result'/);
-  assert.match(bg, /已按列表顺序点击/);
+  /* v3.5 · 提示词统一由共享 runActivity 生成，只报当前动作、不提示下一步 */
+  assert.doesNotMatch(bg, /已按列表顺序点击|下一步：/);
+  assert.match(bg, /desktopActivityWrite\('cardsDone'/);
+  assert.match(CORE.RUN_LINES.cardsDone[0], /点卡完成/);
 });
 
 test('v2.3 · 运行日志：系统时间 / 用户操作 / 运行过程 / 结果 / 错误', () => {

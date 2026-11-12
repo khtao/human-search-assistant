@@ -135,3 +135,321 @@
   .pull-refresh[data-state="refreshing"] .ball-beat .dot,
   .pull-refresh.loading-applet .ball-beat .dot { animation: none; opacity: .85; }
 }
+
+/* ==========================================================================
+ * v3.3 · 积分日历：可折叠 + 紧凑零空白（两端唯一真源，在 popup.css 之后加载）
+ *   · <details> 折叠，展开时箭头旋转；收起时不占高度；
+ *   · 三种视图都只渲染「有积分」的周期单元，绝不铺 42 格 / 12 格空白；
+ *   · 小卡片横向流式排布，无 aspect-ratio 撑高，始终紧凑。
+ * ======================================================================== */
+.cal-fold > summary {
+  list-style: none; cursor: pointer;
+  display: flex; align-items: center; justify-content: space-between;
+}
+.cal-fold > summary::-webkit-details-marker { display: none; }
+.cal-fold > summary::after {
+  content: '›'; font-size: 16px; line-height: 1;
+  color: var(--fg-tertiary, #8a94a6); transition: transform 180ms ease;
+}
+.cal-fold[open] > summary::after { transform: rotate(90deg); }
+.cal-fold[open] .cal-head { margin-top: 8px; }
+
+/* 紧凑：压缩顶部大数字、分段控件与图例，去掉日历内部的空白行 */
+.cal-hero { padding: 4px 0 6px; gap: 1px; }
+.cal-total { font-size: 22px; }
+.cal-segmented { margin-bottom: 6px; }
+.cal-weekdays:empty { display: none; }
+.cal-grid.cal-compact {
+  display: flex; flex-wrap: wrap; align-content: flex-start;
+  gap: 6px; padding: 2px 0 4px; min-height: 0;
+}
+.cal-grid.cal-compact .cal-cell {
+  position: static; aspect-ratio: auto; min-height: 0; min-width: 66px;
+  flex: 0 0 auto; width: auto; height: auto;
+  display: flex; flex-direction: column; align-items: flex-start;
+  justify-content: center; gap: 1px;
+  padding: 6px 9px; border-radius: 9px; text-align: left;
+  font-size: 11px; font-weight: 600;
+}
+.cal-grid.cal-compact .cal-cell .cal-tag {
+  position: static; left: auto; right: auto; bottom: auto;
+  text-align: left; font-size: 9px; font-weight: 500; opacity: .68;
+  white-space: nowrap;
+}
+.cal-grid.cal-compact .cal-cell .cal-value {
+  font-size: 15px; font-weight: 700; line-height: 1.15;
+  font-variant-numeric: tabular-nums; letter-spacing: -.02em;
+}
+.cal-grid.cal-compact .cal-week-strip {
+  grid-column: auto; grid-row: auto;
+  display: flex; gap: 3px; align-items: center; margin-top: 2px;
+}
+.cal-grid.cal-compact .cal-week-dot { width: 8px; height: 5px; }
+.cal-grid.cal-compact .cal-empty {
+  width: 100%; padding: 10px 4px; text-align: center;
+  font-size: 11px; color: var(--fg-tertiary, #8a94a6);
+}
+.cal-grid.cal-compact .cal-cell.cal-today { outline-offset: -2px; }
+.cal-summary { margin: 4px 0 2px; }
+.cal-legend { margin: 5px 0 2px; }
+
+
+/* ==========================================================================
+ * v3.8 · 设置页重新分类与外观美化（两端共用，AUTO-GENERATED 副本由 sync-shared 生成）
+ *   分组：01 外观 / 02 运行节奏 / 03 自动任务 / 04 积分日历 / 05 数据与诊断 / 06 桌面专有
+ *   样式只加新类、不改既有 ID 与行为；数字输入统一，间隔项两列紧凑排列。
+ * ======================================================================== */
+
+/* 顶部：标题 + 右侧分组总览副标 */
+.settings-head {
+  padding: 14px 20px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.settings-head-sub {
+  margin-left: auto;
+  min-width: 0;
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  color: var(--fg-tertiary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 分组卡片：更圆润、hover 微亮 */
+.set-group {
+  padding: 4px 14px 8px;
+  border-radius: 16px;
+  transition: border-color 180ms ease, box-shadow 180ms ease;
+}
+.set-group:hover { border-color: var(--border-strong); }
+
+/* 组头：序号徽标 + 标题 + 一行说明 */
+.set-group-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 0 9px;
+}
+.set-group-heading { min-width: 0; flex: 1; }
+.set-group-head .set-title {
+  padding: 0;
+  font-size: 12.5px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  text-transform: none;
+  color: var(--fg);
+}
+.set-desc {
+  margin: 2px 0 0;
+  font-size: 10.5px;
+  line-height: 1.4;
+  color: var(--fg-tertiary);
+}
+.set-badge {
+  flex: 0 0 auto;
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  border-radius: 9px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+  box-shadow: 0 2px 6px rgba(0, 102, 255, 0.18);
+}
+.set-group[data-tone="violet"] .set-badge { background: linear-gradient(135deg, #7c6cf6, #a78bfa); box-shadow: 0 2px 6px rgba(124,108,246,.22); }
+.set-group[data-tone="blue"]   .set-badge { background: linear-gradient(135deg, #0a7cff, #4db2ff); box-shadow: 0 2px 6px rgba(10,124,255,.22); }
+.set-group[data-tone="amber"]  .set-badge { background: linear-gradient(135deg, #f59e0b, #fbbf24); box-shadow: 0 2px 6px rgba(245,158,11,.22); }
+.set-group[data-tone="teal"]   .set-badge { background: linear-gradient(135deg, #0d9488, #34d399); }
+.set-group[data-tone="rose"]   .set-badge { background: linear-gradient(135deg, #e11d48, #fb7185); box-shadow: 0 2px 6px rgba(225,29,72,.20); }
+.set-group[data-tone="slate"]  .set-badge { background: linear-gradient(135deg, #475569, #94a3b8); }
+
+/* 行：padding 内收 + 圆角 hover，组头后第一行不画分隔线 */
+.set-row {
+  min-height: 42px;
+  padding: 7px 8px;
+  margin: 0 -8px;
+  border-radius: 10px;
+  transition: background-color 160ms ease;
+}
+.set-row:hover { background: color-mix(in srgb, var(--accent) 5%, transparent); }
+.set-group-head + .set-row { border-top: none; }
+.set-row.column { padding: 9px 8px; gap: 7px; }
+.set-label { font-size: 12.5px; }
+
+/* 全部数字输入统一外观（原来只有 #set-card-interval 有样式） */
+.set-inline-number input[type="number"] {
+  width: 68px;
+  min-width: 0;
+  box-sizing: border-box;
+  padding: 6px 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: 9px;
+  background: var(--surface-raised);
+  color: var(--fg);
+  font: inherit;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  transition: border-color 160ms ease, box-shadow 160ms ease;
+}
+.set-inline-number input[type="number"]:hover { border-color: var(--fg-tertiary); }
+.set-inline-number input[type="number"]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.set-unit { font-size: 11px; color: var(--fg-tertiary); }
+
+/* 02 运行节奏：5 项固定间隔两列小卡，纵向占用减少约一半 */
+.set-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin: 2px 0 5px;
+}
+.set-grid > .set-row {
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: center;
+  gap: 7px;
+  min-height: 0;
+  margin: 0;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-top: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+}
+.set-grid > .set-row:hover { border-color: var(--border-strong); }
+.set-grid > .set-row .set-label { font-size: 11.5px; font-weight: 650; }
+.set-grid > .set-row .set-inline-number { justify-content: space-between; gap: 8px; }
+.set-grid > .set-row .set-inline-number input[type="number"] { width: 100%; flex: 1; }
+@media (max-width: 350px) { .set-grid { grid-template-columns: 1fr; } }
+
+/* 04 积分日历：用 ::before 补统一序号徽标（summary 结构保持不变） */
+.cal-fold > summary {
+  gap: 10px;
+  padding: 12px 0 8px;
+  font-size: 12.5px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  text-transform: none;
+  color: var(--fg);
+}
+.cal-fold > summary::before {
+  content: '04';
+  order: -1;
+  width: 26px;
+  height: 26px;
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  border-radius: 9px;
+  background: linear-gradient(135deg, #0d9488, #34d399);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  box-shadow: 0 2px 6px rgba(13,148,136,.20);
+}
+.cal-fold[open] > summary { padding-bottom: 6px; }
+
+/* 说明文字 / 操作区 */
+.diag-note { line-height: 1.55; }
+.diag-actions .small-btn { flex: 1 1 auto; text-align: center; }
+
+/* 底部恢复默认：虚线次要按钮 */
+.reset-btn {
+  margin-top: 4px;
+  border-style: dashed;
+  padding: 8px 16px;
+}
+
+/* 减少动画偏好：关掉入场与 hover 过渡 */
+body.reduce-motion .settings.open .set-group,
+body.reduce-motion .settings.open .reset-btn { animation: none; }
+body.reduce-motion .set-group,
+body.reduce-motion .set-row,
+body.reduce-motion .set-inline-number input[type="number"],
+body.reduce-motion .cal-fold > summary::after { transition: none; }
+
+
+/* v3.9 · 运行设置：特征开关网格 + 基准间隔说明 */
+.set-hint {
+  margin: 0 0 8px;
+  padding: 6px 9px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--fg-secondary);
+}
+.set-feature-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  margin: 2px 0 10px;
+}
+.set-feature-grid > .set-row.compact {
+  min-height: 0;
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-top: 1px solid var(--border);
+  border-radius: 10px;
+  gap: 6px;
+}
+.set-feature-grid > .set-row.compact .set-label { font-size: 11px; font-weight: 650; }
+.set-feature-grid > .set-row.compact:last-child { grid-column: 1 / -1; }
+.set-feature-grid .switch { transform: scale(0.9); transform-origin: right center; }
+.set-group > .set-desc { margin: 0 0 6px; }
+@media (max-width: 350px) { .set-feature-grid { grid-template-columns: 1fr; } }
+
+/* ==========================================================================
+ * v4.2 · 三组预设只读摘要（强度联动，不出现任何可编辑的专业数值项）
+ * ======================================================================== */
+.preset-groups {
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px; margin: 12px 0 10px;
+}
+.preset-groups[hidden], #run-preset-strict[hidden] { display: none !important; }
+.preset-group {
+  border: 1px solid var(--line, rgba(120, 130, 150, .18));
+  border-radius: 14px; padding: 11px 12px 9px;
+  background: var(--card-soft, rgba(120, 140, 180, .05));
+}
+.preset-group[data-group="page"] { grid-column: 1 / -1; }
+.preset-group-head { display: flex; align-items: center; gap: 7px; margin-bottom: 7px; }
+.preset-group-head::before {
+  content: ''; width: 7px; height: 7px; border-radius: 50%;
+  background: linear-gradient(135deg, #5b8cff, #8f6bff); flex: none;
+}
+.preset-group[data-group="action"] .preset-group-head::before { background: linear-gradient(135deg, #43c6ac, #5b8cff); }
+.preset-group[data-group="page"] .preset-group-head::before { background: linear-gradient(135deg, #f0a45b, #e46b8c); }
+.preset-group-name { font-size: 12px; font-weight: 600; letter-spacing: .02em; opacity: .82; }
+.preset-rows { display: grid; gap: 5px; }
+.preset-group[data-group="page"] .preset-rows { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.preset-item {
+  display: flex; align-items: baseline; gap: 6px;
+  font-size: 11.5px; line-height: 1.5; opacity: .78; min-width: 0;
+}
+.preset-item > span:first-child { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.preset-item b {
+  font-variant-numeric: tabular-nums; font-size: 14px; font-weight: 650;
+  color: var(--accent, #3f6fe5); opacity: 1; flex: none;
+}
+.preset-unit { font-size: 10.5px; opacity: .7; flex: none; }
+@media (max-width: 350px) {
+  .preset-groups { grid-template-columns: 1fr; }
+  .preset-group[data-group="page"] { grid-column: auto; }
+  .preset-group[data-group="page"] .preset-rows { grid-template-columns: 1fr; }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .preset-group { transition: border-color .18s ease, background .18s ease; }
+  .preset-group:hover { border-color: rgba(91, 140, 255, .42); }
+}

@@ -50,17 +50,120 @@ const { DebugCapture } = require('./lib/debug-capture');
 const DBG = new DebugCapture();
 const C = require('./lib/core');
 const HSA_CORE = require('./shared/hsa-core.js');
+const HSA_HUMAN = require('./shared/hsa-human.js');
 const RUNTIME_BUDGET = require('./lib/runtime-budget.js');
 const SidebarCards = require('./lib/sidebar-task-cards');
 
 /* ==========================================================================
- * v2.9 · 已移除全部浏览器伪装
- *   · 不再设置全局 UA，也不再逐视图改写 UA；
- *   · 不再注入客户端提示头，也不再注册请求头改写钩子；
- *   · 不再在每个页面注入身份覆盖脚本（省掉常驻闭包与 dom-ready 监听）；
- *   内置浏览器使用 Electron 自身真实身份。仅保留上一轮要求的默认主页 /
- *   默认搜索引擎为 Bing（属于起始页设置，与身份伪装无关）。
+ * v3.7 · 桌面内置浏览器：标准 Chrome 标识（适度、自洽，不做过度伪装）
+ *
+ * 目标：不要被一眼认出是 Electron，而是一台正常的 Chrome。
+ *   · 只去掉 Electron 自身标记：默认 UA 里会带 `Electron/x.y.z`，
+ *     UA-CH 品牌里也可能缺 `Google Chrome`；
+ *   · UA / sec-ch-ua / navigator.userAgentData 一律取同一份真实 Chromium
+ *     版本（process.versions.chrome）与真实操作系统（process.platform），
+ *     三处同源，不会出现「UA 报 140、CH 报 131」这类自相矛盾；
+ *   · 刻意不伪造平台版本 / 架构 / WebGL / 字体 / 屏幕 / devicePixelRatio，
+ *     也不启动外部 Edge 或复用其 Cookie —— 伪造越多越容易穿帮；
+ *   · nodeIntegration:false + contextIsolation:true 已隔离 Node 全局，
+ *     注入脚本只做一次防御性清理，不常驻闭包。
+ *   · 仅作用于桌面版；插件版本来就运行在真实浏览器里，不需要任何改动。
  * ======================================================================== */
+const CHROME_BUILD_VERSION = String(process.versions.chrome || '131.0.0.0');
+const CHROME_MAJOR = String((CHROME_BUILD_VERSION.split('.')[0] || '131'));
+const CHROME_PLATFORM_TOKEN = process.platform === 'win32'
+  ? 'Windows NT 10.0; Win64; x64'
+  : process.platform === 'darwin' ? 'Macintosh; Intel Mac OS X 10_15_7' : 'X11; Linux x86_64';
+const CHROME_UA_PLATFORM = process.platform === 'win32' ? 'Windows'
+  : process.platform === 'darwin' ? 'macOS' : 'Linux';
+const CHROME_UA = 'Mozilla/5.0 (' + CHROME_PLATFORM_TOKEN + ') AppleWebKit/537.36 '
+  + '(KHTML, like Gecko) Chrome/' + CHROME_BUILD_VERSION + ' Safari/537.36';
+const CHROME_CH_UA = '"Chromium";v="' + CHROME_MAJOR + '", "Google Chrome";v="'
+  + CHROME_MAJOR + '", "Not?A_Brand";v="99"';
+const CHROME_TARGET_HOST = /(^|\.)(bing\.com|microsoft\.com|live\.com|msn\.com|aka\.ms)$/i;
+
+/** 页面主世界脚本：把 UA-CH 数据对象对齐到 UA，顺手清理意外暴露的 Node 全局。 */
+const CHROME_IDENTITY_SCRIPT = `(() => {
+  try {
+    const ver = ${JSON.stringify(CHROME_BUILD_VERSION)};
+    const major = ${JSON.stringify(CHROME_MAJOR)};
+    const platform = ${JSON.stringify(CHROME_UA_PLATFORM)};
+    const brands = [
+      { brand: 'Chromium', version: major },
+      { brand: 'Google Chrome', version: major },
+      { brand: 'Not?A_Brand', version: '99' }
+    ];
+    const fullVersionList = [
+      { brand: 'Chromium', version: ver },
+      { brand: 'Google Chrome', version: ver },
+      { brand: 'Not?A_Brand', version: '99.0.0.0' }
+    ];
+    const uaData = {
+      brands, mobile: false, platform,
+      getHighEntropyValues: async () => ({
+        brands: brands.slice(), mobile: false, platform,
+        platformVersion: '', architecture: '', bitness: '', model: '',
+        fullVersionList: fullVersionList.slice(), uaFullVersion: ver
+      }),
+      toJSON: () => ({ brands: brands.slice(), mobile: false, platform })
+    };
+    Object.defineProperty(navigator, 'userAgentData', {
+      configurable: true, get: () => uaData
+    });
+    for (const k of ['process', 'require', 'module', 'global', 'Buffer', '__dirname', '__filename']) {
+      try { if (k in window) delete window[k]; } catch (e) {}
+    }
+  } catch (e) {}
+  return true;
+})()`;
+
+/** 网络层：只改写访问 Bing / Rewards / Microsoft 域的请求，去掉 Electron 头。 */
+function applyChromeIdentityHeaders() {
+  const sess = getAppSession();
+  if (!sess || !sess.webRequest ||
+      typeof sess.webRequest.onBeforeSendHeaders !== 'function') return;
+  try {
+    sess.webRequest.onBeforeSendHeaders(
+      { urls: ['http://*/*', 'https://*/*'] }, (details, callback) => {
+        const headers = Object.assign({}, details.requestHeaders || {});
+        let host = '';
+        try { host = new URL(details.url).hostname.toLowerCase(); } catch (e) {}
+        if (!CHROME_TARGET_HOST.test(host)) {
+          callback({ requestHeaders: headers });
+          return;
+        }
+        for (const k of Object.keys(headers)) {
+          const lk = k.toLowerCase();
+          if (lk === 'user-agent' || lk.indexOf('sec-ch-ua') === 0) delete headers[k];
+        }
+        headers['User-Agent'] = CHROME_UA;
+        headers['sec-ch-ua'] = CHROME_CH_UA;
+        headers['sec-ch-ua-mobile'] = '?0';
+        headers['sec-ch-ua-platform'] = '"' + CHROME_UA_PLATFORM + '"';
+        callback({ requestHeaders: headers });
+      });
+  } catch (e) {}
+}
+
+/** 每个外部网页视图在 dom-ready 时对齐 navigator.userAgentData（很短，不常驻）。 */
+function attachChromeIdentity(webContents) {
+  if (!webContents || typeof webContents.on !== 'function') return;
+  webContents.on('dom-ready', () => {
+    let url = '';
+    try { url = webContents.getURL ? webContents.getURL() : ''; } catch (e) {}
+    if (!/^https?:\/\//i.test(url)) return;
+    if (typeof webContents.executeJavaScript !== 'function') return;
+    try {
+      const result = webContents.executeJavaScript(CHROME_IDENTITY_SCRIPT, true);
+      if (result && typeof result.catch === 'function') result.catch(() => {});
+    } catch (e) {}
+  });
+}
+if (typeof app.on === 'function') {
+  try {
+    app.on('web-contents-created', (_evt, wc) => attachChromeIdentity(wc));
+  } catch (e) {}
+}
 const DEFAULT_BROWSER_HOME = 'https://www.bing.com/?mkt=zh-CN';
 const DEFAULT_SEARCH_ENGINE = 'https://www.bing.com/search?q=';
 const { MemoryGovernor, trimSnapshotHtml, SNAPSHOT_HTML_LIMIT } = require('./lib/memory-governor');
@@ -86,8 +189,8 @@ function getAppSession() {
   return APP_SESSION;
 }
 
-/* v2.9 · 不再注册任何请求头改写钩子：每次网络请求少一次 webRequest 回调，
-   Electron 自带 UA / 客户端提示直接透传。 */
+/* v3.7 · 身份钩子由 applyChromeIdentityHeaders() 在 app.whenReady 里注册；
+   替身 / 无头环境没有 webRequest 时静默跳过，不影响验证链。 */
 /** app.whenReady() 的第一件事：拿到会话并挂上 Cookie 同步监听。 */
 function initAppSession() {
   if (APP_SESSION) return APP_SESSION;
@@ -219,18 +322,12 @@ function emitStorageChanges(before, patch, opts) {
   return changes;
 }
 
-/* v1.3.8 · 主进程写精简运行详情（与后台同一份 activityDetail 结构）。
-   静默开关不参与这里：无论是否静默，卡片 / 页面 / 下一步详情都照常写入，
-   popup 在进度圆圈下方原状态行显示，与正常流程完全一致。 */
-function desktopActivityPush(info) {
+/* v3.5 · 主进程运行提示：与后台、插件版共用 HSA_CORE.runActivity。
+   只传 (state, ctx)，可见文案 / 详细全文 / next 全部由共享模块生成，
+   两端逐字相同，且只描述当前动作、不含下一步。 */
+function desktopActivityPush(runState, ctx) {
   const prev = state.activityDetail;
-  const now = Date.now();
-  const delayMs = Math.max(0, Math.round(Number(info && info.delayMs) || 0));
-  const payload = Object.assign({
-    at: now, until: delayMs ? now + delayMs : 0,
-    state: 'running', zh: '', en: '', page: '', card: '',
-    next: '', delayMs: delayMs, query: ''
-  }, info || {});
+  const payload = HSA_CORE.runActivity(runState, ctx || {});
   state.activityDetail = payload;
   saveState();
   try {
@@ -1284,12 +1381,6 @@ ipcMain.handle('chrome:panel:show', (_e, url) => {
 
 /* v1.3.2：一次调用完成「两页 → 从头滚动到底 → 逐张点击全部 +N 卡片」。
    后台 completePendingTaskCards 只换成这一个绑定，上传版其余函数不动。 */
-function orderHint(list, current) {
-  const i = (list || []).indexOf(current);
-  const next = i >= 0 && list[i + 1] ? String(list[i + 1].name || '').slice(0, 28) : '';
-  return next ? '下一张：' + next : '';
-}
-
 /* HSA_TASK_LOCATOR_REPAIR_20261109: discover scored real click targets omitted from server-side HTML index. */
 async function discoverLiveScoredCards(webContents, pageDef) {
   const collectSource = (() => {
@@ -1609,34 +1700,59 @@ ipcMain.handle('chrome:task:clickAll', async (_event, clickIndex, options) => {
     const index = clickIndex && clickIndex.schemaVersion === 1 ? clickIndex : null;
     const indexFresh = !!(index && Array.isArray(index.items) && Number.isFinite(index.updatedAt)
       && Date.now() - index.updatedAt <= 30 * 60 * 1000);
-    /* T04=A：两版统一用共享 taskCardKey（索引 → 标题 → 链接）判断卡片身份。 */
-    const seenIndex = new Set();
-    const indexedEntries = indexFresh ? index.items.filter(x => {
-      if (!x || !(x.page === '/dashboard' || x.page === '/earn')) return false;
-      const k = HSA_CORE.taskCardKey(x);
-      if (!k || seenIndex.has(k)) return false;
-      seenIndex.add(k);
-      return true;
-    }) : [];
-    const skipCompletedCards = !!(options && options.skipCompletedCards);
-    /* T07=D：默认 10 秒、1~60 秒范围，与插件端同源。 */
+    /* v3.7 · 任务列表 = 同步阶段 taskClickIndex.items（已在同步时用主界面
+       todayTasks 覆盖完成态）；唯一过滤仍是 pendingTaskItems（跳过已完成），
+       不再有 scored / kind / syncMatched / DOM 完成标记等其它判别。
+       页面 DOM 扫描只用于补齐定位；两端都走 buildTaskPlan 同一个入口。 */
+    const syncSummary = (clickIndex && clickIndex.taskSummary) || state.todayTasks || null;
+    const presetItems = indexFresh && Array.isArray(index.items) ? index.items.slice() : [];
+    /* v3.9 · 卡片也拟人化：随机间隔一个一个开（接近人手动点开）+ 贝塞尔轨迹。
+       严格档仍是固定间隔，行为与插件版完全一致。 */
+    const humanCard = HSA_HUMAN.isEnabled({ runMode: options && options.runMode })
+      ? HSA_HUMAN.createProfile({ runMode: options.runMode,
+          humanLevel: options.humanLevel, humanNoise: true },
+          HSA_HUMAN.hashSeed(Date.now() + '|card')) : null;
+    const geoFactor = Number(options && options.geoFactor) > 0
+      ? Number(options.geoFactor) : 1;
     const cardClickIntervalMs = HSA_CORE.clampIntervalSec(
       options && options.cardClickIntervalSec) * 1000;
+    let lastCardXY = [120, 140];
     // Count actual CDP mouse actions rather than time spent locating cards.
     const waitClickSpacing = async () => {
+      const target = humanCard
+        ? HSA_HUMAN.cardSpacing(humanCard, humanCard.rng,
+            cardClickIntervalMs, geoFactor).delayMs : cardClickIntervalMs;
       while (lastPhysicalClickAt && state.running) {
-        const remain = cardClickIntervalMs - (Date.now() - lastPhysicalClickAt);
+        const remain = target - (Date.now() - lastPhysicalClickAt);
         if (remain <= 0) break;
         await new Promise(resolve => setTimeout(resolve, Math.min(remain, 300)));
       }
       return !!state.running;
     };
-    // Match the browser extension: default=false clicks all scored cards;
-    // enabling the setting filters completed cards at the last responsible moment.
-    const entries = indexedEntries.filter(x => !skipCompletedCards || !x.completed);
-    const skippedCompleted = indexedEntries.length - entries.length;
+    /* v3.5 · 计划严格等于预设列表（含重复项），不删减任何一张；
+       DOM 扫描结果仅用于按名称 / 链接补齐 idx、href、target。 */
+    let entries = [];   /* v3.6：scan 就绪后由 planTaskClicks 生成（任务列表跳过已完成） */
+    const skippedCompleted = 0;
     /* HSA_TASK_LOCATOR_REPAIR_20261109: an empty RSC index does not imply the real page has no clickable task cards. */
 
+    /* v4.1 · 任务列表只剩「今日 Bing 搜索」等进度项 / 全部已完成时，
+       不打开 Bing 侧栏、不加载 panelflyout。判定与两端后台同源 HSA_CORE。 */
+    const gatePrimary = HSA_CORE.buildTaskPlan(presetItems, [], syncSummary);
+    const gateSecondary = syncSummary && Array.isArray(syncSummary.items)
+      ? HSA_CORE.buildTaskPlan(syncSummary.items, [], syncSummary) : [];
+    if (!gatePrimary.length && !gateSecondary.length) {
+      DBG.log('task', '无可点击任务卡：跳过侧栏打开', {
+        preset: presetItems.length,
+        summary: syncSummary && syncSummary.items ? syncSummary.items.length : 0,
+        source: 'no-clickable-cards'
+      });
+      return {
+        ok: true, pages: [], clicked: 0, scanned: 0, opened: 0, failed: 0,
+        skipped: 0, clickUnconfirmed: 0, method: 'no-clickable-cards',
+        reason: 'no-clickable-cards', sidebarOpened: false,
+        states: clickStates(), manualLinks: [], triggerMethods: []
+      };
+    }
     /* 自动运行时保证任务侧栏有可见视口；索引只包含受信任的两个 Rewards 页面。 */
     if (!sideVisible) showSidePanel(null, 'run', false);
     tv = ensureTaskView();
@@ -1649,12 +1765,10 @@ ipcMain.handle('chrome:task:clickAll', async (_event, clickIndex, options) => {
     }
 
     /* ------------------------------------------------------------------
-     * 侧栏优先：开始时同步积分状态（todayTasks / taskClickIndex 已写入），
-     * 点击流程开启时**主动重新加载侧栏页面**，再按 DOM 顺序点击积分卡片。
-     *   · 点哪张只取决于主界面任务状态（同步结果），不看侧栏显示的完成标记
-     *   · skipCompletedCards=true  → 只真实点击未完成的积分卡（默认）
-     *   · skipCompletedCards=false → 点击所有积分卡（含已完成）
-     *   · 搜索配额、推荐、兑换、推广、0 分卡由识别模块直接排除
+     * v3.5 · 侧栏优先：计划严格等于同步阶段生成的预设点击列表。
+     *   · 不按积分 / 完成态 / 卡片类型 / 是否匹配主界面二次筛选；
+     *   · 侧栏 DOM 扫描只提供真实点击坐标（idx / href / target）；
+     *   · 「将推荐转化为奖励」这类有积分卡不再被误判为推荐卡排除。
      * ------------------------------------------------------------------ */
     const wait = ms => new Promise(r => setTimeout(r, ms));
     const sidebarUrls = process.env.HSA_SIDEBAR_TEST_FILE
@@ -1663,47 +1777,29 @@ ipcMain.handle('chrome:task:clickAll', async (_event, clickIndex, options) => {
     /* 流程开启：主动重新加载侧栏页面，不复用上一次运行残留的 DOM */
     const sidebarReady = await loadSidebarFlyout(tv, sidebarUrls, true);
     const scan = sidebarReady ? await scanSidebarCards(tv.webContents) : null;
-    /* 主界面任务状态：todayTasks 为主，taskClickIndex 为补充；二者都不是侧栏 DOM */
-    const syncSummary = (clickIndex && clickIndex.taskSummary) || state.todayTasks || null;
-    const merged = SidebarCards.mergeSidebarWithSync(
-      scan && Array.isArray(scan.cards) ? scan.cards : [], syncSummary, clickIndex);
-    const scored = merged.filter(c => c && c.scored);
-    const excluded = merged.filter(c => c && !c.scored);
-    /* 没有可用的主界面任务状态时绝不按侧栏显示自行判断，交给原来的双页索引回退 */
-    const matchedScored = scored.filter(c => c.syncMatched).length;
-    if (scored.length && matchedScored > 0) {
-      /* 严格按截图任务列表 DOM 顺序，修复实际运行中的顺序错乱。 */
-      const plan = HSA_CORE.taskListOrder(
-        SidebarCards.planSidebarClicks(merged, skipCompletedCards));
-      const orderText = HSA_CORE.taskListNames(plan)
-        .map((n, i) => (i + 1) + '.' + n).join(' → ');
-      desktopActivityPush({
-        state: 'syncing', page: tv.webContents.getURL(),
-        zh: '任务卡执行顺序（严格按截图列表）：' + orderText,
-        en: 'Task card order (strict DOM order): ' + orderText
+    const domCards = scan && Array.isArray(scan.cards) ? scan.cards : [];
+    /* v3.7 · 两端同一个入口：主界面完成态 → 跳过已完成 → DOM 只补定位。 */
+    entries = HSA_CORE.buildTaskPlan(presetItems, domCards, syncSummary);
+    const plan = entries;
+    const orderText = plan.map((c, i) => (i + 1) + '.' + c.name).join(' → ');
+    if (plan.length) {
+      desktopActivityPush('taskList', {
+        page: tv.webContents.getURL(), m: plan.length,
+        list: plan.map(c => c.name).join('、'), order: orderText
       });
-      DBG.log('task', '任务卡执行顺序（严格按截图列表 DOM 顺序）', {
-        count: plan.length, order: orderText, source: 'sidebar-flyout'
+      DBG.log('task', 'v3.5 预设点击列表（严格按列表顺序，不删减）', {
+        count: plan.length, order: orderText, source: 'preset-task-list',
+        names: HSA_CORE.taskListNames(plan)
       });
-      const skippedBySetting = scored.length - plan.length;
       const page = {
-        url: tv.webContents.getURL(), found: scored.length, clicked: 0,
+        url: tv.webContents.getURL(), found: plan.length, clicked: 0,
         opened: 0, skipped: 0, failed: 0, source: 'sidebar-flyout'
       };
-      totalScanned += scored.length;
-      desktopActivityPush({
-        state: 'syncing', page: page.url,
-        zh: '同步积分状态 · 侧栏识别 ' + scored.length + ' 张积分卡 · 待点击 '
-          + plan.length + ' 张' + (skipCompletedCards ? '（跳过已完成）' : '（含已完成）'),
-        en: 'Points synced · ' + scored.length + ' scored cards · '
-          + plan.length + ' to click' + (skipCompletedCards ? ' (skip completed)' : ' (include completed)')
-      });
-      DBG.log('task', '侧栏积分卡片识别（完成状态来自主界面任务状态）', {
-        total: merged.length, scored: scored.length, excluded: excluded.length,
-        matchedMainUi: matchedScored,
-        excludedKinds: excluded.reduce((m, c) => { m[c.kind] = (m[c.kind] || 0) + 1; return m; }, {}),
-        pending: plan.length, skippedBySetting: skippedBySetting,
-        skipCompletedCards: skipCompletedCards, source: 'main-ui-task-state + sidebar-flyout'
+      totalScanned += plan.length;
+      DBG.log('task', '侧栏 DOM 仅用于定位（不再参与是否点击的判断）', {
+        domCards: domCards.length, preset: presetItems.length,
+        matched: plan.filter(c => c.matched).length,
+        source: 'preset-task-list + sidebar-flyout'
       });
 
       for (const card of plan) {
@@ -1724,19 +1820,24 @@ ipcMain.handle('chrome:task:clickAll', async (_event, clickIndex, options) => {
         taskResultLoadPromise = null;
         try {
           const cardName = String(card.name || '未命名任务').slice(0, 40);
-          desktopActivityPush({
-            state: 'clicking', page: page.url, card: cardName,
-            delayMs: TASK_CLICK_SETTLE_MS,
-            zh: '侧栏点击 ' + (page.clicked + 1) + '/' + plan.length + ' · ' + cardName
-              + ' +' + (Number(card.points) || 0)
-              + ' · 下一步：' + (orderHint(plan, card) || '搜索任务')
-              + ' · 等 ' + TASK_CLICK_SETTLE_MS + 'ms',
-            en: 'Sidebar click ' + (page.clicked + 1) + '/' + plan.length + ' · ' + cardName
-              + ' +' + (Number(card.points) || 0)
-              + ' · Next: ' + (orderHint(plan, card) || 'search')
-              + ' · wait ' + TASK_CLICK_SETTLE_MS + 'ms'
+          desktopActivityPush('clicking', {
+            page: page.url, card: cardName, n: page.clicked + 1, m: plan.length,
+            points: Number(card.points) || 0, order: orderText,
+            delayMs: TASK_CLICK_SETTLE_MS
           });
           lastPhysicalClickAt = Date.now();
+          if (humanCard) {
+            /* 贝塞尔轨迹（含轻微过冲回正）+ 点击前微停顿，替代瞬移。 */
+            const path = HSA_HUMAN.bezierPath(lastCardXY, [aim.x, aim.y],
+              humanCard.rng, { bend: humanCard.bezierBend });
+            for (const p of path.points) {
+              await dbg.sendCommand('Input.dispatchMouseEvent',
+                { type: 'mouseMoved', x: p.x, y: p.y, button: 'none', buttons: 0 });
+              await wait(Math.min(p.dt, 60));
+            }
+            await wait(path.beforeMs || 60);
+            lastCardXY = [aim.x, aim.y];
+          }
           await dispatchTaskMouseClick(dbg, aim.x, aim.y);
           noteTrigger('cdp', '官网卡片真实鼠标路径');
           page.clicked++;
@@ -1796,34 +1897,32 @@ ipcMain.handle('chrome:task:clickAll', async (_event, clickIndex, options) => {
         });
       }
       pages.push(page);
-      desktopActivityPush({
-        state: 'clicking', page: page.url,
-        zh: '侧栏已点击 ' + page.clicked + ' 张积分卡 · 下一步：完成搜索任务',
-        en: 'Sidebar clicked ' + page.clicked + ' cards · Next: search tasks'
+      desktopActivityPush('cardsDone', {
+        page: page.url, n: page.clicked, m: plan.length,
+        list: plan.map(c => c.name).join('、')
       });
-      DBG.log('task', '侧栏点击汇总', {
+      DBG.log('task', '侧栏点击汇总（严格按预设列表）', {
         clicked: totalClicked, opened: totalOpened, failed: totalFailed,
-        skippedCompleted: skippedBySetting, excludedNoPoints: excluded.length,
-        unconfirmed: totalUnconfirmed, skipCompletedCards: skipCompletedCards
+        preset: plan.length, matched: plan.filter(c => c.matched).length,
+        unconfirmed: totalUnconfirmed
       });
       return {
         ok: true, pages, clicked: totalClicked, scanned: totalScanned,
-        opened: totalOpened, failed: totalFailed, skipped: skippedBySetting,
-        clickUnconfirmed: totalUnconfirmed, excludedNoPoints: excluded.length,
+        opened: totalOpened, failed: totalFailed, skipped: 0,
+        clickUnconfirmed: totalUnconfirmed, excludedNoPoints: 0,
         stateSource: 'main-ui-task-state',
         method: 'sidebar-flyout + CDP Input.dispatchMouseEvent',
         states: clickStates(), manualLinks: manualLinks.slice(0, 20),
         triggerMethods: triggerMethods.slice(0, 64)
       };
     }
-    DBG.log('task', '侧栏无可依据的主界面任务状态，回退到 dashboard/earn 索引点击', {
-      sidebarReady: sidebarReady, scanned: merged.length,
-      scored: scored.length, matchedMainUi: matchedScored
+    DBG.log('task', 'v3.5 预设列表为空或侧栏不可用，回退到 dashboard/earn 定位点击', {
+      sidebarReady: sidebarReady, preset: entries.length
     });
 
-    DBG.log('task', '任务卡片点击开始：消费同步阶段 taskClickIndex，不再全页扫描', {
-      indexCount: entries.length, source: index.source || 'sync-index',
-      method: 'indexed locator + CDP Input.dispatchMouseEvent'
+    DBG.log('task', '任务卡片点击开始：严格消费预设点击列表', {
+      indexCount: entries.length, source: 'preset-task-list',
+      method: 'preset list + CDP Input.dispatchMouseEvent'
     });
 
     for (const pageDef of [
@@ -1831,44 +1930,42 @@ ipcMain.handle('chrome:task:clickAll', async (_event, clickIndex, options) => {
       { page: '/earn', url: 'https://rewards.bing.com/earn' }
     ]) {
       if (!state.running) break;
-      let pageEntries = entries.filter(x => x.page === pageDef.page);
-      desktopActivityPush({
-        state: 'opening', page: pageDef.url,
-        zh: '打开页面 · Rewards ' + pageDef.page + ' · 待点击 ' + pageEntries.length + ' 张卡片',
-        en: 'Opening · Rewards ' + pageDef.page + ' · ' + pageEntries.length + ' cards to click'
+      /* v3.6 · 计划严格只来自任务列表（entries）；没有 page 标记时
+         统一由 /dashboard 承担，保证不漏点、也不按页面分组删减。 */
+      const hasPaged = entries.some(x => x.page === '/dashboard' || x.page === '/earn');
+      let pageEntries = hasPaged
+        ? entries.filter(x => x.page === pageDef.page)
+        : (pageDef.page === '/dashboard' ? entries.slice() : []);
+      desktopActivityPush('opening', {
+        page: pageDef.url, m: pageEntries.length,
+        list: pageEntries.map(c => c.name).join('、')
       });
       await loadTaskPage(tv, pageDef.url);
-      desktopActivityPush({state:'opening', page:pageDef.url,
-        zh:'页面加载后已等待 5 秒 · 正在慢速滚动扫描（不少于 5 秒）',
-        en:'Loaded; waited 5s · slow-scanning page for at least 5s'});
+      desktopActivityPush('scanning', {
+        page: pageDef.url, m: pageEntries.length
+      });
+      /* v3.6 · 页面 DOM 扫描只给已有计划项补定位，绝不新增 / 删减计划项。 */
       const live = await discoverLiveScoredCards(tv.webContents, pageDef);
-      const known = new Set(pageEntries.map(e => {
-        const l = e.locator || {};
-        return String(l.href || e.url || l.dataOfferId || l.dataBiId || '') + '|' + Number(e.points || 0);
-      }));
+      const normName = v => String(v || '').replace(/\s+/g, '');
       for (const item of live) {
-        if (skipCompletedCards && item.completed) continue;
-        const l = item.locator || {};
-        const id = String(l.href || item.url || l.dataOfferId || l.dataBiId || '') + '|' + Number(item.points || 0);
-        if (known.has(id)) continue;
-        known.add(id);
-        pageEntries.push(item);
+        const key = normName(item.name || (item.locator && item.locator.title));
+        if (!key) continue;
+        const target = pageEntries.find(e => normName(e.name) === key);
+        if (target && !target.locator) target.locator = item.locator || null;
       }
       if (!pageEntries.length) {
-        DBG.log('task', '同步索引和实时 DOM 均无任务卡', {page:pageDef.page});
+        DBG.log('task', '该页没有待点任务卡（计划只来自任务列表）', {page:pageDef.page});
         continue;
       }
-      /* 回退路径同样严格按 DOM 顺序，实时发现的卡片按 idx 归位到正确位置。 */
-      pageEntries = HSA_CORE.taskListOrder(pageEntries);
-      const fallbackOrder = HSA_CORE.taskListNames(pageEntries)
-        .map((n, i) => (i + 1) + '.' + n).join(' → ');
-      desktopActivityPush({
-        state: 'opening', page: pageDef.url,
-        zh: '任务卡执行顺序（索引回退 · DOM 顺序）：' + fallbackOrder,
-        en: 'Task card order (index fallback · DOM order): ' + fallbackOrder
+      /* v3.5 · 回退路径同样严格保持预设列表顺序，不按 DOM / 积分重排。 */
+      const fallbackOrder = pageEntries
+        .map((n, i) => (i + 1) + '.' + n.name).join(' → ');
+      desktopActivityPush('taskList', {
+        page: pageDef.url, m: pageEntries.length,
+        list: pageEntries.map(c => c.name).join('、'), order: fallbackOrder
       });
-      DBG.log('task', '同步索引和实时 DOM 合并（按 DOM 顺序）', {
-        page:pageDef.page, live:live.length, total:pageEntries.length, order:fallbackOrder
+      DBG.log('task', 'v3.6 回退计划只来自任务列表（DOM 仅补定位）', {
+        page:pageDef.page, domHits:live.length, total:pageEntries.length, order:fallbackOrder
       });
       const page = {
         url: pageDef.url, found: pageEntries.length, clicked: 0,
@@ -1902,20 +1999,26 @@ ipcMain.handle('chrome:task:clickAll', async (_event, clickIndex, options) => {
         const samePageWatcher = !targetBlank ? watchMainFrameLoad(tv.webContents, 12000) : null;
         try {
           const cardName = String(entry.name || '未命名任务').slice(0, 40);
-          desktopActivityPush({
-            state: 'clicking', page: pageDef.url, card: cardName,
-            delayMs: TASK_CLICK_SETTLE_MS,
-            zh: '点击 ' + (page.clicked + 1) + '/' + pageEntries.length + ' · ' + cardName
-              + ' +' + (Number(entry.points) || 0)
-              + ' · 下一步：' + (orderHint(pageEntries, entry) || '搜索')
-              + ' · 等 ' + TASK_CLICK_SETTLE_MS + 'ms',
-            en: 'Click ' + (page.clicked + 1) + '/' + pageEntries.length + ' · ' + cardName
-              + ' +' + (Number(entry.points) || 0)
-              + ' · Next: ' + (orderHint(pageEntries, entry) || 'search')
-              + ' · wait ' + TASK_CLICK_SETTLE_MS + 'ms'
+          desktopActivityPush('clicking', {
+            page: pageDef.url, card: cardName,
+            n: page.clicked + 1, m: pageEntries.length,
+            points: Number(entry.points) || 0, order: fallbackOrder,
+            delayMs: TASK_CLICK_SETTLE_MS
           });
           // Timestamp corresponds to the beginning of the CDP mouse action.
           lastPhysicalClickAt = Date.now();
+          if (humanCard) {
+            /* 贝塞尔轨迹（含轻微过冲回正）+ 点击前微停顿，替代瞬移。 */
+            const path = HSA_HUMAN.bezierPath(lastCardXY, [aim.x, aim.y],
+              humanCard.rng, { bend: humanCard.bezierBend });
+            for (const p of path.points) {
+              await dbg.sendCommand('Input.dispatchMouseEvent',
+                { type: 'mouseMoved', x: p.x, y: p.y, button: 'none', buttons: 0 });
+              await wait(Math.min(p.dt, 60));
+            }
+            await wait(path.beforeMs || 60);
+            lastCardXY = [aim.x, aim.y];
+          }
           await dispatchTaskMouseClick(dbg, aim.x, aim.y);
           noteTrigger('cdp', '索引卡片真实鼠标路径');
           page.clicked++;
@@ -1978,10 +2081,8 @@ ipcMain.handle('chrome:task:clickAll', async (_event, clickIndex, options) => {
         });
       }
       pages.push(page);
-      desktopActivityPush({
-        state: 'clicking', page: pageDef.url,
-        zh: '本页已点击 ' + page.clicked + ' 张卡片 · 下一步：切换页面或搜索',
-        en: 'Clicked ' + page.clicked + ' cards · Next: next page or search'
+      desktopActivityPush('pageDone', {
+        page: pageDef.url, n: page.clicked, m: pageEntries.length
       });
       DBG.log('task', '同步索引页面点击完成', page);
     }
@@ -2913,6 +3014,9 @@ function createTray() {
 app.whenReady().then(() => {
   // 必须最先执行：makeWindow 的 session 参数、Cookie 监听、后台 fetch 都依赖它
   initAppSession();
+  /* v3.7 · 标准 Chrome 标识：全局 UA 去 Electron 化 + 网络层同源 UA-CH。 */
+  try { app.userAgentFallback = CHROME_UA; } catch (e) {}
+  applyChromeIdentityHeaders();
   loadState();
   /* v2.6：静默完成任务与侧栏独立窗口均已移除；开机自启与系统登录项对齐（默认关闭）。 */
   if (typeof state.launchAtLogin !== 'boolean') state.launchAtLogin = false;

@@ -232,7 +232,8 @@ function mergeSidebarWithSync(cards, syncSummary, clickIndex) {
   });
 }
 
-/** 纯函数：生成真实点击计划。skipCompleted=false 时点全部积分卡（含已完成）。 */
+/** 纯函数：生成真实点击计划。v3.3 运行时 skipCompleted 恒为 true；
+ *  false 分支仅作为库级能力保留，不再由任何设置项暴露。 */
 function planSidebarClicks(cards, skipCompleted) {
   /* 严格按侧栏 DOM 顺序（截图任务列表从上到下）执行：
      不按分组 / 积分 / 完成态 / 同步索引重排；分段滚动补齐的卡片也按 idx 归位。 */

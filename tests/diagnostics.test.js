@@ -163,7 +163,9 @@ test('诊断 · 两端设置页、后台与共享样式均已接线', () => {
     assert.match(s, /function logUserAction\(/);
     assert.match(s, /HSA_CORE\.calendarReset\(\)/);
     assert.match(s, /HSA_CORE\.calendarNavAllowed\(/);
-    assert.match(s, /btn\.disabled = empty/);
+    /* v3.3：日历渲染统一进 shared/hsa-calendar.js，两端只剩共享控制器接线 */
+    assert.match(s, /HSA_CALENDAR\.createController\(/);
+    assert.match(s, /calendar\.setMode\(v\)/);
   }
   for (const b of ['edge-extension/background.js', 'desktop-app/src/background.js']) {
     const s = read(b);

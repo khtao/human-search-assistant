@@ -9,7 +9,11 @@
   <script src="theme.js"></script>
   <script src="shared/hsa-core.js"></script>
   <script src="shared/hsa-zip.js"></script>
+  <script src="shared/hsa-human.js"></script>
+  <script src="shared/hsa-fingerprint.js"></script>
+  <script src="shared/hsa-geo.js"></script>
   <script src="shared/hsa-pull-refresh.js"></script>
+  <script src="shared/hsa-calendar.js"></script>
 </head>
 <body>
   <div class="app" id="main">
@@ -118,23 +122,30 @@
     </main>
   </div>
 
-  <section id="settings" class="settings" role="dialog" aria-modal="true" aria-labelledby="settings-title" inert>
+    <section id="settings" class="settings" role="dialog" aria-modal="true" aria-labelledby="settings-title" inert>
     <header class="settings-head">
       <button id="settings-back" class="icon-btn" type="button" aria-label="返回" title="返回"
-              data-i18n-aria="a11y.back" data-i18n-title="a11y.back" data-tip-role="hint">
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>
-      </button>
+                    data-i18n-aria="a11y.back" data-i18n-title="a11y.back" data-tip-role="hint">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>
+            </button>
       <h2 id="settings-title" data-i18n="settings.title">设置</h2>
+      <span class="settings-head-sub" data-i18n="settings.subtitle">偏好 · 节奏 · 数据</span>
     </header>
 
     <div class="settings-body">
-      <div class="set-group" style="--g:0">
-        <h3 class="set-title" data-i18n="settings.appearance">外观</h3>
-        <div class="set-row">
+      <div class="set-group" id="appearance-group" style="--g:0" data-tone="violet">
+        <div class="set-group-head">
+          <span class="set-badge" aria-hidden="true">01</span>
+          <div class="set-group-heading">
+            <h3 class="set-title" data-i18n="settings.appearance">外观</h3>
+            <p class="set-desc" data-i18n="settings.appearanceDesc">语言、主题与界面动效</p>
+          </div>
+        </div>
+<div class="set-row">
           <span class="set-label" data-i18n="settings.language">语言 / Language</span>
           <div class="segmented lang-segmented" id="set-lang" role="radiogroup" aria-label="Language">
-            <button type="button" role="radio" data-value="zh" aria-checked="false">中文</button>
-            <button type="button" role="radio" data-value="en" aria-checked="false">English</button>
+            <button type="button" role="radio" data-value="zh" data-i18n="lang.zh" aria-checked="false">中文</button>
+            <button type="button" role="radio" data-value="en" data-i18n="lang.en" aria-checked="false">English</button>
             <button type="button" role="radio" data-value="system" data-i18n="lang.system" aria-checked="true">跟随系统</button>
           </div>
         </div>
@@ -152,17 +163,103 @@
         </label>
       </div>
 
-      <div class="set-group" id="auto-group" style="--g:1">
-        <h3 class="set-title" data-i18n="auto.title">自动完成任务</h3>
-        <label class="set-row" data-i18n-title="auto.cardIntervalHint" data-tip-role="hint" title="相邻两张任务卡片的点击间隔（1–60 秒）">
-          <span class="set-label" data-i18n="auto.cardInterval">卡片点击间隔</span>
-          <span class="set-inline-number"><input type="number" id="set-card-interval" min="1" max="60" step="1" value="10" aria-label="卡片点击间隔（秒）"><span class="set-unit" data-i18n="settings.seconds">秒</span></span>
-        </label>
-        <label class="set-row" data-i18n-title="auto.dontSkipCompletedHint" data-tip-role="hint" title="默认关闭，只点主界面显示未完成的任务卡；开启后即使积分和任务全完成也逐张点击所有任务卡">
-          <span class="set-label" data-i18n="auto.dontSkipCompleted">不跳过已完成任务卡</span>
-          <input type="checkbox" id="set-dont-skip-completed" class="switch">
-        </label>
-        <label class="set-row" data-i18n-title="auto.enableHint" data-tip-role="hint" title="到点自动点击任务卡并按剩余分数搜索">
+      <div class="set-group" id="run-group" style="--g:1" data-tone="blue">
+        <div class="set-group-head">
+          <span class="set-badge" aria-hidden="true">02</span>
+          <div class="set-group-heading">
+            <h3 class="set-title" data-i18n="run.title">运行设置</h3>
+            <p class="set-desc" data-i18n="run.desc">模式、强度与拟人特征；间隔按强度预算随机均匀分配</p>
+          </div>
+        </div>
+        <div class="set-row" data-i18n-title="run.modeHint" data-tip-role="hint" title="严格档为固定节奏；拟人增强档启用全维度噪声">
+          <span class="set-label" data-i18n="run.mode">运行模式</span>
+          <div class="segmented" id="set-run-mode" role="radiogroup" aria-label="Run mode">
+            <button type="button" role="radio" data-value="strict" data-i18n="run.modeStrict">严格</button>
+            <button type="button" role="radio" data-value="human" data-i18n="run.modeHuman">拟人增强</button>
+          </div>
+        </div>
+        <div class="set-row" data-i18n-title="run.levelHint" data-tip-role="hint" title="低 15 分钟 / 中 30 分钟 / 高 60 分钟（完成 20 次自动搜索）">
+          <span class="set-label" data-i18n="auto.level">拟人强度</span>
+          <div class="segmented" id="set-auto-level" role="radiogroup" aria-label="Human level">
+            <button type="button" role="radio" data-value="1" data-i18n="level.low">低</button>
+            <button type="button" role="radio" data-value="2" data-i18n="level.mid">中</button>
+            <button type="button" role="radio" data-value="3" data-i18n="level.high">高</button>
+          </div>
+        </div>
+        <p class="set-hint" data-i18n="run.levelNote">低 15 分钟 · 中 30 分钟 · 高 60 分钟（20 次搜索）</p>
+        <div class="set-feature-grid">
+          <label class="set-row compact" data-i18n-title="run.noiseHint" data-tip-role="hint" title="时间抖动、三次贝塞尔鼠标轨迹（含过冲）、偶发多余动作">
+            <span class="set-label" data-i18n="run.noise">动作噪声</span>
+            <input type="checkbox" id="set-human-noise" class="switch">
+          </label>
+          <label class="set-row compact" data-i18n-title="run.browseHint" data-tip-role="hint" title="适度滚动、偶尔点开一条结果再返回、鼠标移动">
+            <span class="set-label" data-i18n="run.browse">结果页浏览</span>
+            <input type="checkbox" id="set-human-browse" class="switch">
+          </label>
+          <label class="set-row compact" data-i18n-title="run.sessionHint" data-tip-role="hint" title="一次运行固定画像；当日 ≥5 字热搜原文轻微重排">
+            <span class="set-label" data-i18n="run.session">会话画像与词策略</span>
+            <input type="checkbox" id="set-human-session" class="switch">
+          </label>
+          <label class="set-row compact" data-i18n-title="run.fingerprintHint" data-tip-role="hint" title="读真实值交叉校验；去自动化标记、补缺失对象，不硬编码硬件值">
+            <span class="set-label" data-i18n="run.fingerprint">环境指纹自检</span>
+            <input type="checkbox" id="set-fingerprint" class="switch">
+          </label>
+          <label class="set-row compact" data-i18n-title="run.geoHint" data-tip-role="hint" title="出口 IP / 时区 / 语言 / 搜索市场 / 当地作息自洽，探测失败降级">
+            <span class="set-label" data-i18n="run.geo">地理一致性</span>
+            <input type="checkbox" id="set-geo" class="switch">
+          </label>
+          <label class="set-row compact" data-i18n-title="run.typingHint" data-tip-role="hint" title="分块上屏、非均匀键间隔与偶发退格纠错；词内容逐字不变">
+            <span class="set-label" data-i18n="run.typing">拟真键入</span>
+            <input type="checkbox" id="set-stealth-typing" class="switch">
+          </label>
+          <label class="set-row compact" data-i18n-title="run.burstHint" data-tip-role="hint" title="把一轮搜索拆成数个浏览段，段间一次较长离席，总时长仍守恒">
+            <span class="set-label" data-i18n="run.burst">分段浏览节奏</span>
+            <input type="checkbox" id="set-stealth-burst" class="switch">
+          </label>
+          <label class="set-row compact" data-i18n-title="run.nightHint" data-tip-role="hint" title="定时运行在当地 0–6 点直接跳过；手动启动不受限">
+            <span class="set-label" data-i18n="run.night">避开深夜</span>
+            <input type="checkbox" id="set-stealth-night" class="switch">
+          </label>
+        </div>
+        <p class="set-hint" data-i18n="run.riskDesc">风险规避：降低自动化行为的可区分性，不承诺不被判定</p>
+        <!-- v4.2 · 七项专业数值由拟人强度统一管理，收进三组只读摘要，不再逐项编辑 -->
+        <p class="set-hint" data-i18n="run.presetDesc">七项专业参数已按强度收进三组，切档即整组生效，无需逐项调整</p>
+        <div class="preset-groups" id="run-preset-groups">
+          <div class="preset-group" data-group="quota">
+            <div class="preset-group-head"><span class="preset-group-name" data-i18n="run.groupQuota">配额与启动</span></div>
+            <div class="preset-rows">
+              <div class="preset-item"><span data-i18n="run.cap">单次配额上限</span><b data-preset="singleRunCapPct">60</b><span class="preset-unit">%</span></div>
+              <div class="preset-item"><span data-i18n="run.jitter">启动抖动上限</span><b data-preset="scheduleJitterMin">20</b><span class="preset-unit" data-i18n="settings.minutes">分钟</span></div>
+            </div>
+          </div>
+          <div class="preset-group" data-group="action">
+            <div class="preset-group-head"><span class="preset-group-name" data-i18n="run.groupAction">动作节奏</span></div>
+            <div class="preset-rows">
+              <div class="preset-item"><span data-i18n="auto.cardInterval">卡片点击间隔</span><b data-preset="cardClickIntervalSec">5</b><span class="preset-unit" data-i18n="settings.seconds">秒</span></div>
+              <div class="preset-item"><span data-i18n="auto.actionGap">键鼠动作间隔</span><b data-preset="actionGapSec">0.6</b><span class="preset-unit" data-i18n="settings.seconds">秒</span></div>
+            </div>
+          </div>
+          <div class="preset-group" data-group="page">
+            <div class="preset-group-head"><span class="preset-group-name" data-i18n="run.groupPage">页面与轮次</span></div>
+            <div class="preset-rows">
+              <div class="preset-item"><span data-i18n="auto.pageStable">页面稳定等待</span><b data-preset="pageStableSec">3</b><span class="preset-unit" data-i18n="settings.seconds">秒</span></div>
+              <div class="preset-item"><span data-i18n="auto.roundGap">搜索轮间间隔</span><b data-preset="roundGapSec">10</b><span class="preset-unit" data-i18n="settings.seconds">秒</span></div>
+              <div class="preset-item"><span data-i18n="auto.roundWait">单轮等待</span><b data-preset="roundWaitSec">3</b><span class="preset-unit" data-i18n="settings.seconds">秒</span></div>
+            </div>
+          </div>
+        </div>
+        <p class="set-desc" id="run-preset-strict" data-i18n="run.presetStrictNote" hidden>严格档沿用固定默认值，不套用以上预设</p>
+      </div>
+
+      <div class="set-group" id="auto-group" style="--g:1" data-tone="amber">
+        <div class="set-group-head">
+          <span class="set-badge" aria-hidden="true">03</span>
+          <div class="set-group-heading">
+            <h3 class="set-title" data-i18n="auto.title">自动完成任务</h3>
+            <p class="set-desc" data-i18n="auto.desc">定时计划与搜索次数</p>
+          </div>
+        </div>
+<label class="set-row" data-i18n-title="auto.enableHint" data-tip-role="hint" title="到点自动点击任务卡并按剩余分数搜索">
           <span class="set-label" data-i18n="auto.enable">定时自动运行</span>
           <input type="checkbox" id="set-auto" class="switch">
         </label>
@@ -186,19 +283,11 @@
             </div>
             <div id="set-auto-times" class="time-chips"></div>
           </div>
-          <div class="set-row" data-i18n-title="auto.levelHint" data-tip-role="hint" title="影响鼠标轨迹、滚动与每轮时长">
-            <span class="set-label" data-i18n="auto.level">拟人强度</span>
-            <div class="segmented" id="set-auto-level" role="radiogroup" aria-label="Human level">
-              <button type="button" role="radio" data-value="1" data-i18n="level.low">低</button>
-              <button type="button" role="radio" data-value="2" data-i18n="level.mid">中</button>
-              <button type="button" role="radio" data-value="3" data-i18n="level.high">高</button>
-            </div>
-          </div>
         </div>
         <p id="set-auto-msg" class="preview-msg" role="status" hidden></p>
       </div>
 
-      <details class="set-group cal-fold" id="calendar-group" style="--g:2" open>
+<details class="set-group cal-fold" id="calendar-group" style="--g:2" open>
         <summary class="set-title" data-i18n="calendar.title">积分赚取日历</summary>
         <div class="cal-head">
           <button id="cal-prev" class="cal-nav" type="button" aria-label="上一周期" title="上一周期"
@@ -219,14 +308,20 @@
         <div id="cal-weekdays" class="cal-weekdays" aria-hidden="true"></div>
         <div id="cal-grid" class="cal-grid" role="grid" aria-label="积分日历"
              data-i18n-title="calendar.hoverTip" data-tip-role="hint"
-             title="日视图显示每日积分，周/月视图显示汇总"></div>
+             title="日/周/月视图只显示有积分的周期；周不跨月；悬停查看详情"></div>
         <div class="cal-legend" aria-hidden="true"><span><i class="cal-legend-dot earned"></i><span data-i18n="calendar.legendHas">已获得</span></span><span><i class="cal-legend-dot empty"></i><span data-i18n="calendar.legendNone">无积分</span></span></div>
         <p id="cal-summary" class="cal-summary"></p>
         <p id="cal-nav-msg" class="preview-msg" role="status" hidden></p>
       </details>
 
       <div class="set-group" id="diag-group" style="--g:3">
-        <h3 class="set-title" data-i18n="diag.title">运行日志与网页抓取</h3>
+        <div class="set-group-head">
+          <span class="set-badge" aria-hidden="true">05</span>
+          <div class="set-group-heading">
+            <h3 class="set-title" data-i18n="diag.title">运行日志与网页抓取</h3>
+            <p class="set-desc" data-i18n="diag.desc">轻量运行日志与按需实时抓取</p>
+          </div>
+        </div>
         <label class="set-row" data-i18n-title="diag.logHint" data-tip-role="hint" title="日志含系统时间、用户操作、运行过程、结果与错误；网页 HTML 不写进日志">
           <span class="set-label"><span data-i18n="diag.logEnabled">记录运行日志</span></span>
           <input type="checkbox" id="set-run-log" class="switch">
@@ -241,7 +336,7 @@
         </div>
       </div>
 
-      <button id="set-reset" class="reset-btn" type="button" style="--g:3" data-i18n="settings.reset">恢复默认设置</button>
+      <button id="set-reset" class="reset-btn" type="button" style="--g:4" data-i18n="settings.reset">恢复默认设置</button>
     </div>
   </section>
 

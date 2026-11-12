@@ -219,8 +219,12 @@
     return '';
   };
 
-  const EXCLUDE_URL_RE = /(?:referandearn|\/refer(?:andearn)?(?:\/|[?#]|$)|rewards\.bing\.com\/redeem|rewards\.microsoft\.com\/redeem|aka\.ms|form=RWSE01|form=ML2PCO|form=perbnr|microsoft\.com\/(?:en-us\/)?rewards\/outlook)/i;
-  const EXCLUDE_TITLE_RE = /(?:你已获得|是时候兑换|将推荐|推荐好友|准备推荐|兑换|签到|连续奖励|即时赢奖|^\s*搜索\s*$|SE_Earning|DailyCheckIn|Win_Promo)/i;
+  /* v3.5 · 点击清单严格由预设任务列表决定，页面扫描只负责定位：
+     不再按 URL / 标题把「将推荐转化为奖励」这类有积分卡排除。
+     只保留结构识别（必须是 http(s) 链接、有标题、有可点矩形）。 */
+  const EXCLUDE_URL_RE = /^(?:javascript:|#|mailto:|tel:)/i;
+  /* v3.6 · 不再按标题排除任何卡片；只做链接 / 标题 / 矩形的结构识别。 */
+  const EXCLUDE_TITLE_RE = /$^/;
   const isTaskUrl = u => /^https?:\/\//i.test(String(u || ''))
     && !EXCLUDE_URL_RE.test(String(u || ''));
 
@@ -278,19 +282,13 @@
       const title = clean(titleEl || box).slice(0, 80)
         .replace(/\s*[-—]\s*Offer.*$/i, '').trim();
       if (!title || title.length < 2) continue;
+      /* v3.5 · 只做结构识别：链接 + 标题；official 仅用于补积分，不删卡片。 */
       if (!isTaskUrl(url) || EXCLUDE_TITLE_RE.test(title)) continue;
       const official = officialByTitle(title);
-      if (official && (official.isHidden || !(official.points > 0)
-          || (official.promotionType
-              && !/urlreward|quiz|poll|puzzle/i.test(official.promotionType)))) continue;
       const aria = String(box.getAttribute('aria-label')
         || anchor.getAttribute('aria-label') || '');
+      /* v3.5 · 完成态只做诊断，不决定是否点击。 */
       const done = mainTaskDone(title);
-      if (done && !includeDone) {
-        skipped.push({ title: title.slice(0, 40),
-          points: official ? official.points : 0, reason: '主界面显示已完成' });
-        continue;
-      }
       const idx = 'yb-task-' + hashStr(normText(title) + '|' + url);
       if (seen.has(idx)) continue;
       seen.add(idx);
@@ -418,14 +416,11 @@
               ? card.querySelector('a[href]').getAttribute('href') : '') || '');
       } catch {}
       if ((legacyHref && !isTaskUrl(httpUrl(absUrl(legacyHref))))
-          || EXCLUDE_TITLE_RE.test(text)) continue;
+          || EXCLUDE_TITLE_RE.test(text)) continue;   /* v3.5：仅结构识别 */
       if (/^offer (not )?completed/i.test(aria) && !isCardLike(card, text)) continue;
 
+      /* v3.5 · 完成态只做诊断，不决定是否点击。 */
       const done = mainTaskDone(text);
-      if (done && !includeDone) {
-        skipped.push({ title: text.slice(0, 40), points: pts, reason: '主界面显示已完成' });
-        continue;
-      }
       const tr = topRect(card);
       if ((tr.w || 0) < 2 && (tr.h || 0) < 2) continue;
       const targetUrl = resolveTarget(card, text);

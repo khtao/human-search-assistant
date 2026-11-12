@@ -4,9 +4,13 @@
 >
 > 本包为**插件版 / 桌面版差异统一版**：27 项已勾选决策的落地情况、共享 `shared/` 目录结构与回归命令见 [实施说明.md](实施说明.md)。
 >
-> 本包已启用**严格运行模式**：搜索词只取当日 ≥5 字热搜原文，自动运行期间禁用其它影响运行的功能（详见 [实施说明.md](实施说明.md) 第七节）。
+> 本包默认启用**拟人增强档（v3.9）**：在「搜索词只取当日 ≥5 字热搜原文」这一硬规则不变的前提下，叠加会话画像、贝塞尔鼠标轨迹、有界节奏抖动、结果页浏览与环境 / 地理一致性；设置里切到「严格」即逐字回到 v3.7 的固定中心点击 + 固定间隔（详见 [实施说明.md](实施说明.md) 第二十五章）。
 >
 > 设置页新增**运行日志导出**与**关键网页实时抓取**：日常运行只写运行日志，关键页面按需实时抓取最新数据（详见 [实施说明.md](实施说明.md) 第八节）。
+>
+> **v4.0 风险规避**：分段浏览节奏、拟真分块键入、单次配额上限、深夜定时跳过与启动抖动、出口 IP 结果缓存、焦点模拟仅覆盖输入阶段。只降低行为可区分性，**不承诺不被判定**，也不能把自动化变成符合服务条款的手动搜索（详见 [实施说明.md](实施说明.md) 第二十六章）。
+>
+> **v4.2 简化设置**：7 项专业数值已收进「拟人强度」的三组预设（低 / 中 / 高），设置页只做只读展示；搜索词按 UTC+8 日界当天不重复（详见 [实施说明.md](实施说明.md) 第二十八章）。
 >
 
 ---
@@ -26,19 +30,32 @@
 | 亮点 | 代码里的实现 |
 | --- | --- |
 | **先同步，再动手** | 主按钮走 `runAutoComplete()` → `syncStart()` → `syncRewardsUnified()`，后台用 `fetch` 读 `rewards.bing.com/dashboard`、`/earn` 与 `/api/getuserinfo?type=1`；同步失败直接「零动作返回」，不点击、不搜索。 |
-| **全完成真的不动** | `allDone` 判定要求：非未登录、非估算、任务项 ≥ 3、搜索项已拿满、进度 ≥ 100 且每项完成；满足后返回 `{ reason: 'allDone', skipped: true, clicked: 0, searches: 0 }`。开启「不跳过已完成任务卡」时才会继续点卡片。 |
-| **只点该点的卡片** | 扫描时排除已完成、0 分、搜索进度条、连续打卡、兑换 / 推荐 / 推广卡与签到进度（见 `bannedText`、`sidebar-task-cards.js` 的 `REDEEM_URL` / `SEARCH_COUNTER` / `PROMO_TEXT` / `PROGRESS_TEXT`）；桌面版用 `taskClickIndex` 定位任务，重算矩形后再点击。 |
-| **真鼠标事件（固定节奏）** | 通过 `chrome.debugger.attach(..., '1.3')` 发送 `Input.dispatchMouseEvent`（`mouseMoved` → `mousePressed` → `mouseReleased`）与 `Input.dispatchKeyEvent`；严格运行模式下 `HUMAN_PROFILES` 的随机轨迹、过冲、滚动与拟人强度均已禁用，只保留固定中心点击与固定等待。 |
+| **全完成真的不动** | `allDone` 判定要求：非未登录、非估算、任务项 ≥ 3、搜索项已拿满、进度 ≥ 100 且每项完成；满足后返回 `{ reason: 'allDone', skipped: true, clicked: 0, searches: 0 }`；`syncGate.noteAllDone()` 当日停止所有任务与定时同步，跨 UTC+8 日界自动解除。v3.3 起不再有任何设置或 `force` 参数能绕过该停止态。 |
+| **只按任务列表点击（v3.7 修正）** | 两端都以同步生成的任务列表（`taskClickIndex.items` / `runTaskStates`）为**唯一依据**，只跳过已完成，其它判别一律不用。**完成态的权威是主界面任务列表 `todayTasks.items`**：共享 `HSA_CORE.applyTaskCompletion()` 在同步阶段把它的完成态按名称覆盖到点击索引（`cardsFromRewardsHtml()` 从 SPA HTML 解析出的 `isCompleted` 常缺失，旧版因此一张都不跳过）；两端运行时统一走 `HSA_CORE.buildTaskPlan()` → `pendingTaskClicks()`，唯一过滤仍是 `pendingTaskItems()`。0 分、`kind`、`scored`、`syncMatched`、侧栏 DOM 完成标记、黑名单全部只作诊断；DOM 扫描只补定位。状态行走同一个 `taskPlanNames()`，`m` 恒等于真实计划长度。 |
+| **真鼠标事件（默认拟人增强 / 严格档固定）** | 通过 `chrome.debugger.attach(..., '1.3')` 发送 `Input.dispatchMouseEvent` 与 `Input.dispatchKeyEvent`。**默认拟人增强档**走 `HSA_HUMAN.bezierPath()` 三次贝塞尔轨迹 + 轻微过冲回正 + 随机均匀分段间隔，结果页适度滚动、偶发多余动作、偶尔点开一条结果再返回；**严格档**仍是固定中心点击、固定 Enter、固定间隔，禁用轨迹 / 过冲 / 滚动 / 点结果。两端同源，桌面 `main.js` 的卡片点击也走同一套轨迹与随机间隔。 |
 | **搜索词只取当日热搜原文** | `HOT_SOURCES = ['bing','baidu','weibo','toutiao','zhihu','sina']` 固定全量抓取；词长必须 ≥5 个字，按 UTC+8 判定为「当日」。少于 5 字的单调词、历史缓存词、本地词库、Bing autosuggest 与结果页「相关搜索」一律禁用；词不够就少跑几轮，绝不补词 / 拼接 / 复用。 |
+| **积分日历（两端逐字一致）** | 共享 `shared/hsa-calendar.js` 统一模型 / 渲染 / 导航 / 复位；`<details>` 可折叠、紧凑零空白。日视图只列当月有积分的日期，周视图裁剪到当月边界绝不跨月，月视图只列有积分的月；打开设置自动复位到日视图 + 最近有积分月并展开；导航只放行有积分周期。样式单一真源在 `shared/hsa-shared.css`。 |
+| **运行提示词两端一致** | v3.5 起 `HSA_CORE.RUN_LINES` / `runActivity()` 是唯一文案源，桌面 `desktopActivityWrite` / `desktopActivityPush` 与插件 `hsaActivityPush` 都只传 `(state, ctx)`。可见文案 ≤15 显示宽度、**只报当前动作、不提示下一步**；卡片名 / 页面 / 积分 / 执行顺序 / 完整列表 / 系统时间进 `fullZh` / `fullEn`，供悬浮提示、读屏与运行日志。 |
+| **插件后台静默运行** | v3.6 起插件版运行期**不切换活动标签、不把浏览器窗口拉到前台**：`openOrNavigate` 强制后台创建 / 导航，`ensureTabActive` 只关自动丢弃，`Page.bringToFront` 短路，结束也不把用户拉回原标签。可靠性由 CDP 层保活保证——`Emulation.setFocusEmulationEnabled` + `Page.setWebLifecycleState(active)` 让后台标签正常渲染与派发输入 / 点击；稳定等待改查本次运行自己的标签。用户显式点「打开官网 / 登录」仍正常激活标签。 |
+| **拟人搜索间隔设置（v3.7）** | 两端设置页新增 4 项间隔：**键鼠动作间隔**（默认 0.6 秒，0.1–5）、**页面稳定等待**（3 秒，0.5–15）、**搜索轮间间隔**（10 秒，1–60）、**单轮等待**（3 秒，0.5–15），与原有**卡片点击间隔**（10 秒，1–60）一起构成完整节奏设置。共享 `INTERVALS` / `normalizeIntervals()` 统一换算成毫秒并夹取区间，`strictRunPolicy(settings)` 在一次运行开始时读取一次、整轮固定；严格运行期仍禁止改设置。可配置的是**固定间隔**，不恢复随机延时 / 拟人轨迹 / 滚动 / 点结果。 | 
+| **全维度拟人增强（v3.9）** | 按「保留严格档 · 新增拟人增强档」落地：默认 `runMode='human'`，设置页把「运行节奏 + 拟人强度」合并为 **02 运行设置**。低/中/高强度对应完成 **20 次自动搜索 ≈ 15 / 30 / 60 分钟**；每轮预算按「会话偏差 × 当地作息系数」拆成 6 段（`move/type/submit/settle/browse/gap`），**所有间隔随机但大致均匀分配**（低方差抖动 + 总量守恒，段间最大/最小比 < 1.6）。全维度噪声：**时间抖动、三次贝塞尔鼠标轨迹（含轻微过冲回正）、偶发多余动作、结果页正常浏览（滚动 / 偶尔点开结果再返回）、会话画像与词策略**（当日 ≥5 字热搜原文只轻微重排，不补词/编词/复用）；**卡片点击也按随机间隔一个一个开**，桌面两条点击路径都走贝塞尔轨迹。新增 `shared/hsa-human.js` / `hsa-fingerprint.js` / `hsa-geo.js` 三个共享模块（清单 8 → 11）。`strictRunPolicy()` 与严格档原逻辑完全不动，`runMode='strict'` 可随时切回固定节奏。 |
+| **拟人增强档（v3.9，默认）** | 三个新共享模块：`hsa-human.js`（会话画像 / 强度预算 / 6 段随机均匀分配 / 贝塞尔轨迹 / 词序 / 卡片间隔）、`hsa-fingerprint.js`（环境指纹交叉校验，只清自动化标记、补缺失对象，**绝不改写 UA / 屏幕 / 硬件值**）、`hsa-geo.js`（出口 IP / 时区 / 语言 / 搜索市场 / 当地作息自洽，探测失败优雅降级）。默认 `runMode='human'`、`humanLevel='mid'`（20 次搜索 ≈ 30 分钟）；低 / 中 / 高 ≈ 15 / 30 / 60 分钟。词仍是当日 ≥5 字热搜原文，只做轻微相邻重排，**不补词 / 不编词 / 不复用 / 不回首页 / 不改词**。设置页 02「运行设置」提供运行模式、强度、5 个特征开关与 5 项基准间隔；切到「严格」即完整回到 v3.7 固定节奏。共享清单 8 → **11** 个文件。 |
+| **运行风险规避（v4.0）** | 新增共享 `hsa-stealth.js`（清单 11 → **12**）。节奏侧：一次运行拆 2–4 个浏览段、段间一次较长离席、段级与轮内预算起伏且**总时长精确守恒**（15/30/60 分钟不变）；单次运行默认只跑剩余配额的 **60%**，定时启动时间有界抖动，当地 0–6 点定时直接跳过（手动不受限）。过程侧：整段粘贴改**分块上屏 + 非均匀键间隔 + 偶发退格纠错**（`finalText` 逐字等于原词），Enter 恒提交改概率性点搜索按钮（失败回退），结果页点开结果由 DOM 合成点击改**贝塞尔真鼠标轨迹**。环境侧：出口 IP 结果同日缓存减少异常外联，焦点模拟只在输入阶段开启、提交后立即释放。**严格档六项特性恒关**，词规则、消息白名单、同步闸门、任务列表点击与全完成停止态全部不回退。 |
+| **非卡片项跳过（v4.1）** | 「今日 Bing 搜索」是搜索进度项、不是可点击任务卡片。共享 `HSA_CORE.isNonClickableTaskItem()` 按 `section/kind/source=search` 或「名称匹配且无真实 http(s) 链接」识别，`pendingTaskItems()` 在「已完成」之外再排除这类项；两端入口用同一个 `hasClickableCards()`（点击索引 + 主界面任务列表双来源）判定，**待点卡片为 0 时直接返回，不打开 Bing 侧栏 / panelflyout / 官网回退页**。桌面主进程的短路在 `showSidePanel` 与 `loadSidebarFlyout` 之前；插件内部侧栏与独立标签页两条路径都有同构防线。主界面任务列表、`isAllDone` 配额判定与搜索阶段完全不受影响，状态行不再出现「点卡 0/0」。 |
+| **强度预设与当日词去重（v4.2）** | 设置页移除 7 个令人头痛的专业数值输入框，改由**拟人强度低/中/高**统一管理，只读展示**三组**预设：① 配额与启动（单次配额上限、启动抖动上限）② 动作节奏（卡片点击间隔、键鼠动作间隔）③ 页面与轮次（页面稳定等待、搜索轮间间隔、单轮等待）。切档即整组套用，旧存档里的手动值不再生效；严格档沿用固定默认值。共享 `HSA_HUMAN.applyRunPreset()` / `presetValues()` 为单一真源，两端 `getSettings()` 与 UI 逐字同构。另按 **UTC+8 日界**持久化当日已用搜索词，跨运行、跨宿主重启都不重复；当日合规词用完就如实少跑或停止，**不补词 / 不编词 / 不拼接 / 不复用历史词**。详见 [实施说明.md](实施说明.md) 第二十八章。 |
+| **设置页重排与美化（v3.8）** | 两端设置页按用户心智重新分成 6 组并统一顺序：**01 外观**（语言 / 主题 / 减少动画）→ **02 运行设置**（v3.9 由「运行节奏」与「拟人强度」合并）→ **03 自动任务**（定时、次数、启动时间）→ **04 积分日历**（可折叠）→ **05 数据与诊断**（日志与关键页抓取）→ **06 桌面专有**（开机自启、Chrome 标识，仅桌面）。共有部分两端**逐字一致**，桌面专有组排在最后。外观统一由 `shared/hsa-shared.css` 单一真源提供：渐变序号徽标 + 组标题 + 一行说明、圆角卡片 hover 微亮、行 hover 高亮、**全部数字输入统一尺寸与聚焦态**（之前只有卡片点击间隔有样式）、间隔项两列网格（窄屏自动单列）、日历 summary 补同款徽标、虚线式「恢复默认」、`reduce-motion` 下关闭入场动画。新增 7 个双语文案键，两端字典零缺失。 |
 | **设置页诊断数据** | 「记录运行日志」开关（默认开）：日志含系统时间、用户操作、运行过程、运行结果、错误信息，环形上限 600 条，不写网页 HTML / 快照；「导出运行日志」生成 `hsa-runlog-*.json`；「抓取关键网页（HTML zip）」强制 `fresh` + `cache:no-store` 实时抓取 `/dashboard`、`/earn` 与 **Bing 侧边栏**，导出 `hsa-keypages-*.zip`（manifest.json + 3 个 HTML，失败页保留占位说明），不复用缓存 / 可见快照 / 面板 / 隐藏数据视图。 |
 | **下拉刷新 · 仿微信小程序（两端一致）** | 视觉复刻 minirefresh `applet` 主题：**50px 透明下拉区、三个 8px 圆点 ball-beat（默认 0.3 透明度、刷新时交错缩放）、内容区域随下拉整体 `translateY`、无成功动画直接回弹**；文案沿用 default 主题语义（下拉刷新 / 释放刷新 / 加载中... / 刷新成功 / 刷新失败）但视觉隐藏，仅严格运行期拦截与刷新失败时露出小字。共享 `hsa-pull-refresh.js` 统一手势状态机（触摸 / 鼠标拖拽 / 顶部滚轮），不引入第三方库；指示器 `pointer-events: none` 且不进入滚动容器，不产生第二根滚动条；刷新复用 `refreshTasks` 并写用户操作日志。 |
+| **同步闸门 / 短状态文案（v3.2）** | 两端共用 `HSA_CORE.createSyncGate()` 同一份实现：打开主界面 **30 分钟**冷却、手动刷新 10 秒、任务链路 2 秒且 `force` 拿最新；single-flight 合并并发、业务指纹相同标「已是最新」、当日全部完成后停止所有任务（清续跑/提醒闹钟，保留次日调度，跨 UTC+8 日界自动恢复）。可见状态文案统一 ≤15 个中文显示宽度（英文等宽），如「同步完成 90/495」「今日已满·停止任务」；完整来源/耗时/系统时间放 aria-label 与悬浮提示。两端同步状态文案、日志字段完全一致。 |
 | **同步弹官网修复（v3.1）** | 定位到 applet 版之后插件版异常的两层原因：v2.9 把官网 HTML 缓存上限 96KB 误当成响应体截断上限，砍掉 `/dashboard` / `/earn` 后半段内嵌积分/任务数据，导致同步降级 `readRewardsPage` → `chrome.tabs.create` 打开可见 rewards 标签；v3.0「打开主界面同步一次」让这条降级每次打开都触发。修复：响应体完整交给解析器、缓存只收 ≤600KB 的完整页面（条目 1 / TTL 45s 不变），所有同步入口加 `noTabs` 护栏彻底禁止开标签；桌面版同样把误压的 256KB 恢复 600KB 并跳过隐藏取数视图。 |
 | **打开主界面同步一次（v3.0）** | 两端在打开主界面时各做**一次** fresh 官网同步：**正在运行时一律跳过**（popup 读 `running` 先挡一层，后台严格运行期消息白名单再兜一层）；60 秒内重复打开由共享 `HSA_CORE.syncOnOpenAllowed` 节流，避免桌面窗口反复 show/focus 造成密集请求。插件版每次打开 popup 都是新文档，DOMContentLoaded 即触发；桌面 popup 常驻隐藏到托盘，由主进程在 `show` / `restore` 时广播 `ui:opened` 触发，两端行为一致。同步只刷新积分与今日任务、写 `syncNotice`，不启动任务、不改设置、不触碰侧栏。静默期清掉的大快照也由这次打开同步补回。 |
 | **桌面静默内存（v3.0）** | 静默时把常驻 renderer 从最多 7 个压到 2 个（host + popup）：无条件销毁侧栏视图（以前面板展开着最小化会留一个完整 Rewards/Bing SPA）、两个取数视图、任务视图、结果视图；记下侧栏 URL 与显隐状态，退出静默按需重建（运行中 / 退出进程绝不重建）。侧栏创建时不再预加载 Bing 首页，只在真正展开时加载。静默期从内存移除两份 600KB 整页 HTML 快照、日志裁到 240 条、停止隐藏 renderer 正在进行的加载、清 HTTP 缓存（不碰 Cookie），巡检从 10 分钟缩到 2 分钟且会重复回收静默期新建视图。 |
-| **无浏览器伪装 / 分别优化（v2.9）** | 两端均**不做任何身份伪装**：不再设置全局或逐视图 UA、不再注入客户端提示头、不再改写请求头、不再注入 `navigator` 覆盖脚本、不再为热搜请求伪造 `User-Agent`；请求标识交给扩展 / Electron 运行时自身，站点必需的 `Referer` 保留。默认主页与搜索引擎仍为 **Bing**（起始页设置，与身份无关）。内存按平台分别优化：**插件版** `edge-extension/lib/mv3-budget.js` —— HTML 缓存 4×600KB/120s → 1×600KB/45s（v3.1 修正：600KB 只作缓存准入门槛，**官网响应体永不截断**）、日志 16 条/250ms 批量合并写入（上限 180）、历史词 1000→120、页面快照 600→256KB；**桌面版** `desktop-app/lib/runtime-budget.js` —— 全量 state 写盘改前导立即 + 150ms 尾随合并（紧凑 JSON、落盘副本裁大快照）、调试关闭时不再读整页 HTML、离屏取数视图空闲 90s 回收、日志 600→240、历史词 1000→160。 |
+| **桌面版标准 Chrome 标识（v3.7）** | 桌面内置浏览器**只去掉 Electron 标记**，呈现为一台正常 Chrome：`app.userAgentFallback` 用真实 `process.versions.chrome` + 真实 OS 构造标准 UA；`webRequest.onBeforeSendHeaders` 仅对 Bing / Rewards / Microsoft 域注入同源的 `sec-ch-ua` / `sec-ch-ua-platform` / `sec-ch-ua-mobile`；每个外部网页 `dom-ready` 注入一段短脚本把 `navigator.userAgentData` 对齐到同一版本，并防御性清理意外暴露的 Node 全局。三处版本 / 平台同源，**不伪造** WebGL、字体、屏幕、devicePixelRatio、硬件指纹，也不启动外部 Edge。插件版本来运行在真实浏览器里，**仍不做任何身份改写**；两端热搜请求仍不伪造 `User-Agent`，站点必需 `Referer` 保留，默认主页 / 搜索引擎仍为 **Bing**。内存按平台分别优化：**插件版** `edge-extension/lib/mv3-budget.js` —— HTML 缓存 4×600KB/120s → 1×600KB/45s（v3.1 修正：600KB 只作缓存准入门槛，**官网响应体永不截断**）、日志 16 条/250ms 批量合并写入（上限 180）、历史词 1000→120、页面快照 600→256KB；**桌面版** `desktop-app/lib/runtime-budget.js` —— 全量 state 写盘改前导立即 + 150ms 尾随合并（紧凑 JSON、落盘副本裁大快照）、调试关闭时不再读整页 HTML、离屏取数视图空闲 90s 回收、日志 600→240、历史词 1000→160。 |
+| **环境指纹一致性（v3.9）** | 原则是「一致性 > 伪装」：**不硬编码任何硬件值**，只读取真实 `screen / innerWidth / devicePixelRatio / hardwareConcurrency / WebGL GPU / 时区 / 语言 / UA / UA-CH brands` 并做 5 项交叉校验（屏幕↔视口、DPR↔物理尺寸、CPU↔GPU 档次、时区↔语言↔地区、UA 版本↔brands）；只做两件事：① 去掉自动化标记（`navigator.webdriver`、phantom/selenium 全局），② 补齐 headless 下缺失对象的**存在性**（`window.chrome` / `permissions` / `mediaDevices` / `Notification`）。报告写入运行日志，冲突逐项列出，不改写任何数值。 |
+| **地理位置一致性（v3.9）** | 运行时探测出口 IP（`ipwho.is` / `ipapi.co`，2.5 秒超时），推导一整套自洽参数：**时区 / 语言 / Accept-Language / Bing `mkt` / 当地作息**；`crossCheck` 逐项校验「IP 国家↔时区↔语言↔mkt↔当地作息」冲突。当地凌晨 0–6 点把间隔拉长 2.4 倍（**降速而非停止任务**），避免「凌晨 3 点还在高频搜索」；探测失败**优雅降级到系统时区/语言**，不让脚本跑不起来。两端 `host_permissions` 已补两个探测域名。 |
 | **默认不自动跑** | `AUTO_DEFAULTS = { enabled: false, times: [], count: 30, level: 3 }`；定时最多 `AUTO_MAX_TIMES = 10` 个时间点，由 `chrome.alarms` 的 `hsaScheduledRun` 触发，同一时间点当天只触发一次。 |
 | **积分日历** | 每次同步写入 `pointsHistory`（按本地日期，最多保留 400 天），设置页支持日 / 周 / 月聚合。 |
-| **收尾把焦点还给你** | `KEEP_TASK_TABS = true`（任务页保留）、`RESTORE_FOCUS_ON_FINISH = true`，结束时关闭搜索页、调用 `restoreUserFocus()`。 |
+| **收尾不抢焦点（v3.6）** | 插件版 `QUIET_BACKGROUND = true`：运行期不切换活动标签、不聚焦浏览器窗口，结束也不把用户拉回原标签；`KEEP_TASK_TABS = true` 保留任务页，`restoreUserFocus()` 只清理历史记录。可靠性由 CDP 焦点模拟 + 生命周期保活保证。桌面版是独立窗口，无此问题。 |
 | **双语 / 主题 / 桌面专属** | 弹窗内置中英文 `I18N` 表与 `uiLang` / `uiTheme` 持久化；浅色 / 深色 / 跟随系统、减少动画；桌面版另有开机自启与系统托盘，均默认关闭；设置页只读展示「内置浏览器：Microsoft Edge · Bing」；侧栏固定内嵌在主窗口右侧，自带独立滚动条。 |
 
 ---
@@ -94,9 +111,9 @@ npm run verify         # 8 个离线回归脚本
 以 `edge-extension/background.js` 的 `runAutoComplete()` 为准（`desktop-app/src/background.js` 为同源的桌面实现）：
 
 1. **同步**：`syncStart()` 读取积分、搜索配额与今日任务；失败（未登录 / 页面不可读）则写回 `idle` 并零动作返回。
-2. **判定全完成**：按上文 `allDone` 条件判断，满足则直接返回；`dontSkipCompletedCards = false` 时不会重载页面、不点卡片、不搜索。
-3. **点击待完成卡片**：`completePendingTaskCards()` 打开 / 扫描 Rewards 侧栏或 dashboard / earn 页面，按宿主能力优先采用官网卡片的真实交互路径（桌面可用 CDP 真鼠标，不可用时降级页面交互并逐卡记录触发方式）；相邻点击间隔两版统一默认 10 秒，等待页面稳定后才继续，可在设置里调 1–60 秒。弹出的任务标签页保留不关闭。
-4. **执行搜索**：`handleStart()` 启动流程，`runFlow()` 中调用 `searchLoop()`，按剩余搜索配额从当日热搜池取 ≥5 字合规词，访问 `www.bing.com/search?q=...`。严格运行模式走单一固定路径（固定中心点击 → 输入 → 固定 Enter 提交 → 页面稳定等待 → 固定轮间 10 秒），不回首页、不改词、不滚动、不点结果、不随机延时；`POINTS_PER_SEARCH = 3` 只用于本地估算。
+2. **判定全完成**：按上文 `allDone` 条件判断，满足则零动作直接返回——不重载页面、不点卡片、不搜索；并写入当日完成停止态，跨日自动恢复。两端完全一致，无例外开关。
+3. **只按任务列表点击**：`completePendingTaskCards()` 以同步生成的任务列表为唯一计划（共享 `pendingTaskItems` + `planTaskClicks`），自动跳过已完成项，其余逐项到 Rewards 侧栏或 dashboard / earn 页面定位并点击；按宿主能力优先采用官网卡片的真实交互路径（桌面可用 CDP 真鼠标，不可用时降级页面交互并逐卡记录触发方式）。定位不到的项记失败但不从计划里删除。相邻点击间隔两版统一默认 10 秒，可在设置里调 1–60 秒；弹出的任务标签页保留不关闭。
+4. **执行搜索**：`handleStart()` 启动流程，`runFlow()` 中调用 `searchLoop()`，按剩余搜索配额（v4.2 起由拟人强度预设的单次配额上限决定）从当日热搜池取 ≥5 字合规词，访问 `www.bing.com/search?q=...`；选词前按 UTC+8 日界剔除当天已用词。**默认拟人增强档**把强度预算 × 会话偏差 × 地理作息系数随机但低方差地分给 `move / type / submit / settle / browse / gap` 六段，并按会话分段缩放、段间离席；输入走分块拟真键入，点击与结果页浏览走贝塞尔真鼠标轨迹，提交概率性点搜索按钮；**严格档**仍是固定中心点击 → 输入 → 固定 Enter → 页面稳定等待 → 固定轮间。两档都**不回首页、不改词、不编词、不复用历史词**；`POINTS_PER_SEARCH = 3` 只用于本地估算。
 5. **收尾**：`presetSyncFinish()` 再同步一次，写入 `endPoints` / `finalEarned`（起始积分未知时 `earnedIsEstimate = true`）、`lastRun` 与 `pointsHistory`；关闭搜索页、恢复运行前的标签页焦点。
 
 ### 3. 设置项
@@ -107,7 +124,6 @@ npm run verify         # 8 个离线回归脚本
 | 主题 | 跟随系统（浅色 / 深色 / 跟随系统） | `applyTheme()`，`localStorage.theme` / `uiTheme` |
 | 减少动画 | 关 | `DEFAULTS.reduceMotion` |
 | 卡片点击间隔 | 扩展 5 s / 桌面 10 s，范围 1–60 s | `TASK_CLICK_INTERVAL_MS`、`cardClickIntervalSec`、`taskClickSpacing()` |
-| 不跳过已完成任务卡 | 关 | `dontSkipCompletedCards: false`；开启后即使全完成也点所有积分卡 |
 | 定时自动运行 | 关 | `AUTO_DEFAULTS.enabled: false` |
 | 启动时间 | 空；留空点「添加」首个为 08:00，之后在最晚时间上 +30 分钟，自动去重排序，最多 10 个 | `defaultAutoTime()`、`AUTO_MAX_TIMES` |
 | 搜索次数上限 | 30（可填 1–150） | `AUTO_DEFAULTS.count`，`clampInt(..., 1, 150)` |
@@ -121,7 +137,7 @@ npm run verify         # 8 个离线回归脚本
 ### 5. 常见问题
 
 - **积分显示「—」或出现登录页**：后台 `fetch` 没拿到登录态；先在浏览器 / 内置窗口登录 `rewards.bing.com`，再点「刷新」。
-- **全部做完了点按钮**：零动作返回；若想强制逐张点卡片，只能开启「不跳过已完成任务卡」（代码里没有主按钮的 `force` 参数）。
+- **全部做完了点按钮**：零动作返回并当日停止所有任务；v3.3 起相关设置项与 `force` 例外均已移除，如需次日重跑等跨 UTC+8 日界即可。
 - **有些卡片没被点**：命中了上文排除规则；控制台会打印跳过原因。
 - **点了卡片没涨分**：点击成功不等于服务端计分；`hitByCount()` 比较前后任务完成数，`presetSyncFinish()` 用积分差计算 `finalEarned`，起始积分未知时标记为估算。以 Rewards 页面为准。
 
@@ -153,7 +169,7 @@ npm run verify         # 8 个离线回归脚本
 ### 本仓库代码里与之直接相关的事实
 
 1. `searchLoop()` 自动生成并提交查询词，`cdpInsertText()` / `cdpKey()` 用 CDP 把文字与回车送进 Bing 搜索框——这是程序输入，不是用户手动输入。
-2. 严格运行模式已禁用 `HUMAN_PROFILES` / `GO_HOME_RATE` / `RELATED_RATE` / `ENTER_RATE` / `CLICK_RESULT_RATE` / `RESULT_HOLD_MIN/MAX` 的随机轨迹、回首页 / 改词、滚动与随机停留；`autoTasks` 与 `hsaScheduledRun` 在运行期不会重入，提醒、运行期刷新 / 同步与 watchdog 续跑同样禁用。桌面版的「静默完成任务」开关已移除，页面与侧栏一律按用户可见行为运行。这些仍属于官方排除的自动化方式。
+2. **严格档**已禁用 `HUMAN_PROFILES` / `GO_HOME_RATE` / `RELATED_RATE` / `ENTER_RATE` / `CLICK_RESULT_RATE` / `RESULT_HOLD_MIN/MAX` 的随机轨迹、回首页 / 改词、滚动与随机停留；**默认拟人增强档**启用轨迹、抖动、滚动、点结果与会话画像，但仍不回首页、不改词、不补词。`autoTasks` 与 `hsaScheduledRun` 在运行期不会重入，提醒、运行期刷新 / 同步与 watchdog 续跑同样禁用，运行期改设置仍被白名单拦截。桌面版的「静默完成任务」开关已移除，页面与侧栏一律按用户可见行为运行。这些仍属于官方排除的自动化方式。
 3. 代码用 `HUMAN_VERIFY_OFFICIAL = true`、`hitByCount()` 与收尾积分差做本地核对，并可能把 `finalEarned` 标为估算；**本地核对不等于官方确认计分**，一切以服务端为准。
 4. `host_permissions` 里的 5 个第三方热榜域名（加上 Bing 自带热榜源共 6 个词源）只用于取搜索词，工具不代理登录、不批量注册账号、不内置绕过风控的逻辑；但自动化本身已足够触发上述限制。
 
